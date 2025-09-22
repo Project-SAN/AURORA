@@ -1,7 +1,5 @@
 // Run an end-to-end flow using the paper-compliant (strict) Sphinx header
 // plus FS payload construction and AHDR/onion data, from setup to completion.
-
-#[cfg(feature = "strict_sphinx")]
 fn main() {
     use hornet::{
         ahdr, fs, fs_payload, onion,
@@ -158,9 +156,4 @@ fn main() {
     assert_eq!(data2, orig);
 
     println!("Strict Sphinx E2E completed: FS and AHDR flows verified.");
-}
-
-#[cfg(not(feature = "strict_sphinx"))]
-fn main() {
-    eprintln!("Enable the paper-compliant path with --features strict_sphinx");
 }
