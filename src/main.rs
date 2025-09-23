@@ -128,7 +128,7 @@ fn main() {
             *b ^= *m;
         }
         // FS creation and insert into payload
-        let fs_i = fs_core::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp_f).expect("fs forward");
+        let fs_i = fs_core::create(&sv_i, &keys_f[i], &rs_f[i], exp_f).expect("fs forward");
         fs_payload::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs forward");
         fses_f_vec.push(fs_i);
     }
@@ -162,7 +162,7 @@ fn main() {
             *b ^= *m;
         }
         // Create FS for backward path and accumulate
-        let fs_j = fs_core::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp_b).expect("fs backward");
+        let fs_j = fs_core::create(&sv_j, &keys_b[j], &rs_b[j], exp_b).expect("fs backward");
         fs_payload::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs backward");
         fses_b_vec.push(fs_j);
     }

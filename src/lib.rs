@@ -122,7 +122,7 @@ mod tests {
             let _si_node =
                 crate::sphinx::node_process_forward(&mut shdr_f, &mut sp_f, &sk_i, beta_len)
                     .expect("sphinx f");
-            let fs_i = crate::packet::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
+            let fs_i = crate::packet::create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
             let _ =
                 crate::packet::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
             fses_f_vec.push(fs_i);
@@ -139,7 +139,7 @@ mod tests {
             let (sk_j, _pk_j, sv_j) = nodes_b[j];
             let _sj_node =
                 crate::sphinx::node_process_backward(&shdr_b, &mut sp_b, &sk_j).expect("sphinx b");
-            let fs_j = crate::packet::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
+            let fs_j = crate::packet::create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
             let _ =
                 crate::packet::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
             fses_b_vec.push(fs_j);
@@ -245,7 +245,7 @@ mod tests {
             let (sk_i, _pk_i, sv_i) = nodes_f[i];
             let _ = crate::sphinx::node_process_forward(&mut shdr_f, &mut sp_f, &sk_i, beta_len)
                 .expect("sphinx f");
-            let fs_i = crate::packet::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
+            let fs_i = crate::packet::create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
             let _ =
                 crate::packet::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
         }
@@ -260,7 +260,7 @@ mod tests {
             let (sk_j, _pk_j, sv_j) = nodes_b[j];
             let _ =
                 crate::sphinx::node_process_backward(&shdr_b, &mut sp_b, &sk_j).expect("sphinx b");
-            let fs_j = crate::packet::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
+            let fs_j = crate::packet::create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
             let _ =
                 crate::packet::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
         }
@@ -334,7 +334,7 @@ mod tests {
             let (sk_i, _pk_i, sv_i) = nodes_f[i];
             let _ = crate::sphinx::node_process_forward(&mut shdr_f, &mut sp_f, &sk_i, beta_len)
                 .expect("sphinx f");
-            let fs_i = crate::packet::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
+            let fs_i = crate::packet::create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
             let _ =
                 crate::packet::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
         }
@@ -357,7 +357,7 @@ mod tests {
                 &sk_j,
             )
             .expect("sphinx b");
-            let fs_j = crate::packet::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
+            let fs_j = crate::packet::create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
             let _ =
                 crate::packet::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
         }
@@ -545,7 +545,7 @@ mod tests {
         let si = Si(key);
         let rseg = RoutingSegment(alloc::vec![0u8; 8]);
         let exp = Exp(1_234_567);
-        let fs = crate::packet::fs_create(&sv, &si, &rseg, exp).expect("fs");
+        let fs = crate::packet::create(&sv, &si, &rseg, exp).expect("fs");
         let mut rng2 = XorShift64(0x0102_0304_0506_0708);
         let ahdr = crate::packet::ahdr::create_ahdr(&[si], &[fs], rmax, &mut rng2).expect("ahdr");
         // now < EXP → OK

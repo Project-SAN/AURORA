@@ -48,5 +48,5 @@ pub fn create_fs_from_setup(
     s: &crate::types::Si,
     r: &RoutingSegment,
 ) -> Result<crate::types::Fs> {
-    crate::packet::fs_create_from_chdr(sv, s, r, chdr)
+    crate::packet::create_from_chdr(sv, s, r, chdr)
 }

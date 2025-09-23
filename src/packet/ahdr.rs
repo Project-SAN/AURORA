@@ -27,7 +27,7 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let gamma = &head[FS_LEN..C_BLOCK];
     let beta = &ahdr.bytes[C_BLOCK..];
     let fs = Fs(<[u8; FS_LEN]>::try_from(fs_bytes).map_err(|_| Error::Length)?);
-    let (s, rseg, exp) = fs::fs_open(sv, &fs)?;
+    let (s, rseg, exp) = fs::open(sv, &fs)?;
     if now.0 >= exp.0 {
         return Err(Error::Expired);
     }
