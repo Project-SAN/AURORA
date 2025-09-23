@@ -18,4 +18,3 @@ pub fn remove_layer(s: &Si, iv: &mut [u8; 16], payload: &mut [u8]) -> Result<()>
     *iv = prev;
     Ok(())
 }
-

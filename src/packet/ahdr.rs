@@ -1,9 +1,12 @@
-use alloc::vec::Vec;
-use alloc::vec;
-use rand_core::RngCore;
-use crate::crypto::{kdf::{hop_key, OpLabel}, mac, prg};
+use crate::crypto::{
+    kdf::{OpLabel, hop_key},
+    mac, prg,
+};
 use crate::packet::fs_core as fs;
-use crate::types::{Ahdr, Error, Exp, Fs, Result, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN};
+use crate::types::{Ahdr, C_BLOCK, Error, Exp, FS_LEN, Fs, Result, RoutingSegment, Si, Sv};
+use alloc::vec;
+use alloc::vec::Vec;
+use rand_core::RngCore;
 
 pub struct ProcResult {
     pub s: Si,
@@ -14,7 +17,9 @@ pub struct ProcResult {
 // Algorithm 3: Process an AHDR at a hop
 pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let rc = ahdr.bytes.len();
-    if rc % C_BLOCK != 0 { return Err(Error::Length); }
+    if rc % C_BLOCK != 0 {
+        return Err(Error::Length);
+    }
     // number of blocks r = rc / C_BLOCK (not needed explicitly)
     // Parse head block
     let head = &ahdr.bytes[0..C_BLOCK];
@@ -23,7 +28,9 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let beta = &ahdr.bytes[C_BLOCK..];
     let fs = Fs(<[u8; FS_LEN]>::try_from(fs_bytes).map_err(|_| Error::Length)?);
     let (s, rseg, exp) = fs::fs_open(sv, &fs)?;
-    if now.0 >= exp.0 { return Err(Error::Expired); }
+    if now.0 >= exp.0 {
+        return Err(Error::Expired);
+    }
     // Verify MAC: gamma == MAC(hMAC(s); FS || beta)
     let mut mac_key = [0u8; 16];
     hop_key(&s.0, OpLabel::Mac, &mut mac_key);
@@ -31,22 +38,34 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     mac_input.extend_from_slice(&fs.0);
     mac_input.extend_from_slice(beta);
     let tag = mac::mac_trunc16(&mac_key, &mac_input);
-    if &tag.0 != gamma { return Err(Error::InvalidMac); }
+    if &tag.0 != gamma {
+        return Err(Error::InvalidMac);
+    }
     // Compute next header: (beta || 0^c) XOR PRG2(s)
     let mut next = Vec::with_capacity(rc);
     next.extend_from_slice(beta);
     next.resize(rc, 0u8);
     let mut mask = vec![0u8; rc];
     prg::prg2(&s.0, &mut mask);
-    for (b, m) in next.iter_mut().zip(mask.iter()) { *b ^= *m; }
-    Ok(ProcResult { s, r: rseg, ahdr_next: Ahdr { bytes: next } })
+    for (b, m) in next.iter_mut().zip(mask.iter()) {
+        *b ^= *m;
+    }
+    Ok(ProcResult {
+        s,
+        r: rseg,
+        ahdr_next: Ahdr { bytes: next },
+    })
 }
 
 // Algorithm 4: Create AHDR from {si},{FSi}
 pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore) -> Result<Ahdr> {
     let l = keys.len();
-    if l == 0 || l != fses.len() { return Err(Error::Length); }
-    if rmax == 0 || l > rmax { return Err(Error::Length); }
+    if l == 0 || l != fses.len() {
+        return Err(Error::Length);
+    }
+    if rmax == 0 || l > rmax {
+        return Err(Error::Length);
+    }
     let rc = rmax * C_BLOCK;
     // Compute paddings phi
     let mut phi: Vec<u8> = Vec::new(); // length i*c at step i
@@ -60,7 +79,9 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
         let mut new_phi = Vec::with_capacity(phi.len() + C_BLOCK);
         new_phi.extend_from_slice(&phi);
         new_phi.resize(phi.len() + C_BLOCK, 0);
-        for (b, m) in new_phi.iter_mut().zip(slice.iter()) { *b ^= *m; }
+        for (b, m) in new_phi.iter_mut().zip(slice.iter()) {
+            *b ^= *m;
+        }
         phi = new_phi;
     }
     // beta_{l-1} = RAND((r-l)c) || phi
@@ -91,7 +112,9 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
         let mut mask = vec![0u8; (rmax - 1) * C_BLOCK];
         prg::prg2(&keys[i].0, &mut mask);
         // beta_i = base XOR mask
-        for (b, m) in base.iter_mut().zip(mask.iter()) { *b ^= *m; }
+        for (b, m) in base.iter_mut().zip(mask.iter()) {
+            *b ^= *m;
+        }
         beta = base;
         // gamma_i = MAC(hMAC(s_i); FS_i || beta_i)
         let mut hkey_i = [0u8; 16];
@@ -106,18 +129,30 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
     bytes.extend_from_slice(&fses[0].0);
     bytes.extend_from_slice(&gamma);
     // beta length should be (r-1)c; ensure size
-    if beta.len() != (rmax - 1) * C_BLOCK { beta.resize((rmax - 1) * C_BLOCK, 0); }
+    if beta.len() != (rmax - 1) * C_BLOCK {
+        beta.resize((rmax - 1) * C_BLOCK, 0);
+    }
     bytes.extend_from_slice(&beta);
     Ok(Ahdr { bytes })
 }
 
 // Algorithm 5: Nested AHDR construction (outer includes inner)
-pub fn create_nested_ahdr(keys: &[Si], fses: &[Fs], inner: &Ahdr, rmax: usize, rng: &mut dyn RngCore) -> Result<Ahdr> {
+pub fn create_nested_ahdr(
+    keys: &[Si],
+    fses: &[Fs],
+    inner: &Ahdr,
+    rmax: usize,
+    rng: &mut dyn RngCore,
+) -> Result<Ahdr> {
     // Algorithm 5: Nested AHDR construction
     let l = keys.len();
-    if l == 0 || l != fses.len() { return Err(Error::Length); }
+    if l == 0 || l != fses.len() {
+        return Err(Error::Length);
+    }
     let rc = rmax * C_BLOCK;
-    if inner.bytes.len() != rc { return Err(Error::Length); }
+    if inner.bytes.len() != rc {
+        return Err(Error::Length);
+    }
     // φ computation
     let mut phi: Vec<u8> = Vec::new();
     for i in 1..l {
@@ -128,7 +163,9 @@ pub fn create_nested_ahdr(keys: &[Si], fses: &[Fs], inner: &Ahdr, rmax: usize, r
         let mut new_phi = Vec::with_capacity(phi.len() + C_BLOCK);
         new_phi.extend_from_slice(&phi);
         new_phi.resize(phi.len() + C_BLOCK, 0);
-        for (b, m) in new_phi.iter_mut().zip(slice.iter()) { *b ^= *m; }
+        for (b, m) in new_phi.iter_mut().zip(slice.iter()) {
+            *b ^= *m;
+        }
         phi = new_phi;
     }
     // β_{l-1} = {A || RAND(c(r-l))} XOR PRG0(s_{l-1})[0..c(2r-l)-1] || φ_{l-1}
@@ -142,7 +179,9 @@ pub fn create_nested_ahdr(keys: &[Si], fses: &[Fs], inner: &Ahdr, rmax: usize, r
     // Mask length c(2r - l)
     let mut mask = vec![0u8; rc + (rmax - l) * C_BLOCK];
     prg::prg0(&keys[l - 1].0, &mut mask);
-    for (b, m) in beta_first.iter_mut().zip(mask.iter()) { *b ^= *m; }
+    for (b, m) in beta_first.iter_mut().zip(mask.iter()) {
+        *b ^= *m;
+    }
     let mut beta = Vec::with_capacity(2 * rc - C_BLOCK);
     beta.extend_from_slice(&beta_first);
     beta.extend_from_slice(&phi);
@@ -165,7 +204,9 @@ pub fn create_nested_ahdr(keys: &[Si], fses: &[Fs], inner: &Ahdr, rmax: usize, r
         let xor_len = rc + (rmax - l) * C_BLOCK; // c(2r - l)
         let mut mask_i = vec![0u8; xor_len];
         prg::prg0(&keys[i].0, &mut mask_i);
-        for j in 0..xor_len { base[j] ^= mask_i[j]; }
+        for j in 0..xor_len {
+            base[j] ^= mask_i[j];
+        }
         beta = base;
         // gamma_i
         let mut hkey_i = [0u8; 16];
@@ -180,7 +221,9 @@ pub fn create_nested_ahdr(keys: &[Si], fses: &[Fs], inner: &Ahdr, rmax: usize, r
     bytes.extend_from_slice(&fses[0].0);
     bytes.extend_from_slice(&gamma);
     // Ensure beta length is c(2r-1)
-    if beta.len() != 2 * rc - C_BLOCK { beta.resize(2 * rc - C_BLOCK, 0); }
+    if beta.len() != 2 * rc - C_BLOCK {
+        beta.resize(2 * rc - C_BLOCK, 0);
+    }
     bytes.extend_from_slice(&beta);
     Ok(Ahdr { bytes })
 }

@@ -1,10 +1,12 @@
-use alloc::vec::Vec;
 use crate::crypto::prp;
-use crate::types::{Error, Exp, Fs, Result, RoutingSegment, Si, Sv, FS_LEN, Chdr, PacketType};
+use crate::types::{Chdr, Error, Exp, FS_LEN, Fs, PacketType, Result, RoutingSegment, Si, Sv};
+use alloc::vec::Vec;
 
 // Encode {s || EXP || R[0..12]} into 32 bytes, then PRP-enc with key from SV
 pub fn fs_create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> Result<Fs> {
-    if r.0.len() > 12 { return Err(Error::Length); }
+    if r.0.len() > 12 {
+        return Err(Error::Length);
+    }
     let mut plain = [0u8; FS_LEN];
     plain[0..16].copy_from_slice(&s.0);
     plain[16..20].copy_from_slice(&exp.0.to_be_bytes());
@@ -30,11 +32,11 @@ pub fn fs_open(sv: &Sv, fs: &Fs) -> Result<(Si, RoutingSegment, Exp)> {
 pub fn fs_create_from_chdr(sv: &Sv, s: &Si, r: &RoutingSegment, chdr: &Chdr) -> Result<Fs> {
     match chdr.typ {
         PacketType::Setup => {
-            let mut b = [0u8; 4]; b.copy_from_slice(&chdr.specific[0..4]);
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&chdr.specific[0..4]);
             let exp = Exp(u32::from_be_bytes(b));
             fs_create(sv, s, r, exp)
         }
         _ => Err(Error::Length),
     }
 }
-

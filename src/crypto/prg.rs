@@ -1,6 +1,6 @@
-use crate::crypto::kdf::{hop_key, OpLabel};
+use crate::crypto::kdf::{OpLabel, hop_key};
 use aes::Aes128;
-use ctr::cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher};
+use ctr::cipher::{KeyIvInit, StreamCipher, generic_array::GenericArray};
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 
@@ -13,6 +13,12 @@ fn prg(key_src: &[u8], out: &mut [u8], label: OpLabel) {
     cipher.apply_keystream(out);
 }
 
-pub fn prg0(key_src: &[u8], out: &mut [u8]) { prg(key_src, out, OpLabel::Prg0) }
-pub fn prg1(key_src: &[u8], out: &mut [u8]) { prg(key_src, out, OpLabel::Prg1) }
-pub fn prg2(key_src: &[u8], out: &mut [u8]) { prg(key_src, out, OpLabel::Prg2) }
+pub fn prg0(key_src: &[u8], out: &mut [u8]) {
+    prg(key_src, out, OpLabel::Prg0)
+}
+pub fn prg1(key_src: &[u8], out: &mut [u8]) {
+    prg(key_src, out, OpLabel::Prg1)
+}
+pub fn prg2(key_src: &[u8], out: &mut [u8]) {
+    prg(key_src, out, OpLabel::Prg2)
+}

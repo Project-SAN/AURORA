@@ -1,5 +1,5 @@
 use rand_core::{CryptoRng, RngCore};
-use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
+use x25519_dalek::{X25519_BASEPOINT_BYTES, x25519};
 
 pub struct DhKeyPair {
     pub secret: [u8; 32],
