@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use alloc::vec;
 use rand_core::RngCore;
 use crate::crypto::{kdf::{hop_key, OpLabel}, mac, prg};
-use crate::fs;
+use crate::packet::fs;
 use crate::types::{Ahdr, Error, Exp, Fs, Result, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN};
 
 pub struct ProcResult {

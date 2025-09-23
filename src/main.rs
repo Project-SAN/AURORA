@@ -2,11 +2,11 @@
 // plus FS payload construction and AHDR/onion data, from setup to completion.
 fn main() {
     use hornet::{
-        ahdr, fs, onion,
+        packet::{ahdr, fs, onion},
         sphinx, sphinx::strict,
         types::{Exp, RoutingSegment, Sv, C_BLOCK},
     };
-    use rand_core::{CryptoRng, Error as RandError, RngCore};
+    use rand_core::{CryptoRng, RngCore};
 
     // Simple deterministic RNG for reproducibility
     struct XorShift64(u64);
@@ -17,7 +17,7 @@ fn main() {
             x ^= x << 13; x ^= x >> 7; x ^= x << 17; self.0 = x; x
         }
         fn fill_bytes(&mut self, dest: &mut [u8]) { let _ = self.try_fill_bytes(dest); }
-        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> core::result::Result<(), RandError> {
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> core::result::Result<(), rand_core::Error> {
             let mut n = 0;
             while n < dest.len() {
                 let v = self.next_u64().to_le_bytes();
