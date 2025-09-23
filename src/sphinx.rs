@@ -36,17 +36,13 @@ fn blinding_scalar_from_shared(shared: &[u8; 32]) -> [u8; 32] {
     s
 }
 
-fn derive_shared_source(ephemeral_secret: &[u8; 32], node_pub: &[u8; 32]) -> [u8; 32] {
-    x25519_dalek::x25519(*ephemeral_secret, *node_pub)
+fn compute_shared_secret(secret: &[u8; 32], public: &[u8; 32]) -> [u8; 32] {
+    x25519_dalek::x25519(*secret, *public)
 }
 
-fn derive_shared_node(node_secret: &[u8; 32], y: &[u8; 32]) -> [u8; 32] {
-    x25519_dalek::x25519(*node_secret, *y)
-}
-
-fn derive_si_from_shared(shared: &[u8; 32]) -> Si {
+fn derive_si(shared_secret: &[u8; 32]) -> Si {
     let mut si = [0u8; 16];
-    hop_key(shared, OpLabel::Enc, &mut si);
+    hop_key(shared_secret, OpLabel::Enc, &mut si);
     Si(si)
 }
 
@@ -71,8 +67,8 @@ pub fn source_create_forward(
     let mut shareds: Vec<[u8; 32]> = Vec::with_capacity(node_pubs.len());
     let mut sis: Vec<Si> = Vec::with_capacity(node_pubs.len());
     for pk in node_pubs.iter() {
-        let sh = derive_shared_source(ephemeral_secret, pk);
-        sis.push(derive_si_from_shared(&sh));
+        let sh = compute_shared_secret(ephemeral_secret, pk);
+        sis.push(derive_si(&sh));
         shareds.push(sh);
     }
     // Compute initial y (after all blinded factors)
@@ -109,7 +105,7 @@ pub fn node_process_forward(
     _beta_len: usize,
 ) -> Result<Si> {
     // derive shared from current y
-    let shared = derive_shared_node(node_secret, &hdr.y);
+    let shared = compute_shared_secret(node_secret, &hdr.y);
     // update gamma chain
     let mut mac_key = [0u8; 16];
     hop_key(&shared, OpLabel::Mac, &mut mac_key);
@@ -120,7 +116,7 @@ pub fn node_process_forward(
     hdr.y = x25519_dalek::x25519(b, hdr.y);
     // peel one payload layer
     let mut mask = vec![0u8; sp.0.len()];
-    let si = derive_si_from_shared(&shared);
+    let si = derive_si(&shared);
     prg::prg1(&si.0, &mut mask);
     for (b, m) in sp.0.iter_mut().zip(mask.iter()) {
         *b ^= *m;
@@ -138,8 +134,8 @@ pub fn dest_create_backward_sp(plain: &[u8], sp_len: usize) -> Payload {
 
 // Node processes backward: add one layer with PRG1(Si)
 pub fn node_process_backward(hdr: &Header, sp: &mut Payload, node_secret: &[u8; 32]) -> Result<Si> {
-    let shared = derive_shared_node(node_secret, &hdr.y);
-    let si = derive_si_from_shared(&shared);
+    let shared = compute_shared_secret(node_secret, &hdr.y);
+    let si = derive_si(&shared);
     let mut mask = vec![0u8; sp.0.len()];
     prg::prg1(&si.0, &mut mask);
     for (b, m) in sp.0.iter_mut().zip(mask.iter()) {
@@ -207,7 +203,7 @@ pub mod strict {
             let shared_pt: MontgomeryPoint = &x_eff_cur * &pubs[i];
             let shared = shared_pt.to_bytes();
             shareds.push(shared);
-            sis.push(super::derive_si_from_shared(&shared));
+            sis.push(super::derive_si(&shared));
             // Blind for next hop (apply after computing current shared)
             // Derive blinding scalar b_i from shared
             let mut b_seed = [0u8; 32];
@@ -278,7 +274,7 @@ pub mod strict {
             let shared_pt: MontgomeryPoint = &x_eff_cur * &pubs[i];
             let shared = shared_pt.to_bytes();
             shareds.push(shared);
-            sis.push(super::derive_si_from_shared(&shared));
+            sis.push(super::derive_si(&shared));
             let mut b_seed = [0u8; 32];
             hop_key(&shared, OpLabel::Prp, &mut b_seed);
             let b = Scalar::from_bytes_mod_order(b_seed);
@@ -390,6 +386,6 @@ pub mod strict {
         let b = Scalar::from_bytes_mod_order(b_seed);
         let new_alpha: MontgomeryPoint = &b * &alpha_pt;
         h.alpha = new_alpha.to_bytes();
-        Ok(super::derive_si_from_shared(&shared))
+        Ok(super::derive_si(&shared))
     }
 }
