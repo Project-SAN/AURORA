@@ -5,7 +5,6 @@ extern crate alloc;
 pub mod types;
 pub mod time;
 pub mod crypto;
-pub mod fs_payload;
 pub mod fs;
 pub mod ahdr;
 pub mod onion;
@@ -79,33 +78,33 @@ mod tests {
         shdr_b.y = eph_pub_b;
 
         let seed_f = { let mut s=[0u8;16]; rng.fill_bytes(&mut s); s };
-        let mut p_f = crate::fs_payload::FsPayload::new_with_seed(rmax, &seed_f);
+        let mut p_f = crate::fs::FsPayload::new_with_seed(rmax, &seed_f);
         let mut fses_f_vec = alloc::vec::Vec::new();
         for i in 0..lf {
             let (sk_i, _pk_i, sv_i) = nodes_f[i];
             let _si_node = crate::sphinx::node_process_forward(&mut shdr_f, &mut sp_f, &sk_i, beta_len).expect("sphinx f");
             let fs_i = crate::fs::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
-            let _ = crate::fs_payload::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
+            let _ = crate::fs::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
             fses_f_vec.push(fs_i);
         }
         let mut sp_b = crate::sphinx::dest_create_backward_sp(&p_f.bytes, sp_len);
         let seed_b = { let mut s=[0u8;16]; rng.fill_bytes(&mut s); s };
-        let mut p_b = crate::fs_payload::FsPayload::new_with_seed(rmax, &seed_b);
+        let mut p_b = crate::fs::FsPayload::new_with_seed(rmax, &seed_b);
         let mut fses_b_vec = alloc::vec::Vec::new();
         for j in 0..lb {
             let (sk_j, _pk_j, sv_j) = nodes_b[j];
             let _sj_node = crate::sphinx::node_process_backward(&shdr_b, &mut sp_b, &sk_j).expect("sphinx b");
             let fs_j = crate::fs::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
-            let _ = crate::fs_payload::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
+            let _ = crate::fs::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
             fses_b_vec.push(fs_j);
         }
         let _pf_bytes = crate::sphinx::source_unwrap_backward(&keys_b, &sp_b);
         // Unwrap SPb to get Pf and retrieve FSes per Alg.2
         // Unwrap SPb to get Pf and retrieve FSes per Alg.2
         let pf_bytes = crate::sphinx::source_unwrap_backward(&keys_b, &sp_b);
-        let pf_recv = crate::fs_payload::FsPayload { bytes: pf_bytes, rmax };
-        let fses_f = crate::fs_payload::retrieve_fses(&keys_f, &seed_f, &pf_recv).expect("ret fs f");
-        let fses_b = crate::fs_payload::retrieve_fses(&keys_b, &seed_b, &p_b).expect("ret fs b");
+        let pf_recv = crate::fs::FsPayload { bytes: pf_bytes, rmax };
+        let fses_f = crate::fs::retrieve_fses(&keys_f, &seed_f, &pf_recv).expect("ret fs f");
+        let fses_b = crate::fs::retrieve_fses(&keys_b, &seed_b, &p_b).expect("ret fs b");
 
         let mut rng2 = XorShift64(0x9999_aaaa_bbbb_cccc);
         let ahdr_f = crate::ahdr::create_ahdr(&keys_f, &fses_f, rmax, &mut rng2).expect("ahdr f");
@@ -157,26 +156,26 @@ mod tests {
         shdr_b.y = eph_pub_b;
 
         let seed_f = { let mut s=[0u8;16]; rng.fill_bytes(&mut s); s };
-        let mut p_f = crate::fs_payload::FsPayload::new_with_seed(rmax, &seed_f);
+        let mut p_f = crate::fs::FsPayload::new_with_seed(rmax, &seed_f);
         for i in 0..lf {
             let (sk_i, _pk_i, sv_i) = nodes_f[i];
             let _ = crate::sphinx::node_process_forward(&mut shdr_f, &mut sp_f, &sk_i, beta_len).expect("sphinx f");
             let fs_i = crate::fs::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
-            let _ = crate::fs_payload::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
+            let _ = crate::fs::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
         }
         let mut sp_b = crate::sphinx::dest_create_backward_sp(&p_f.bytes, sp_len);
         let seed_b = { let mut s=[0u8;16]; rng.fill_bytes(&mut s); s };
-        let mut p_b = crate::fs_payload::FsPayload::new_with_seed(rmax, &seed_b);
+        let mut p_b = crate::fs::FsPayload::new_with_seed(rmax, &seed_b);
         for j in 0..lb {
             let (sk_j, _pk_j, sv_j) = nodes_b[j];
             let _ = crate::sphinx::node_process_backward(&shdr_b, &mut sp_b, &sk_j).expect("sphinx b");
             let fs_j = crate::fs::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
-            let _ = crate::fs_payload::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
+            let _ = crate::fs::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
         }
         let pf_bytes = crate::sphinx::source_unwrap_backward(&keys_b, &sp_b);
-        let pf_recv = crate::fs_payload::FsPayload { bytes: pf_bytes, rmax };
-        let _fses_f = crate::fs_payload::retrieve_fses(&keys_f, &seed_f, &pf_recv).expect("ret fs f (r>l)");
-        let _fses_b = crate::fs_payload::retrieve_fses(&keys_b, &seed_b, &p_b).expect("ret fs b (r>l)");
+        let pf_recv = crate::fs::FsPayload { bytes: pf_bytes, rmax };
+        let _fses_f = crate::fs::retrieve_fses(&keys_f, &seed_f, &pf_recv).expect("ret fs f (r>l)");
+        let _fses_b = crate::fs::retrieve_fses(&keys_b, &seed_b, &p_b).expect("ret fs b (r>l)");
     }
 
     #[test]
@@ -205,27 +204,27 @@ mod tests {
         let pubkeys_f: alloc::vec::Vec<[u8;32]> = nodes_f.iter().map(|n| n.1).collect();
         let (mut shdr_f, mut sp_f, keys_f, _eph_pub_f) = crate::sphinx::source_create_forward(&x_s, &pubkeys_f, beta_len, sp_len);
         let seed_f = { let mut s=[0u8;16]; rng.fill_bytes(&mut s); s };
-        let mut p_f = crate::fs_payload::FsPayload::new_with_seed(rmax, &seed_f);
+        let mut p_f = crate::fs::FsPayload::new_with_seed(rmax, &seed_f);
         for i in 0..lf {
             let (sk_i, _pk_i, sv_i) = nodes_f[i];
             let _ = crate::sphinx::node_process_forward(&mut shdr_f, &mut sp_f, &sk_i, beta_len).expect("sphinx f");
             let fs_i = crate::fs::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp).expect("fs f");
-            let _ = crate::fs_payload::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
+            let _ = crate::fs::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs f");
         }
         // Backward build
         let pubkeys_b: alloc::vec::Vec<[u8;32]> = nodes_b.iter().map(|n| n.1).collect();
         let (mut shdr_b, _sp_dummy, keys_b, eph_pub_b) = crate::sphinx::source_create_forward(&x_s, &pubkeys_b, beta_len, sp_len);
         shdr_b.y = eph_pub_b;
         let seed_b = { let mut s=[0u8;16]; rng.fill_bytes(&mut s); s };
-        let mut p_b = crate::fs_payload::FsPayload::new_with_seed(rmax, &seed_b);
+        let mut p_b = crate::fs::FsPayload::new_with_seed(rmax, &seed_b);
         for j in 0..lb {
             let (sk_j, _pk_j, sv_j) = nodes_b[j];
             let _ = crate::sphinx::node_process_backward(&shdr_b, &mut crate::sphinx::dest_create_backward_sp(&p_f.bytes, sp_len), &sk_j).expect("sphinx b");
             let fs_j = crate::fs::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp).expect("fs b");
-            let _ = crate::fs_payload::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
+            let _ = crate::fs::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs b");
         }
         // Retrieve FS for backward path
-        let fses_b = crate::fs_payload::retrieve_fses(&keys_b, &seed_b, &p_b).expect("ret fs b");
+        let fses_b = crate::fs::retrieve_fses(&keys_b, &seed_b, &p_b).expect("ret fs b");
         // Build backward AHDR with reversed order (first hop from destination is last in keys_b)
         let mut rng2 = XorShift64(0x7777_8888_9999_aaaa);
         let mut keys_b_rev = keys_b.clone(); keys_b_rev.reverse();

@@ -2,7 +2,7 @@
 // plus FS payload construction and AHDR/onion data, from setup to completion.
 fn main() {
     use hornet::{
-        ahdr, fs, fs_payload, onion,
+        ahdr, fs, onion,
         sphinx, sphinx::strict,
         types::{Exp, RoutingSegment, Sv, C_BLOCK},
     };
@@ -81,7 +81,7 @@ fn main() {
     // Forward path simulation: each hop processes strict header, peels one SPf layer,
     // and we create its FS and insert into forward FS payload P_f
     let seed_f = { let mut s = [0u8; 16]; rng.fill_bytes(&mut s); s };
-    let mut p_f = fs_payload::FsPayload::new_with_seed(rmax, &seed_f);
+    let mut p_f = fs::FsPayload::new_with_seed(rmax, &seed_f);
     let mut fses_f_vec = Vec::new();
     for i in 0..lf {
         let (sk_i, _pk_i, sv_i) = nodes_f[i];
@@ -92,7 +92,7 @@ fn main() {
         for (b, m) in sp_f.iter_mut().zip(mask.iter()) { *b ^= *m; }
         // FS creation and insert into payload
         let fs_i = fs::fs_create(&sv_i, &keys_f[i], &rs_f[i], exp_f).expect("fs forward");
-        fs_payload::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs forward");
+        fs::add_fs_into_payload(&keys_f[i], &fs_i, &mut p_f).expect("add fs forward");
         fses_f_vec.push(fs_i);
     }
     // After all forward hops, SPf should unwrap to all-zero
@@ -107,7 +107,7 @@ fn main() {
 
     // Backward path simulation: each hop validates header and adds one layer using Si
     let seed_b = { let mut s = [0u8; 16]; rng.fill_bytes(&mut s); s };
-    let mut p_b = fs_payload::FsPayload::new_with_seed(rmax, &seed_b);
+    let mut p_b = fs::FsPayload::new_with_seed(rmax, &seed_b);
     let mut fses_b_vec = Vec::new();
     for j in 0..lb {
         let (sk_j, _pk_j, sv_j) = nodes_b[j];
@@ -118,7 +118,7 @@ fn main() {
         for (b, m) in sp_b.0.iter_mut().zip(mask.iter()) { *b ^= *m; }
         // Create FS for backward path and accumulate
         let fs_j = fs::fs_create(&sv_j, &keys_b[j], &rs_b[j], exp_b).expect("fs backward");
-        fs_payload::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs backward");
+        fs::add_fs_into_payload(&keys_b[j], &fs_j, &mut p_b).expect("add fs backward");
         fses_b_vec.push(fs_j);
     }
 
@@ -127,9 +127,9 @@ fn main() {
     assert_eq!(pf_bytes, p_f.bytes, "Recovered Pf must match at source");
 
     // Retrieve FSes from payloads (both directions) per Alg.2
-    let pf_recv = fs_payload::FsPayload { bytes: pf_bytes.clone(), rmax };
-    let fses_f = fs_payload::retrieve_fses(&keys_f, &seed_f, &pf_recv).expect("retrieve fs forward");
-    let fses_b = fs_payload::retrieve_fses(&keys_b, &seed_b, &p_b).expect("retrieve fs backward");
+    let pf_recv = fs::FsPayload { bytes: pf_bytes.clone(), rmax };
+    let fses_f = fs::retrieve_fses(&keys_f, &seed_f, &pf_recv).expect("retrieve fs forward");
+    let fses_b = fs::retrieve_fses(&keys_b, &seed_b, &p_b).expect("retrieve fs backward");
     assert!(fses_f.len() == fses_f_vec.len() && fses_f.iter().zip(fses_f_vec.iter()).all(|(a,b)| a.0 == b.0), "Forward FS list round-trips");
     assert!(fses_b.len() == fses_b_vec.len() && fses_b.iter().zip(fses_b_vec.iter()).all(|(a,b)| a.0 == b.0), "Backward FS list round-trips");
 
