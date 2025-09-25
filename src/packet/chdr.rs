@@ -5,11 +5,19 @@ use crate::types::{Chdr, Exp, Nonce, PacketType};
 pub fn setup_header(hops: u8, exp: Exp) -> Chdr {
     let mut specific = [0u8; 16];
     specific[0..4].copy_from_slice(&exp.0.to_be_bytes());
-    Chdr { typ: PacketType::Setup, hops, specific }
+    Chdr {
+        typ: PacketType::Setup,
+        hops,
+        specific,
+    }
 }
 
 pub fn data_header(hops: u8, nonce: Nonce) -> Chdr {
-    Chdr { typ: PacketType::Data, hops, specific: nonce.0 }
+    Chdr {
+        typ: PacketType::Data,
+        hops,
+        specific: nonce.0,
+    }
 }
 
 pub fn chdr_exp(chdr: &Chdr) -> Option<Exp> {
@@ -59,5 +67,6 @@ pub fn bucket_exp(now_secs: u32, bucket: ExpBucket) -> Exp {
     Exp(now_secs.saturating_add(bucket.secs()))
 }
 
-pub fn is_expired(now_secs: u32, exp: Exp) -> bool { now_secs >= exp.0 }
-
+pub fn is_expired(now_secs: u32, exp: Exp) -> bool {
+    now_secs >= exp.0
+}

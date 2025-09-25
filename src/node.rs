@@ -1,6 +1,6 @@
+use crate::packet::ahdr::proc_ahdr;
+use crate::packet::onion;
 use crate::types::{Ahdr, Chdr, Exp, Result, RoutingSegment, Sv};
-use crate::ahdr::proc_ahdr;
-use crate::onion;
 
 pub struct NodeCtx<'a> {
     pub sv: Sv,
@@ -9,7 +9,12 @@ pub struct NodeCtx<'a> {
     pub forward: &'a mut dyn FnMut(&RoutingSegment, &Chdr, &Ahdr, &mut [u8]) -> Result<()>,
 }
 
-pub fn process_data_forward(ctx: &mut NodeCtx, chdr: &mut Chdr, ahdr: &mut Ahdr, payload: &mut [u8]) -> Result<()> {
+pub fn process_data_forward(
+    ctx: &mut NodeCtx,
+    chdr: &mut Chdr,
+    ahdr: &mut Ahdr,
+    payload: &mut [u8],
+) -> Result<()> {
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
     // Remove one onion layer and mutate IV in CHDR.specific
@@ -20,7 +25,12 @@ pub fn process_data_forward(ctx: &mut NodeCtx, chdr: &mut Chdr, ahdr: &mut Ahdr,
     (ctx.forward)(&res.r, chdr, &res.ahdr_next, payload)
 }
 
-pub fn process_data_backward(ctx: &mut NodeCtx, chdr: &mut Chdr, ahdr: &mut Ahdr, payload: &mut [u8]) -> Result<()> {
+pub fn process_data_backward(
+    ctx: &mut NodeCtx,
+    chdr: &mut Chdr,
+    ahdr: &mut Ahdr,
+    payload: &mut [u8],
+) -> Result<()> {
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
     // Add one onion layer and mutate IV in CHDR.specific
@@ -32,6 +42,11 @@ pub fn process_data_backward(ctx: &mut NodeCtx, chdr: &mut Chdr, ahdr: &mut Ahdr
 
 // Optional helpers for setup path (per paper 4.3.4):
 // Given CHDR (with EXP) and per-hop symmetric key, create FS using EXP from CHDR.
-pub fn create_fs_from_setup(chdr: &Chdr, sv: &Sv, s: &crate::types::Si, r: &RoutingSegment) -> Result<crate::types::Fs> {
-    crate::fs::fs_create_from_chdr(sv, s, r, chdr)
+pub fn create_fs_from_setup(
+    chdr: &Chdr,
+    sv: &Sv,
+    s: &crate::types::Si,
+    r: &RoutingSegment,
+) -> Result<crate::types::Fs> {
+    crate::packet::create_from_chdr(sv, s, r, chdr)
 }

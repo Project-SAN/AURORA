@@ -1,6 +1,6 @@
-use crate::crypto::kdf::{hop_key, OpLabel};
+use crate::crypto::kdf::{OpLabel, hop_key};
 use aes::Aes128;
-use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 
 // PRP on 128-bit block (used for IV mutation and FS seal key-derivation)
 

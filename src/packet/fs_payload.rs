@@ -1,7 +1,10 @@
-use alloc::vec::Vec;
+use crate::crypto::{
+    kdf::{OpLabel, hop_key},
+    mac, prg,
+};
+use crate::types::{C_BLOCK, Error, Fs, Mac, Result, Si};
 use alloc::vec;
-use crate::crypto::{kdf::{hop_key, OpLabel}, mac, prg};
-use crate::types::{Error, Fs, Result, Si, Mac, C_BLOCK};
+use alloc::vec::Vec;
 
 // Placeholders for Algorithm 1 and 2 from the paper.
 
@@ -31,7 +34,9 @@ pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut FsPayload) -> Result<M
     // mask starting at offset k of an rc-long PRG stream
     let mut mask_full = vec![0u8; rc];
     prg::prg0(&s.0, &mut mask_full);
-    for (b, m) in ptmp.iter_mut().zip(mask_full[crate::types::K_MAC..].iter()) { *b ^= *m; }
+    for (b, m) in ptmp.iter_mut().zip(mask_full[crate::types::K_MAC..].iter()) {
+        *b ^= *m;
+    }
     // α = MAC(hMAC(s); Ptmp)
     let mut hkey = [0u8; 16];
     hop_key(&s.0, OpLabel::Mac, &mut hkey);
@@ -47,13 +52,15 @@ pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut FsPayload) -> Result<M
 pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> Result<Vec<Fs>> {
     let rc = payload.bytes.len();
     let l = keys.len();
-    if l == 0 { return Ok(Vec::new()); }
+    if l == 0 {
+        return Ok(Vec::new());
+    }
     // Pinit = PRG1(hPRG1(seed))
     let mut pinit = vec![0u8; rc];
     prg::prg1(init_seed, &mut pinit);
     // ψ construction per Alg.2 line 3
     let psi_len = l * C_BLOCK;
-    let mut psi = pinit[(payload.rmax - l) * C_BLOCK .. rc].to_vec(); // length l*c
+    let mut psi = pinit[(payload.rmax - l) * C_BLOCK..rc].to_vec(); // length l*c
     // XOR with terms for t = 0..l-2
     for t in 0..l.saturating_sub(1) {
         let start = (payload.rmax - l + 1 + t) * C_BLOCK;
@@ -64,7 +71,9 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> 
         let copy_len = core::cmp::min(slice.len(), psi_len.saturating_sub((t + 1) * C_BLOCK));
         // place slice at beginning, leaving (t+1)c zeros at the end
         m[0..copy_len].copy_from_slice(&slice[0..copy_len]);
-        for (a, b) in psi.iter_mut().zip(m.iter()) { *a ^= *b; }
+        for (a, b) in psi.iter_mut().zip(m.iter()) {
+            *a ^= *b;
+        }
     }
     // Pfull = P || ψ (full length l*c)
     let mut pfull = Vec::with_capacity(rc + psi_len);
@@ -77,16 +86,22 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> 
         let mut hkey = [0u8; 16];
         hop_key(&keys[i].0, OpLabel::Mac, &mut hkey);
         let alpha = &pfull[0..crate::types::K_MAC];
-        let rest = &pfull[crate::types::K_MAC .. rc];
+        let rest = &pfull[crate::types::K_MAC..rc];
         let expected = mac::mac_trunc16(&hkey, rest);
-        if expected.0 != *alpha { return Err(Error::InvalidMac); }
+        if expected.0 != *alpha {
+            return Err(Error::InvalidMac);
+        }
         // unmask: Pfull ^= PRG0(si) || 0^{(i+1)c}
         let mut mask_rc = vec![0u8; rc];
         prg::prg0(&keys[i].0, &mut mask_rc);
-        for j in 0..rc { pfull[j] ^= mask_rc[j]; }
+        for j in 0..rc {
+            pfull[j] ^= mask_rc[j];
+        }
         // extract FS_i
         let mut fs_bytes = [0u8; crate::types::FS_LEN];
-        fs_bytes.copy_from_slice(&pfull[crate::types::K_MAC .. crate::types::K_MAC + crate::types::FS_LEN]);
+        fs_bytes.copy_from_slice(
+            &pfull[crate::types::K_MAC..crate::types::K_MAC + crate::types::FS_LEN],
+        );
         fses_rev.push(Fs(fs_bytes));
         // shift window
         pfull.drain(0..C_BLOCK);

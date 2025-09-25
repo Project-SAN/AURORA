@@ -57,4 +57,3 @@ pub enum Error {
     Crypto,
     NotImplemented,
 }
-
