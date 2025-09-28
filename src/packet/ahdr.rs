@@ -227,3 +227,63 @@ pub fn create_nested_ahdr(
     bytes.extend_from_slice(&beta);
     Ok(Ahdr { bytes })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand_core::{CryptoRng, RngCore};
+
+    struct XorShift64(u64);
+    impl RngCore for XorShift64 {
+        fn next_u32(&mut self) -> u32 {
+            self.next_u64() as u32
+        }
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            self.try_fill_bytes(dest).unwrap()
+        }
+        fn try_fill_bytes(
+            &mut self,
+            dest: &mut [u8],
+        ) -> core::result::Result<(), rand_core::Error> {
+            let mut n = 0;
+            while n < dest.len() {
+                let v = self.next_u64().to_le_bytes();
+                let take = core::cmp::min(8, dest.len() - n);
+                dest[n..n + take].copy_from_slice(&v[..take]);
+                n += take;
+            }
+            Ok(())
+        }
+    }
+    impl CryptoRng for XorShift64 {}
+
+    #[test]
+    fn ahdr_expiry_check() {
+        let mut rng = XorShift64(0x0f0e_0d0c_0b0a_0908);
+        let rmax = 1usize;
+        let mut svb = [0u8; 16];
+        rng.fill_bytes(&mut svb);
+        let sv = Sv(svb);
+        let mut key = [0u8; 16];
+        rng.fill_bytes(&mut key);
+        let si = Si(key);
+        let rseg = RoutingSegment(alloc::vec![0u8; 8]);
+        let exp = Exp(1_234_567);
+        let fs = crate::packet::create(&sv, &si, &rseg, exp).expect("fs");
+        let mut rng2 = XorShift64(0x0102_0304_0506_0708);
+        let ahdr = create_ahdr(&[si], &[fs], rmax, &mut rng2).expect("ahdr");
+        let _pr = proc_ahdr(&sv, &ahdr, Exp(exp.0 - 1)).expect("proc ok before exp");
+        let err = proc_ahdr(&sv, &ahdr, Exp(exp.0))
+            .err()
+            .expect("must error at exp");
+        assert!(matches!(err, Error::Expired));
+    }
+}
