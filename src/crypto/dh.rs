@@ -30,7 +30,7 @@ impl KeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{rngs::SmallRng, SeedableRng};
+    use rand::{SeedableRng, rngs::SmallRng};
 
     struct TestRng(SmallRng);
 

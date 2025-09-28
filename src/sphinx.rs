@@ -1,5 +1,5 @@
-// 論文準拠のSphinx（Strict版）のみを提供します。
-use crate::crypto::kdf::{hop_key, OpLabel};
+// Provide only the Sphinx (strict) variant as per the paper.
+use crate::crypto::kdf::{OpLabel, hop_key};
 use crate::crypto::prg;
 use crate::types::Si;
 
@@ -253,67 +253,132 @@ mod tests {
 
     struct XorShift64(u64);
     impl RngCore for XorShift64 {
-        fn next_u32(&mut self) -> u32 { self.next_u64() as u32 }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0; x ^= x << 13; x ^= x >> 7; x ^= x << 17; self.0 = x; x
+        fn next_u32(&mut self) -> u32 {
+            self.next_u64() as u32
         }
-        fn fill_bytes(&mut self, dest: &mut [u8]) { self.try_fill_bytes(dest).unwrap() }
-        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> core::result::Result<(), rand_core::Error> {
-            let mut n = 0; while n < dest.len() { let v = self.next_u64().to_le_bytes();
-                let take = core::cmp::min(8, dest.len() - n); dest[n..n+take].copy_from_slice(&v[..take]); n += take; }
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            self.try_fill_bytes(dest).unwrap()
+        }
+        fn try_fill_bytes(
+            &mut self,
+            dest: &mut [u8],
+        ) -> core::result::Result<(), rand_core::Error> {
+            let mut n = 0;
+            while n < dest.len() {
+                let v = self.next_u64().to_le_bytes();
+                let take = core::cmp::min(8, dest.len() - n);
+                dest[n..n + take].copy_from_slice(&v[..take]);
+                n += take;
+            }
             Ok(())
         }
     }
     impl CryptoRng for XorShift64 {}
 
-    
-
-
     #[test]
     fn strict_sphinx_hop0_boundary() {
         let mut rng = XorShift64(0x1010_2020_3030_4040);
-        let r = 3usize; let beta_len = r * crate::types::C_BLOCK;
+        let r = 3usize;
+        let beta_len = r * crate::types::C_BLOCK;
         let mut nodes = vec![];
-        for _ in 0..r { let mut sk = [0u8; 32]; rng.fill_bytes(&mut sk); sk[0] &= 248; sk[31] &= 127; sk[31] |= 64; let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES); nodes.push((sk, pk)); }
-        let mut x_s = [0u8; 32]; rng.fill_bytes(&mut x_s); x_s[0] &= 248; x_s[31] &= 127; x_s[31] |= 64;
+        for _ in 0..r {
+            let mut sk = [0u8; 32];
+            rng.fill_bytes(&mut sk);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            nodes.push((sk, pk));
+        }
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
         let pubs: vec::Vec<[u8; 32]> = nodes.iter().map(|n| n.1).collect();
-        let (mut h, _sis, _eph_pub, snaps) = crate::sphinx::strict::source_create_forward_strict_trace(&x_s, &pubs, beta_len);
+        let (mut h, _sis, _eph_pub, snaps) =
+            crate::sphinx::strict::source_create_forward_strict_trace(&x_s, &pubs, beta_len);
         assert_eq!(h.beta, snaps[0]);
         let sk0 = curve25519_dalek::scalar::Scalar::from_bytes_mod_order(nodes[0].0);
         let alpha0 = curve25519_dalek::montgomery::MontgomeryPoint(h.alpha);
         let shared0 = (&sk0 * &alpha0).to_bytes();
-        let mut k_mu0 = [0u8; 16]; crate::crypto::kdf::hop_key(&shared0, crate::crypto::kdf::OpLabel::Mac, &mut k_mu0);
-        let mut masked_zero = snaps[0].clone(); for b in &mut masked_zero[0..crate::sphinx::MU_LEN] { *b = 0; }
+        let mut k_mu0 = [0u8; 16];
+        crate::crypto::kdf::hop_key(&shared0, crate::crypto::kdf::OpLabel::Mac, &mut k_mu0);
+        let mut masked_zero = snaps[0].clone();
+        for b in &mut masked_zero[0..crate::sphinx::MU_LEN] {
+            *b = 0;
+        }
         let mac_zero = crate::crypto::mac::mac_trunc16(&k_mu0, &masked_zero);
         let mac_full = crate::crypto::mac::mac_trunc16(&k_mu0, &snaps[0]);
         let mu_front = &snaps[0][0..crate::sphinx::MU_LEN];
         assert!(mu_front == &mac_zero.0 || mu_front == &mac_full.0);
-        crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[0].0).expect("hop0 accepts");
+        crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[0].0)
+            .expect("hop0 accepts");
     }
 
     #[test]
     fn strict_sphinx_header_chain_and_tamper() {
         let mut rng = XorShift64(0xabc1_def2_3456_7890);
-        let r = 3usize; let beta_len = r * crate::types::C_BLOCK;
+        let r = 3usize;
+        let beta_len = r * crate::types::C_BLOCK;
         let mut nodes = vec![];
-        for _ in 0..r { let mut sk = [0u8; 32]; rng.fill_bytes(&mut sk); sk[0] &= 248; sk[31] &= 127; sk[31] |= 64; let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES); nodes.push((sk, pk)); }
-        let mut x_s = [0u8; 32]; rng.fill_bytes(&mut x_s); x_s[0] &= 248; x_s[31] &= 127; x_s[31] |= 64;
+        for _ in 0..r {
+            let mut sk = [0u8; 32];
+            rng.fill_bytes(&mut sk);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            nodes.push((sk, pk));
+        }
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
         let pubs: vec::Vec<[u8; 32]> = nodes.iter().map(|n| n.1).collect();
-        let (mut h, _sis, _eph_pub) = crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs, beta_len);
-        crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[0].0).expect("hop0 accept");
-        let (mut h2, _sis2, _eph_pub2) = crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs, beta_len);
-        h2.beta[0] ^= 1; let res = crate::sphinx::strict::node_process_forward_strict(&mut h2, &nodes[0].0);
+        let (mut h, _sis, _eph_pub) =
+            crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs, beta_len);
+        crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[0].0)
+            .expect("hop0 accept");
+        let (mut h2, _sis2, _eph_pub2) =
+            crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs, beta_len);
+        h2.beta[0] ^= 1;
+        let res = crate::sphinx::strict::node_process_forward_strict(&mut h2, &nodes[0].0);
         assert!(res.is_err());
     }
 
     #[test]
     fn strict_sphinx_step_by_step_states() {
         let mut rng = XorShift64(0x5555_2222_9999_dddd);
-        let r = 3usize; let beta_len = r * crate::types::C_BLOCK;
-        let mut nodes = vec![]; for _ in 0..r { let mut sk = [0u8; 32]; rng.fill_bytes(&mut sk); sk[0] &= 248; sk[31] &= 127; sk[31] |= 64; let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES); nodes.push((sk, pk)); }
-        let mut x_s = [0u8; 32]; rng.fill_bytes(&mut x_s); x_s[0] &= 248; x_s[31] &= 127; x_s[31] |= 64;
+        let r = 3usize;
+        let beta_len = r * crate::types::C_BLOCK;
+        let mut nodes = vec![];
+        for _ in 0..r {
+            let mut sk = [0u8; 32];
+            rng.fill_bytes(&mut sk);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            nodes.push((sk, pk));
+        }
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
         let pubs: vec::Vec<[u8; 32]> = nodes.iter().map(|n| n.1).collect();
-        let (mut h, _sis, _eph_pub, _snaps) = crate::sphinx::strict::source_create_forward_strict_trace(&x_s, &pubs, beta_len);
+        let (mut h, _sis, _eph_pub, _snaps) =
+            crate::sphinx::strict::source_create_forward_strict_trace(&x_s, &pubs, beta_len);
         crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[0].0).expect("hop0");
         crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[1].0).expect("hop1");
         crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[2].0).expect("hop2");

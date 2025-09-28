@@ -34,7 +34,9 @@ fn pkt_type_from_u8(b: u8) -> core::result::Result<PacketType, Error> {
     }
 }
 
-fn be_u32(x: u32) -> [u8; 4] { x.to_be_bytes() }
+fn be_u32(x: u32) -> [u8; 4] {
+    x.to_be_bytes()
+}
 fn read_be_u32(b: &[u8]) -> u32 {
     let mut tmp = [0u8; 4];
     tmp.copy_from_slice(b);
@@ -58,8 +60,12 @@ pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
 }
 
 pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
-    if buf.len() < FIXED_HDR_LEN { return Err(Error::Length); }
-    if buf[0] != WIRE_VERSION { return Err(Error::Length); }
+    if buf.len() < FIXED_HDR_LEN {
+        return Err(Error::Length);
+    }
+    if buf[0] != WIRE_VERSION {
+        return Err(Error::Length);
+    }
     let typ = pkt_type_from_u8(buf[1])?;
     let hops = buf[2];
     let _reserved = buf[3];
@@ -68,11 +74,19 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
     let ah_len = read_be_u32(&buf[20..24]) as usize;
     let pl_len = read_be_u32(&buf[24..28]) as usize;
     let need = FIXED_HDR_LEN + ah_len + pl_len;
-    if buf.len() < need { return Err(Error::Length); }
+    if buf.len() < need {
+        return Err(Error::Length);
+    }
     let ah_bytes = &buf[FIXED_HDR_LEN..FIXED_HDR_LEN + ah_len];
     let pl_bytes = &buf[FIXED_HDR_LEN + ah_len..need];
-    let chdr = Chdr { typ, hops, specific };
-    let ahdr = Ahdr { bytes: Vec::from(ah_bytes) };
+    let chdr = Chdr {
+        typ,
+        hops,
+        specific,
+    };
+    let ahdr = Ahdr {
+        bytes: Vec::from(ah_bytes),
+    };
     let payload = Vec::from(pl_bytes);
     Ok((chdr, ahdr, payload))
 }
@@ -80,12 +94,18 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Nonce};
+    use crate::types::Nonce;
 
     #[test]
     fn roundtrip_data_packet() {
-        let ch = Chdr { typ: PacketType::Data, hops: 3, specific: Nonce([1u8;16]).0 };
-        let ah = Ahdr { bytes: alloc::vec![0xAA; 96] };
+        let ch = Chdr {
+            typ: PacketType::Data,
+            hops: 3,
+            specific: Nonce([1u8; 16]).0,
+        };
+        let ah = Ahdr {
+            bytes: alloc::vec![0xAA; 96],
+        };
         let payload = alloc::vec![0x55; 80];
         let encoded = encode(&ch, &ah, &payload);
         let (ch2, ah2, pl2) = decode(&encoded).expect("decode");
@@ -102,10 +122,14 @@ mod tests {
         assert!(decode(&buf).is_err());
         buf.resize(FIXED_HDR_LEN, 0);
         // set version to 2 -> error
-        buf[0] = 2; buf[1] = 0x02; // type data
+        buf[0] = 2;
+        buf[1] = 0x02; // type data
         assert!(decode(&buf).is_err());
         // minimal correct header but inconsistent lengths
-        buf[0] = WIRE_VERSION; buf[1] = 0x02; buf[2] = 1; buf[3] = 0;
+        buf[0] = WIRE_VERSION;
+        buf[1] = 0x02;
+        buf[2] = 1;
+        buf[3] = 0;
         // specific already zeros
         buf[20..24].copy_from_slice(&1u32.to_be_bytes());
         buf[24..28].copy_from_slice(&1u32.to_be_bytes());
@@ -113,4 +137,3 @@ mod tests {
         assert!(decode(&buf).is_err());
     }
 }
-
