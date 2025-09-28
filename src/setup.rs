@@ -4,7 +4,6 @@ use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv, C_BLOCK};
 use rand_core::RngCore;
 
 // Strict Sphinx-based setup packet carrying FS payload per HORNET setup.
-#[cfg(feature = "strict_sphinx")]
 pub struct SetupPacketStrict {
     pub chdr: Chdr,
     pub shdr: sphinx::strict::HeaderStrict,
@@ -12,7 +11,6 @@ pub struct SetupPacketStrict {
     pub rmax: usize,
 }
 
-#[cfg(feature = "strict_sphinx")]
 pub struct SourceSetupState {
     pub packet: SetupPacketStrict,
     pub keys_f: alloc::vec::Vec<Si>,
@@ -21,7 +19,6 @@ pub struct SourceSetupState {
 }
 
 // Source initializes the setup packet (strict Sphinx): builds header and randomized FS payload.
-#[cfg(feature = "strict_sphinx")]
 pub fn source_init_strict(
     x_s: &[u8; 32],
     node_pubs: &[[u8; 32]],
@@ -41,7 +38,6 @@ pub fn source_init_strict(
 }
 
 // A hop processes setup: verifies/advances Sphinx strict header, creates FS from CHDR, and inserts into payload.
-#[cfg(feature = "strict_sphinx")]
 pub fn node_process_strict(
     pkt: &mut SetupPacketStrict,
     node_secret: &[u8; 32],
@@ -70,7 +66,6 @@ mod tests {
     }
     impl CryptoRng for XorShift64 {}
 
-    #[cfg(feature = "strict_sphinx")]
     #[test]
     fn setup_strict_end_to_end_fs_collection() {
         use crate::types::{C_BLOCK, Exp, RoutingSegment, Sv, Fs};
@@ -100,7 +95,6 @@ mod tests {
         let _ = beta_len; // silence unused warnings in some configurations
     }
 
-    #[cfg(feature = "strict_sphinx")]
     #[test]
     fn backward_setup_finish_first_data_carries_ahdrb() {
         use crate::types::{C_BLOCK, Exp, RoutingSegment, Sv, Fs, Ahdr, Nonce};

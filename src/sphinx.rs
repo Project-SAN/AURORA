@@ -8,7 +8,6 @@ pub const MU_LEN: usize = 16; // truncated MAC size
 
 // Strict Sphinx-style header (alpha/beta/mu) behind a feature flag. This models
 // per-hop verifiable header processing with onionized beta and chained mu.
-#[cfg(feature = "strict_sphinx")]
 pub mod strict {
     use super::*;
     use crate::crypto::mac;
@@ -271,7 +270,6 @@ mod tests {
     
 
 
-    #[cfg(feature = "strict_sphinx")]
     #[test]
     fn strict_sphinx_hop0_boundary() {
         let mut rng = XorShift64(0x1010_2020_3030_4040);
@@ -294,7 +292,6 @@ mod tests {
         crate::sphinx::strict::node_process_forward_strict(&mut h, &nodes[0].0).expect("hop0 accepts");
     }
 
-    #[cfg(feature = "strict_sphinx")]
     #[test]
     fn strict_sphinx_header_chain_and_tamper() {
         let mut rng = XorShift64(0xabc1_def2_3456_7890);
@@ -310,7 +307,6 @@ mod tests {
         assert!(res.is_err());
     }
 
-    #[cfg(feature = "strict_sphinx")]
     #[test]
     fn strict_sphinx_step_by_step_states() {
         let mut rng = XorShift64(0x5555_2222_9999_dddd);

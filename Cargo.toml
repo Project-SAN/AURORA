@@ -5,10 +5,7 @@ edition = "2024"
 
 [features]
 # Core is no_std by default. Enable `std` to unlock adapters/tests later.
-# Make strict (paper-compliant) Sphinx the default entry path.
-default = ["strict_sphinx"]
 std = []
-strict_sphinx = []
 
 [dependencies]
 # no_std-friendly cryptography building blocks
