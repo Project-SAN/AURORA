@@ -11,13 +11,14 @@ pub struct KeyPair {
 
 impl KeyPair {
     pub fn generate<R: RngCore + CryptoRng>(mut rng: R) -> Self {
-        let mut secret = [0u8; 32];
+        let mut secret: SecretKey = [0u8; 32];
         rng.fill_bytes(&mut secret);
         // Clamp for X25519
         secret[0] &= 248;
         secret[31] &= 127;
         secret[31] |= 64;
-        let public = x25519(secret, X25519_BASEPOINT_BYTES);
+
+        let public: PublicKey = x25519(secret, X25519_BASEPOINT_BYTES);
         Self { secret, public }
     }
 
@@ -31,7 +32,6 @@ mod tests {
     use super::*;
     use rand::{rngs::SmallRng, SeedableRng};
 
-    // Wrapper to make SmallRng compatible with our CryptoRng requirement (for testing only)
     struct TestRng(SmallRng);
 
     impl RngCore for TestRng {
@@ -52,7 +52,6 @@ mod tests {
         }
     }
 
-    // Mark as CryptoRng for testing purposes only
     impl CryptoRng for TestRng {}
 
     #[test]
@@ -60,12 +59,9 @@ mod tests {
         let mut rng = TestRng(SmallRng::seed_from_u64(42));
         let keypair = KeyPair::generate(&mut rng);
 
-        // Check that secret key is properly clamped
         assert_eq!(keypair.secret[0] & 7, 0);
         assert_eq!(keypair.secret[31] & 128, 0);
         assert_eq!(keypair.secret[31] & 64, 64);
-
-        // Check that public key is not all zeros
         assert_ne!(keypair.public, [0u8; 32]);
     }
 
@@ -79,10 +75,7 @@ mod tests {
         let shared1 = keypair.derive(&peer_keypair.public);
         let shared2 = peer_keypair.derive(&keypair.public);
 
-        // DH property: both sides should derive the same shared secret
         assert_eq!(shared1, shared2);
-
-        // Shared secret should not be all zeros
         assert_ne!(shared1, [0u8; 32]);
     }
 
@@ -98,7 +91,6 @@ mod tests {
         let shared1 = keypair.derive(&peer1.public);
         let shared2 = keypair.derive(&peer2.public);
 
-        // Different peers should result in different shared secrets
         assert_ne!(shared1, shared2);
     }
 
@@ -112,7 +104,6 @@ mod tests {
         let shared1 = keypair.derive(&peer.public);
         let shared2 = keypair.derive(&peer.public);
 
-        // Same inputs should produce same output
         assert_eq!(shared1, shared2);
     }
 }
