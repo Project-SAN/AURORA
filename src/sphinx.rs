@@ -248,7 +248,6 @@ pub mod strict {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
     use rand_core::{CryptoRng, RngCore};
 

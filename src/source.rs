@@ -1,5 +1,4 @@
 use crate::types::{Ahdr, Chdr, Error, Nonce, Result, Si};
-use rand_core::RngCore;
 
 // (removed) initialize_session: thin AHDR wrapper was unnecessary
 

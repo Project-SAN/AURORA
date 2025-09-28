@@ -5,8 +5,8 @@ use crate::types::{Ahdr, Chdr, Exp, Result, RoutingSegment, Sv};
 pub struct NodeCtx<'a> {
     pub sv: Sv,
     pub now: &'a dyn crate::time::TimeProvider,
-    // User supplies a forwarding function that knows how to send to next hop
-    pub forward: &'a mut dyn FnMut(&RoutingSegment, &Chdr, &Ahdr, &mut [u8]) -> Result<()>,
+    // Forwarding abstraction: implementor sends to next hop
+    pub forward: &'a mut dyn crate::forward::Forward,
 }
 
 pub fn process_data_forward(
@@ -22,7 +22,7 @@ pub fn process_data_forward(
     onion::remove_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
     // Forward to next hop using routing segment
-    (ctx.forward)(&res.r, chdr, &res.ahdr_next, payload)
+    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
 pub fn process_data_backward(
@@ -37,7 +37,7 @@ pub fn process_data_backward(
     let mut iv = chdr.specific;
     onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    (ctx.forward)(&res.r, chdr, &res.ahdr_next, payload)
+    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

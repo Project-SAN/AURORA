@@ -52,7 +52,6 @@ pub fn node_process_strict(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rand_core::{CryptoRng, RngCore};
 
     struct XorShift64(u64);
