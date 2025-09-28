@@ -7,7 +7,7 @@ pub mod node;
 pub mod packet;
 pub mod source;
 pub mod sphinx;
+pub mod wire;
 pub mod time;
 pub mod types;
 pub mod setup;
-
