@@ -147,7 +147,6 @@ mod tests {
         }
         let _pf_bytes = crate::sphinx::source_unwrap_backward(&keys_b, &sp_b);
         // Unwrap SPb to get Pf and retrieve FSes per Alg.2
-        // Unwrap SPb to get Pf and retrieve FSes per Alg.2
         let pf_bytes = crate::sphinx::source_unwrap_backward(&keys_b, &sp_b);
         let pf_recv = crate::packet::FsPayload {
             bytes: pf_bytes,

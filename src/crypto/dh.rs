@@ -1,12 +1,15 @@
 use rand_core::{CryptoRng, RngCore};
 use x25519_dalek::{X25519_BASEPOINT_BYTES, x25519};
 
-pub struct DhKeyPair {
-    pub secret: [u8; 32],
-    pub public: [u8; 32],
+pub type PublicKey = [u8; 32];
+pub type SecretKey = [u8; 32];
+
+pub struct KeyPair {
+    pub secret: SecretKey,
+    pub public: PublicKey,
 }
 
-impl DhKeyPair {
+impl KeyPair {
     pub fn generate<R: RngCore + CryptoRng>(mut rng: R) -> Self {
         let mut secret = [0u8; 32];
         rng.fill_bytes(&mut secret);
@@ -55,7 +58,7 @@ mod tests {
     #[test]
     fn test_keypair_generation() {
         let mut rng = TestRng(SmallRng::seed_from_u64(42));
-        let keypair = DhKeyPair::generate(&mut rng);
+        let keypair = KeyPair::generate(&mut rng);
 
         // Check that secret key is properly clamped
         assert_eq!(keypair.secret[0] & 7, 0);
@@ -70,8 +73,8 @@ mod tests {
     fn test_key_derivation() {
         let mut rng1 = TestRng(SmallRng::seed_from_u64(100));
         let mut rng2 = TestRng(SmallRng::seed_from_u64(200));
-        let keypair = DhKeyPair::generate(&mut rng1);
-        let peer_keypair = DhKeyPair::generate(&mut rng2);
+        let keypair = KeyPair::generate(&mut rng1);
+        let peer_keypair = KeyPair::generate(&mut rng2);
 
         let shared1 = keypair.derive(&peer_keypair.public);
         let shared2 = peer_keypair.derive(&keypair.public);
@@ -88,9 +91,9 @@ mod tests {
         let mut rng1 = TestRng(SmallRng::seed_from_u64(300));
         let mut rng2 = TestRng(SmallRng::seed_from_u64(400));
         let mut rng3 = TestRng(SmallRng::seed_from_u64(500));
-        let keypair = DhKeyPair::generate(&mut rng1);
-        let peer1 = DhKeyPair::generate(&mut rng2);
-        let peer2 = DhKeyPair::generate(&mut rng3);
+        let keypair = KeyPair::generate(&mut rng1);
+        let peer1 = KeyPair::generate(&mut rng2);
+        let peer2 = KeyPair::generate(&mut rng3);
 
         let shared1 = keypair.derive(&peer1.public);
         let shared2 = keypair.derive(&peer2.public);
@@ -103,8 +106,8 @@ mod tests {
     fn test_deterministic_derivation() {
         let mut rng1 = TestRng(SmallRng::seed_from_u64(600));
         let mut rng2 = TestRng(SmallRng::seed_from_u64(700));
-        let keypair = DhKeyPair::generate(&mut rng1);
-        let peer = DhKeyPair::generate(&mut rng2);
+        let keypair = KeyPair::generate(&mut rng1);
+        let peer = KeyPair::generate(&mut rng2);
 
         let shared1 = keypair.derive(&peer.public);
         let shared2 = keypair.derive(&peer.public);
