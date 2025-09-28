@@ -9,6 +9,7 @@ pub mod source;
 pub mod sphinx;
 pub mod time;
 pub mod types;
+pub mod setup;
 
 pub use time::*;
 pub use types::*;
@@ -556,5 +557,263 @@ mod tests {
             .err()
             .expect("must error at exp");
         assert!(matches!(err, Error::Expired));
+    }
+
+    #[test]
+    fn build_data_packet_forward_end_to_end() {
+        let mut rng = XorShift64(0xdead_beef_c0de_ca1f);
+        let lf = 3usize;
+        let rmax = lf;
+        let beta_len = rmax * C_BLOCK;
+        let sp_len = rmax * C_BLOCK;
+
+        fn gen_node(seed: u64) -> ([u8; 32], [u8; 32], Sv) {
+            let mut sk = [0u8; 32];
+            let mut tmp = [0u8; 32];
+            XorShift64(seed).try_fill_bytes(&mut tmp).unwrap();
+            sk.copy_from_slice(&tmp);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            let mut svb = [0u8; 16];
+            XorShift64(seed ^ 0x1122_3344_5566_7788)
+                .try_fill_bytes(&mut svb)
+                .unwrap();
+            (sk, pk, Sv(svb))
+        }
+
+        // Build forward path nodes and segments
+        let mut nodes_f = alloc::vec::Vec::new();
+        for i in 0..lf {
+            nodes_f.push(gen_node(0x5000 + i as u64));
+        }
+        let rs_f: alloc::vec::Vec<RoutingSegment> =
+            (0..lf).map(|i| RoutingSegment(alloc::vec![i as u8; 8])).collect();
+        let exp = Exp(4_200_000);
+
+        // Source ephemeral and keys for forward path
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
+        let pubkeys_f: alloc::vec::Vec<[u8; 32]> = nodes_f.iter().map(|n| n.1).collect();
+        let (_shdr_f, _sp_f, keys_f, _eph_pub_f) =
+            crate::sphinx::source_create_forward(&x_s, &pubkeys_f, beta_len, sp_len);
+
+        // Create FSes and AHDR for forward
+        let fses_f: alloc::vec::Vec<Fs> = (0..lf)
+            .map(|i| crate::packet::create(&nodes_f[i].2, &keys_f[i], &rs_f[i], exp).unwrap())
+            .collect();
+        let mut rng2 = XorShift64(0x0bad_cafe_dead_beef);
+        let ahdr_f = crate::packet::ahdr::create_ahdr(&keys_f, &fses_f, rmax, &mut rng2).unwrap();
+
+        // Build CHDR and plaintext payload
+        let mut chdr = crate::packet::chdr::data_header(lf as u8, Nonce([0u8; 16]));
+        let mut iv0 = Nonce([0u8; 16]);
+        rng.fill_bytes(&mut iv0.0);
+        let mut payload = alloc::vec![0u8; 80];
+        for i in 0..payload.len() {
+            payload[i] = (0xa0 ^ (i as u8)).wrapping_add(7);
+        }
+        let orig = payload.clone();
+
+        // Build data packet: apply onion layers and set CHDR nonce to final IV
+        crate::source::build_data_packet(&mut chdr, &ahdr_f, &keys_f, &mut iv0, &mut payload)
+            .expect("build data packet");
+
+        // Forward path processing at each hop: AHDR processing + remove one layer
+        let mut ah = ahdr_f;
+        let mut iv = chdr.specific;
+        for i in 0..lf {
+            let pr = crate::packet::ahdr::proc_ahdr(&nodes_f[i].2, &ah, Exp(0)).expect("proc");
+            crate::packet::onion::remove_layer(&pr.s, &mut iv, &mut payload).expect("rem");
+            ah = pr.ahdr_next;
+        }
+        assert_eq!(payload, orig);
+    }
+
+    #[test]
+    fn setup_strict_end_to_end_fs_collection() {
+        // Simulate strict setup: source builds setup packet; each hop processes it, creates FS,
+        // and inserts into payload. Finally, source retrieves FSes from the resulting payload.
+        let mut rng = XorShift64(0x1111_aaaa_2222_bbbb);
+        let lf = 3usize;
+        let rmax = lf;
+        let beta_len = rmax * C_BLOCK;
+        let _sp_len = rmax * C_BLOCK; // not used directly in strict setup
+
+        // Node materials (sk, pk, sv) and routing segments
+        fn gen_node(seed: u64) -> ([u8; 32], [u8; 32], Sv) {
+            let mut sk = [0u8; 32];
+            let mut tmp = [0u8; 32];
+            XorShift64(seed).try_fill_bytes(&mut tmp).unwrap();
+            sk.copy_from_slice(&tmp);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            let mut svb = [0u8; 16];
+            XorShift64(seed ^ 0x9e37_79b9).try_fill_bytes(&mut svb).unwrap();
+            (sk, pk, Sv(svb))
+        }
+        let mut nodes = alloc::vec::Vec::new();
+        for i in 0..lf {
+            nodes.push(gen_node(0x7000 + i as u64));
+        }
+        let pubs: alloc::vec::Vec<[u8; 32]> = nodes.iter().map(|n| n.1).collect();
+        let rs: alloc::vec::Vec<RoutingSegment> =
+            (0..lf).map(|i| RoutingSegment(alloc::vec![i as u8; 8])).collect();
+        let exp = Exp(5_500_000);
+
+        // Source ephemeral secret
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
+
+        // Initialize setup packet at source
+        let mut st = crate::setup::source_init_strict(&x_s, &pubs, rmax, exp, &mut rng);
+        // Process at each hop; collect the FS list created by nodes for later comparison
+        let mut fses_created: alloc::vec::Vec<Fs> = alloc::vec::Vec::new();
+        for i in 0..lf {
+            // node i processes header -> si, and inserts FS(si,EXP,RS)
+            let si_i = crate::setup::node_process_strict(
+                &mut st.packet,
+                &nodes[i].0,
+                &nodes[i].2,
+                &rs[i],
+            )
+            .expect("setup hop");
+            // Build the same FS locally to compare later
+            let fs_i = crate::packet::create_from_chdr(&nodes[i].2, &si_i, &rs[i], &st.packet.chdr)
+                .expect("fs local");
+            fses_created.push(fs_i);
+        }
+
+        // At source, retrieve FSes from payload using keys_f and seed
+        let pf_recv = crate::packet::FsPayload { bytes: st.packet.payload.bytes.clone(), rmax };
+        let fses = crate::packet::retrieve_fses(&st.keys_f, &st.seed, &pf_recv).expect("retrieve fses");
+        assert_eq!(fses.len(), fses_created.len());
+        for (a, b) in fses.iter().zip(fses_created.iter()) {
+            assert_eq!(a.0, b.0);
+        }
+    }
+
+    #[test]
+    fn backward_setup_finish_first_data_carries_ahdrb() {
+        // End-to-end: perform strict forward setup to collect FS_f. Destination prepares AHDRb,
+        // embeds it into the first data payload, sends it forward; source extracts AHDRb and
+        // then uses it to process a backward data message successfully.
+        let mut rng = XorShift64(0x2222_bbbb_3333_cccc);
+        let lf = 3usize;
+        let lb = 3usize;
+        let rmax = core::cmp::max(lf, lb);
+        let beta_len = rmax * C_BLOCK;
+        let sp_len = rmax * C_BLOCK;
+
+        fn gen_node(seed: u64) -> ([u8; 32], [u8; 32], Sv) {
+            let mut sk = [0u8; 32];
+            let mut tmp = [0u8; 32];
+            XorShift64(seed).try_fill_bytes(&mut tmp).unwrap();
+            sk.copy_from_slice(&tmp);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            let mut svb = [0u8; 16];
+            XorShift64(seed ^ 0x1357_9bdf).try_fill_bytes(&mut svb).unwrap();
+            (sk, pk, Sv(svb))
+        }
+
+        // Forward nodes and routing
+        let mut nodes_f = alloc::vec::Vec::new();
+        for i in 0..lf { nodes_f.push(gen_node(0x8100 + i as u64)); }
+        let rs_f: alloc::vec::Vec<RoutingSegment> = (0..lf).map(|i| RoutingSegment(alloc::vec![i as u8; 8])).collect();
+        let exp_f = Exp(7_000_000);
+        let pubs_f: alloc::vec::Vec<[u8; 32]> = nodes_f.iter().map(|n| n.1).collect();
+
+        // Backward nodes and routing
+        let mut nodes_b = alloc::vec::Vec::new();
+        for i in 0..lb { nodes_b.push(gen_node(0x9100 + i as u64)); }
+        let rs_b: alloc::vec::Vec<RoutingSegment> = (0..lb).map(|i| RoutingSegment(alloc::vec![0x80 | (i as u8); 8])).collect();
+        let exp_b = Exp(7_100_000);
+        let pubs_b: alloc::vec::Vec<[u8; 32]> = nodes_b.iter().map(|n| n.1).collect();
+
+        // Source ephemeral secret
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248; x_s[31] &= 127; x_s[31] |= 64;
+
+        // Forward setup initialize
+        let mut st = crate::setup::source_init_strict(&x_s, &pubs_f, rmax, exp_f, &mut rng);
+        // Each forward hop processes setup and adds FS
+        for i in 0..lf {
+            let _ = crate::setup::node_process_strict(&mut st.packet, &nodes_f[i].0, &nodes_f[i].2, &rs_f[i]).expect("setup hop f");
+        }
+        // Destination forms SPb from Pf (not used directly below, but models paper step)
+        let _sp_b = crate::sphinx::dest_create_backward_sp(&st.packet.payload.bytes, sp_len);
+
+        // Destination prepares backward keys via strict path build (same x_s used here for test)
+        let (_sh_b, keys_b, _eph_pub_b) =
+            crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs_b, beta_len);
+        // Build AHDRb at destination in traversal order (dest -> ... -> source)
+        // Our nodes_b/keys_b are in source->dest order, so reverse to get traversal order.
+        let mut keys_b_rev = keys_b.clone();
+        keys_b_rev.reverse();
+        let mut svs_b_rev: alloc::vec::Vec<Sv> = nodes_b.iter().map(|n| n.2).collect();
+        svs_b_rev.reverse();
+        let mut rs_b_rev = rs_b.clone();
+        rs_b_rev.reverse();
+        let mut rng2 = XorShift64(0xaaaa_bbbb_cccc_dddd);
+        // Inline build of AHDRb: create FS list then create_ahdr
+        let fses_b: alloc::vec::Vec<Fs> = (0..lb)
+            .map(|i| crate::packet::create(&svs_b_rev[i], &keys_b_rev[i], &rs_b_rev[i], exp_b).unwrap())
+            .collect();
+        let ahdr_b = crate::packet::ahdr::create_ahdr(&keys_b_rev, &fses_b, rmax, &mut rng2).unwrap();
+
+        // First data packet: payload carries AHDRb
+        let mut chdr = crate::packet::chdr::data_header(lf as u8, Nonce([0u8; 16]));
+        let mut iv0 = Nonce([0u8; 16]); rng.fill_bytes(&mut iv0.0);
+        let mut payload = alloc::vec![0u8; sp_len.max(ahdr_b.bytes.len())];
+        // Embed AHDRb at start of payload
+        let need = rmax * C_BLOCK;
+        payload[0..need].copy_from_slice(&ahdr_b.bytes[0..need]);
+        crate::source::build_data_packet(&mut chdr, &Ahdr { bytes: alloc::vec::Vec::new() }, &st.keys_f, &mut iv0, &mut payload).expect("build first data");
+
+        // Send forward: nodes remove layers and advance AHDRf (we do not use AHDRf here)
+        let mut iv = chdr.specific;
+        for i in 0..lf {
+            // In a real flow we would also process AHDRf; here we just remove onion layer with Si
+            // derived from forward setup keys
+            crate::packet::onion::remove_layer(&st.keys_f[i], &mut iv, &mut payload).expect("remove");
+        }
+
+        // Source receives and extracts AHDRb from payload
+        // Extract AHDRb from payload at source
+        let got_ahdr_b = Ahdr { bytes: alloc::vec::Vec::from(&payload[0..need]) };
+        assert_eq!(got_ahdr_b.bytes, ahdr_b.bytes);
+
+        // Now validate backward data flow using the received AHDRb
+        let mut msg = alloc::vec![0u8; 64];
+        for i in 0..msg.len() { msg[i] = (0x55 ^ (i as u8)).wrapping_add(3); }
+        // Destination encrypts by adding layers from farthest to nearest hop (reverse order)
+        let mut ivb = [0u8; 16]; rng.fill_bytes(&mut ivb);
+        let mut data_b = msg.clone();
+        let mut ah_cur = got_ahdr_b;
+        for hop in (0..lb).rev() {
+            // Simulate traversal: at each hop, process AHDR to obtain s, then add a layer
+            let pr = crate::packet::ahdr::proc_ahdr(&nodes_b[hop].2, &ah_cur, Exp(0)).expect("proc b");
+            crate::packet::onion::add_layer(&pr.s, &mut ivb, &mut data_b).expect("add");
+            ah_cur = pr.ahdr_next;
+        }
+        // Source removes layers mirroring main.rs demo order
+        let mut ivb_src = ivb;
+        for i in (0..lb).rev() {
+            crate::packet::onion::remove_layer(&keys_b_rev[i], &mut ivb_src, &mut data_b).expect("un");
+        }
+        assert_eq!(data_b, msg);
     }
 }
