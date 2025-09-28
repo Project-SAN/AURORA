@@ -121,7 +121,7 @@ mod tests {
         let mut x_s = [0u8; 32]; rng.fill_bytes(&mut x_s); x_s[0] &= 248; x_s[31] &= 127; x_s[31] |= 64;
         let mut st = crate::setup::source_init_strict(&x_s, &pubs_f, rmax, exp_f, &mut rng);
         for i in 0..lf { let _ = crate::setup::node_process_strict(&mut st.packet, &nodes_f[i].0, &nodes_f[i].2, &rs_f[i]).expect("setup hop f"); }
-        let _sp_b = crate::sphinx::dest_create_backward_sp(&st.packet.payload.bytes, sp_len);
+        // SPb formation step omitted (non-strict helper removed)
         let (_sh_b, keys_b, _eph_pub_b) = crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs_b, beta_len);
         let mut keys_b_rev = keys_b.clone(); keys_b_rev.reverse();
         let mut svs_b_rev: alloc::vec::Vec<Sv> = nodes_b.iter().map(|n| n.2).collect(); svs_b_rev.reverse();
