@@ -342,11 +342,18 @@ pub mod strict {
         Ok((block, state, sis, eph))
     }
 
-    pub fn prepare_reply_message(rb: &ReplyBlock, message: &[u8]) -> ForwardMessage {
+    pub fn prepare_reply_message(
+        rb: &ReplyBlock,
+        state: &ReplyState,
+        message: &[u8],
+    ) -> ForwardMessage {
         let mut body = Vec::with_capacity(KAPPA_BYTES + message.len());
         body.extend_from_slice(&ZERO_KAPPA);
         body.extend_from_slice(message);
         let mut enc = body.clone();
+        for key in state.pi_keys.iter().rev() {
+            prp::lioness_encrypt(key, &mut enc);
+        }
         prp::lioness_encrypt(&rb.k_tilde, &mut enc);
         ForwardMessage {
             header: rb.header.clone(),
@@ -359,6 +366,9 @@ pub mod strict {
         mut body: Vec<u8>,
     ) -> core::result::Result<Vec<u8>, Error> {
         prp::lioness_decrypt(&state.k_tilde, &mut body);
+        for key in state.pi_keys.iter() {
+            prp::lioness_decrypt(key, &mut body);
+        }
         if body.len() < KAPPA_BYTES {
             return Err(Error::Length);
         }
@@ -484,7 +494,40 @@ mod tests {
         let message = b"reply payload";
         let (block, state, _sis, _eph) =
             strict::create_reply_block(&x_s, &pubs, hops, dest, &mut rng).expect("reply block");
-        let reply = strict::prepare_reply_message(&block, message);
+        let reply = strict::prepare_reply_message(&block, &state, message);
+        let recovered = strict::decrypt_reply(&state, reply.body.clone()).expect("decrypt");
+        assert_eq!(recovered.as_slice(), message);
+    }
+
+    #[test]
+    fn surb_end_to_end_roundtrip() {
+        let mut rng = XorShift64(0xfeed_beef_cafe_babe);
+        let hops = 3usize;
+        let nodes = gen_nodes(&mut rng, hops);
+        let pubs: vec::Vec<[u8; 32]> = nodes.iter().map(|n| n.1).collect();
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
+        let dest = b"surb-dest";
+        let message = b"SURB reply body";
+        let (block, state, sis, _eph) =
+            strict::create_reply_block(&x_s, &pubs, hops, dest, &mut rng).expect("reply block");
+        let reply = strict::prepare_reply_message(&block, &state, message);
+
+        let mut header = reply.header.clone();
+        let mut pi_keys_from_nodes = Vec::with_capacity(hops);
+        for (idx, node) in nodes.iter().enumerate() {
+            let si =
+                strict::node_process_forward_strict(&mut header, &node.0).expect("node process");
+            assert_eq!(si.0, sis[idx].0);
+            let pi = strict::derive_pi_key(&si);
+            pi_keys_from_nodes.push(pi);
+        }
+        assert_eq!(header.stage, hops);
+        assert_eq!(pi_keys_from_nodes, state.pi_keys);
+
         let recovered = strict::decrypt_reply(&state, reply.body.clone()).expect("decrypt");
         assert_eq!(recovered.as_slice(), message);
     }
