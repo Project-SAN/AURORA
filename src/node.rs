@@ -2,15 +2,15 @@ use alloc::collections::BTreeSet;
 
 use crate::packet::ahdr::proc_ahdr;
 use crate::packet::onion;
-use crate::sphinx::strict;
+use crate::sphinx::*;
 use crate::types::{Ahdr, Chdr, Exp, Result, RoutingSegment, Sv};
 
 pub trait ReplayFilter {
-    fn check_and_insert(&mut self, tag: [u8; crate::sphinx::TAU_TAG_BYTES]) -> bool;
+    fn check_and_insert(&mut self, tag: [u8; TAU_TAG_BYTES]) -> bool;
 }
 
 pub struct ReplayCache {
-    seen: BTreeSet<[u8; crate::sphinx::TAU_TAG_BYTES]>,
+    seen: BTreeSet<[u8; TAU_TAG_BYTES]>,
 }
 
 impl ReplayCache {
@@ -51,7 +51,7 @@ pub fn process_data_forward(
 ) -> Result<()> {
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
-    let tau = strict::derive_tau_tag(&res.s);
+    let tau = derive_tau_tag(&res.s);
     if !ctx.replay.check_and_insert(tau) {
         return Err(crate::types::Error::Replay);
     }
@@ -69,7 +69,7 @@ pub fn process_data_backward(
 ) -> Result<()> {
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
-    let tau = strict::derive_tau_tag(&res.s);
+    let tau = derive_tau_tag(&res.s);
     if !ctx.replay.check_and_insert(tau) {
         return Err(crate::types::Error::Replay);
     }

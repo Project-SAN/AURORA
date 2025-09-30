@@ -6,7 +6,7 @@ use rand_core::RngCore;
 // Strict Sphinx-based setup packet carrying FS payload per HORNET setup.
 pub struct SetupPacketStrict {
     pub chdr: Chdr,
-    pub shdr: sphinx::strict::HeaderStrict,
+    pub shdr: sphinx::HeaderStrict,
     pub payload: fs_payload::FsPayload,
     pub rmax: usize,
 }
@@ -27,7 +27,7 @@ pub fn source_init_strict(
     rng: &mut dyn RngCore,
 ) -> SourceSetupState {
     let (shdr, keys_f, eph_pub) =
-        sphinx::strict::source_create_forward_strict(x_s, node_pubs, rmax)
+        sphinx::source_create_forward_strict(x_s, node_pubs, rmax)
             .expect("sphinx header generation");
     // Initialize FS payload with random seed
     let mut seed = [0u8; 16];
@@ -55,7 +55,7 @@ pub fn node_process_strict(
     sv: &Sv,
     rseg: &RoutingSegment,
 ) -> Result<Si> {
-    let si = sphinx::strict::node_process_forward_strict(&mut pkt.shdr, node_secret)?;
+    let si = sphinx::node_process_forward_strict(&mut pkt.shdr, node_secret)?;
     let fs = fs_core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
     let _alpha = fs_payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
     Ok(si)
@@ -213,7 +213,7 @@ mod tests {
         }
         // SPb formation step omitted (non-strict helper removed)
         let (_sh_b, keys_b, _eph_pub_b) =
-            crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs_b, rmax)
+            crate::sphinx::source_create_forward_strict(&x_s, &pubs_b, rmax)
                 .expect("backward header");
         let mut keys_b_rev = keys_b.clone();
         keys_b_rev.reverse();
