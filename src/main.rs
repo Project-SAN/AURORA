@@ -1,465 +1,307 @@
-use rand::RngCore;
-use rand::SeedableRng;
-use std::env;
-use std::fs::File;
-use std::io::{Read, Write};
+use rand::rngs::SmallRng;
+use rand::{RngCore, SeedableRng};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-fn print_usage() {
-    let usage = r#"HORNET CLI
-
-Usage:
-  hornet help
-  hornet gen-x25519 [--seed <hex32>]
-  hornet route-encode <elem> [...]
-  hornet route-decode <hex>
-  hornet wire-encode <setup|data> <hops> <specific_hex> <ahdr_hex> <payload_hex>
-  hornet wire-decode <hex>
-  hornet demo-setup <hops>
-  hornet demo-forward <hops> <payload_len>
-
-Examples:
-  hornet gen-x25519
-  hornet route-encode nh4:192.0.2.1:9000 exit4:93.184.216.34:443:tls
-  hornet route-decode 0110c000020100230711015db8d82201bb
-  hornet wire-decode 01... (hex)
-  hornet demo-setup 3
-  hornet demo-forward 3 64
-"#;
-    eprintln!("{}", usage);
-}
-
-fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
-    let t = s.trim();
-    if t.len() % 2 != 0 {
-        return Err("HEX must have even length".into());
-    }
-    let mut out = Vec::with_capacity(t.len() / 2);
-    let bytes = t.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let h = (bytes[i] as char)
-            .to_digit(16)
-            .ok_or_else(|| "invalid HEX".to_string())?;
-        let l = (bytes[i + 1] as char)
-            .to_digit(16)
-            .ok_or_else(|| "invalid HEX".to_string())?;
-        out.push(((h << 4) | l) as u8);
-        i += 2;
-    }
-    Ok(out)
-}
-
-fn bytes_to_hex(b: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = Vec::with_capacity(b.len() * 2);
-    for &x in b {
-        out.push(HEX[(x >> 4) as usize]);
-        out.push(HEX[(x & 0x0f) as usize]);
-    }
-    String::from_utf8(out).unwrap()
-}
-
-fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
-    // Best-effort: read from /dev/urandom (may fail on non-Unix)
-    if let Ok(mut f) = File::open("/dev/urandom") {
-        let mut read = 0usize;
-        while read < buf.len() {
-            let n = f.read(&mut buf[read..])?;
-            if n == 0 {
-                break;
-            }
-            read += n;
-        }
-        if read == buf.len() {
-            return Ok(());
-        }
-    }
-    // Fallback: time-based weak seeding (demo-only)
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    let mut x = t.as_nanos() as u64;
-    for b in buf.iter_mut() {
-        // xorshift64*
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        let z = x.wrapping_mul(0x2545F4914F6CDD1D);
-        *b = (z & 0xff) as u8;
-    }
-    Ok(())
-}
-
-fn parse_ipv4(s: &str) -> Result<[u8; 4], String> {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 4 {
-        return Err("IPv4 required (e.g., 192.0.2.1)".into());
-    }
-    let mut ip = [0u8; 4];
-    for (i, p) in parts.iter().enumerate() {
-        let v: u8 = p
-            .parse::<u8>()
-            .map_err(|_| "invalid IPv4 octet".to_string())?;
-        ip[i] = v;
-    }
-    Ok(ip)
-}
-
-fn parse_ipv6(s: &str) -> Result<[u8; 16], String> {
-    // Parse via std and return 16-byte octets
-    let addr: std::net::Ipv6Addr = s.parse().map_err(|_| "invalid IPv6".to_string())?;
-    Ok(addr.octets())
-}
-
-fn cmd_gen_x25519(args: &[String]) -> Result<(), String> {
-    let mut sk = [0u8; 32];
-    let mut seed_opt: Option<[u8; 32]> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--seed" => {
-                if i + 1 >= args.len() {
-                    return Err("--seed requires 32-byte HEX".into());
-                }
-                let v = hex_to_bytes(&args[i + 1])?;
-                if v.len() != 32 {
-                    return Err("seed must be 32-byte HEX".into());
-                }
-                let mut s = [0u8; 32];
-                s.copy_from_slice(&v);
-                seed_opt = Some(s);
-                i += 2;
-                continue;
-            }
-            _ => return Err("unknown option".into()),
-        }
-    }
-    if let Some(s) = seed_opt {
-        sk = s;
-    } else {
-        os_random(&mut sk).map_err(|e| e.to_string())?;
-    }
-    // X25519 secret clamping
-    sk[0] &= 248;
-    sk[31] &= 127;
-    sk[31] |= 64;
-    let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
-    println!("sk={}\npk={}", bytes_to_hex(&sk), bytes_to_hex(&pk));
-    Ok(())
-}
-
-fn cmd_route_encode(args: &[String]) -> Result<(), String> {
-    if args.is_empty() {
-        return Err("provide at least one element".into());
-    }
-    let mut elems: Vec<hornet::routing::RouteElem> = Vec::new();
-    for a in args {
-        // Format: nh4:ip:port | nh6:ip:port | exit4:ip:port[:tls] | exit6:ip:port[:tls]
-        let parts: Vec<&str> = a.split(':').collect();
-        if parts.len() < 3 {
-            return Err(format!("invalid element: {}", a));
-        }
-        match parts[0] {
-            "nh4" => {
-                let ip = parse_ipv4(parts[1])?;
-                let port: u16 = parts[2].parse().map_err(|_| "invalid port".to_string())?;
-                elems.push(hornet::routing::RouteElem::NextHop {
-                    addr: hornet::routing::IpAddr::V4(ip),
-                    port,
-                });
-            }
-            "nh6" => {
-                let ip = parse_ipv6(parts[1])?;
-                let port: u16 = parts[2].parse().map_err(|_| "invalid port".to_string())?;
-                elems.push(hornet::routing::RouteElem::NextHop {
-                    addr: hornet::routing::IpAddr::V6(ip),
-                    port,
-                });
-            }
-            "exit4" => {
-                let ip = parse_ipv4(parts[1])?;
-                let port: u16 = parts[2].parse().map_err(|_| "invalid port".to_string())?;
-                let tls = parts
-                    .get(3)
-                    .map(|v| v.to_ascii_lowercase() == "tls")
-                    .unwrap_or(false);
-                elems.push(hornet::routing::RouteElem::ExitTcp {
-                    addr: hornet::routing::IpAddr::V4(ip),
-                    port,
-                    tls,
-                });
-            }
-            "exit6" => {
-                let ip = parse_ipv6(parts[1])?;
-                let port: u16 = parts[2].parse().map_err(|_| "invalid port".to_string())?;
-                let tls = parts
-                    .get(3)
-                    .map(|v| v.to_ascii_lowercase() == "tls")
-                    .unwrap_or(false);
-                elems.push(hornet::routing::RouteElem::ExitTcp {
-                    addr: hornet::routing::IpAddr::V6(ip),
-                    port,
-                    tls,
-                });
-            }
-            _ => return Err(format!("unknown kind: {}", parts[0])),
-        }
-    }
-    let seg = hornet::routing::segment_from_elems(&elems);
-    println!("{}", bytes_to_hex(&seg.0));
-    Ok(())
-}
-
-fn cmd_route_decode(args: &[String]) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err("provide exactly one HEX string".into());
-    }
-    let bytes = hex_to_bytes(&args[0])?;
-    let seg = hornet::types::RoutingSegment(bytes);
-    let elems =
-        hornet::routing::elems_from_segment(&seg).map_err(|e| format!("decode failed: {:?}", e))?;
-    for e in elems {
-        match e {
-            hornet::routing::RouteElem::NextHop {
-                addr: hornet::routing::IpAddr::V4(ip),
-                port,
-            } => {
-                println!(
-                    "nh4:{}:{}",
-                    format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
-                    port
-                );
-            }
-            hornet::routing::RouteElem::NextHop {
-                addr: hornet::routing::IpAddr::V6(ip),
-                port,
-            } => {
-                let addr = std::net::Ipv6Addr::from(ip);
-                println!("nh6:{}:{}", addr, port);
-            }
-            hornet::routing::RouteElem::ExitTcp {
-                addr: hornet::routing::IpAddr::V4(ip),
-                port,
-                tls,
-            } => {
-                println!(
-                    "exit4:{}:{}:{}",
-                    format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
-                    port,
-                    if tls { "tls" } else { "plain" }
-                );
-            }
-            hornet::routing::RouteElem::ExitTcp {
-                addr: hornet::routing::IpAddr::V6(ip),
-                port,
-                tls,
-            } => {
-                let addr = std::net::Ipv6Addr::from(ip);
-                println!(
-                    "exit6:{}:{}:{}",
-                    addr,
-                    port,
-                    if tls { "tls" } else { "plain" }
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn cmd_wire_encode(args: &[String]) -> Result<(), String> {
-    if args.len() != 5 {
-        return Err("<setup|data> <hops> <specific_hex> <ahdr_hex> <payload_hex>".into());
-    }
-    let typ_s = &args[0];
-    let hops: u8 = args[1]
-        .parse()
-        .map_err(|_| "hops must be 0..255".to_string())?;
-    let mut specific = [0u8; 16];
-    let sp = hex_to_bytes(&args[2])?;
-    if sp.len() != 16 {
-        return Err("specific must be 16-byte HEX".into());
-    }
-    specific.copy_from_slice(&sp);
-    let ah_bytes = hex_to_bytes(&args[3])?;
-    let payload = hex_to_bytes(&args[4])?;
-    let chdr = match typ_s.as_str() {
-        "setup" => hornet::types::Chdr {
-            typ: hornet::types::PacketType::Setup,
-            hops,
-            specific,
-        },
-        "data" => hornet::types::Chdr {
-            typ: hornet::types::PacketType::Data,
-            hops,
-            specific,
-        },
-        _ => return Err("kind must be 'setup' or 'data'".into()),
-    };
-    let ahdr = hornet::types::Ahdr { bytes: ah_bytes };
-    let bytes = hornet::wire::encode(&chdr, &ahdr, &payload);
-    println!("{}", bytes_to_hex(&bytes));
-    Ok(())
-}
-
-fn cmd_wire_decode(args: &[String]) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err("provide exactly one HEX string".into());
-    }
-    let buf = hex_to_bytes(&args[0])?;
-    let (ch, ah, pl) = hornet::wire::decode(&buf).map_err(|e| format!("decode failed: {:?}", e))?;
-    let typ = match ch.typ {
-        hornet::types::PacketType::Setup => "Setup",
-        hornet::types::PacketType::Data => "Data",
-    };
-    println!(
-        "type={} hops={} specific={} ahdr_len={} payload_len={}",
-        typ,
-        ch.hops,
-        bytes_to_hex(&ch.specific),
-        ah.bytes.len(),
-        pl.len()
-    );
-    Ok(())
-}
-
-fn cmd_demo_setup(args: &[String]) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err("specify <hops>".into());
-    }
-    let hops: usize = args[0].parse().map_err(|_| "invalid hops".to_string())?;
-    if hops == 0 {
-        return Err("hops must be >= 1".into());
-    }
-    let rmax = hops;
-    // Pseudo-generate node public keys
-    let mut pubs: Vec<[u8; 32]> = Vec::with_capacity(hops);
-    let mut rng_seed = [0u8; 32];
-    os_random(&mut rng_seed).map_err(|e| e.to_string())?;
-    let mut rng = rand::rngs::SmallRng::from_seed(rng_seed);
-    for _ in 0..hops {
-        let mut sk = [0u8; 32];
-        rng.fill_bytes(&mut sk);
-        sk[0] &= 248;
-        sk[31] &= 127;
-        sk[31] |= 64;
-        let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
-        pubs.push(pk);
-    }
-    let mut x_s = [0u8; 32];
-    os_random(&mut x_s).map_err(|e| e.to_string())?;
-    x_s[0] &= 248;
-    x_s[31] &= 127;
-    x_s[31] |= 64;
-    let exp = hornet::types::Exp(60); // demo: 60s
-    let mut rng2 = rand::rngs::SmallRng::from_seed(rng_seed);
-    let st = hornet::setup::source_init_strict(&x_s, &pubs, rmax, exp, &mut rng2);
-    let sp_len = st.packet.payload.bytes.len();
-    println!(
-        "ephemeral_pub={} rmax={} fs_payload_len={} (c*r)",
-        bytes_to_hex(&st.eph_pub),
-        rmax,
-        sp_len
-    );
-    println!(
-        "chdr: type=Setup hops={} exp={} specific={}",
-        st.packet.chdr.hops,
-        exp.0,
-        bytes_to_hex(&st.packet.chdr.specific)
-    );
-    println!("sphinx.beta_len={}", st.packet.shdr.beta.len());
-    Ok(())
-}
-
-fn cmd_demo_forward(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
-        return Err("specify <hops> <payload_len>".into());
-    }
-    let hops: usize = args[0].parse().map_err(|_| "invalid hops".to_string())?;
-    let plen: usize = args[1]
-        .parse()
-        .map_err(|_| "invalid payload_len".to_string())?;
-    if hops == 0 {
-        return Err("hops must be >= 1".into());
-    }
-    let mut pubs = Vec::with_capacity(hops);
-    let mut rng_seed = [0u8; 32];
-    os_random(&mut rng_seed).map_err(|e| e.to_string())?;
-    let mut rng = rand::rngs::SmallRng::from_seed(rng_seed);
-    for _ in 0..hops {
-        let mut sk = [0u8; 32];
-        rng.fill_bytes(&mut sk);
-        sk[0] &= 248;
-        sk[31] &= 127;
-        sk[31] |= 64;
-        let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
-        pubs.push(pk);
-    }
-    let mut x_s = [0u8; 32];
-    os_random(&mut x_s).map_err(|e| e.to_string())?;
-    x_s[0] &= 248;
-    x_s[31] &= 127;
-    x_s[31] |= 64;
-    let exp = hornet::types::Exp(60);
-    let rmax = hops;
-    let mut rng2 = rand::rngs::SmallRng::from_seed(rng_seed);
-    let st = hornet::setup::source_init_strict(&x_s, &pubs, rmax, exp, &mut rng2);
-    let mut chdr = hornet::packet::chdr::data_header(hops as u8, hornet::types::Nonce([0u8; 16]));
-    let ahdr = hornet::types::Ahdr {
-        bytes: vec![0u8; rmax * hornet::types::C_BLOCK],
-    }; // not used in this demo
-    let mut iv0 = hornet::types::Nonce([0u8; 16]);
-    os_random(&mut iv0.0).map_err(|e| e.to_string())?;
-    let mut payload = vec![0u8; plen];
-    for i in 0..plen {
-        payload[i] = (i as u8).wrapping_mul(3).wrapping_add(5);
-    }
-    let plain = payload.clone();
-    hornet::source::build_data_packet(&mut chdr, &ahdr, &st.keys_f, &mut iv0, &mut payload)
-        .map_err(|e| format!("build failed: {:?}", e))?;
-    println!(
-        "iv_on_wire={} cipher={}... (len={})",
-        bytes_to_hex(&chdr.specific),
-        bytes_to_hex(&payload[..std::cmp::min(32, payload.len())]),
-        payload.len()
-    );
-    // Decrypt at source: peel all layers
-    let mut iv = chdr.specific;
-    for i in 0..st.keys_f.len() {
-        hornet::packet::onion::remove_layer(&st.keys_f[i], &mut iv, &mut payload)
-            .map_err(|e| format!("onion failed: {:?}", e))?;
-    }
-    println!("recovered_match={}", (payload == plain) as u8);
-    Ok(())
-}
+type AnyError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() {
-        print_usage();
-        return;
-    }
-    let (cmd, rest) = (&args[0], &args[1..]);
-    let res = match cmd.as_str() {
-        "help" | "-h" | "--help" => {
-            print_usage();
-            Ok(())
-        }
-        "gen-x25519" => cmd_gen_x25519(rest),
-        "route-encode" => cmd_route_encode(rest),
-        "route-decode" => cmd_route_decode(rest),
-        "wire-encode" => cmd_wire_encode(rest),
-        "wire-decode" => cmd_wire_decode(rest),
-        "demo-setup" => cmd_demo_setup(rest),
-        "demo-forward" => cmd_demo_forward(rest),
-        _ => {
-            eprintln!("unknown command: {}", cmd);
-            print_usage();
-            Ok(())
-        }
-    };
-    if let Err(e) = res {
-        let _ = writeln!(std::io::stderr(), "error: {}", e);
+    if let Err(e) = run_demo() {
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+fn run_demo() -> Result<(), AnyError> {
+    println!("=== HORNET UDP デモを開始します ===");
+
+    // ノードのアドレス設定（ループバック上のUDPポートを使用）
+    let node1_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 41001);
+    let node2_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 41002);
+
+    // 各ノード用のUDPソケットを用意
+    let socket_node1 = UdpSocket::bind(node1_addr)?;
+    let socket_node2 = UdpSocket::bind(node2_addr)?;
+
+    // デモ用の疑似乱数生成器（シード固定で再現性を確保）
+    let mut rng = SmallRng::seed_from_u64(0x1234_5678_9ABC_DEF0);
+
+    // ノード長期鍵 (Sv) と共有鍵 (Si) を生成
+    let sv1 = random_sv(&mut rng);
+    let sv2 = random_sv(&mut rng);
+    let si1 = random_si(&mut rng);
+    let si2 = random_si(&mut rng);
+    let keys_f = vec![si1, si2];
+
+    // ルーティングセグメント（FSに埋め込まれる次ホップ）を構築
+    let rseg_node1 = encode_route_ipv4(node2_addr);
+    let rseg_node2 = encode_route_deliver();
+
+    // EXP（有効期限）を現在時刻 + 60 秒で設定
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_secs() as u32;
+    let exp = hornet::types::Exp(now_secs.saturating_add(60));
+
+    // 各ホップ用のFSを生成
+    let fs1 = hornet::packet::fs_core::create(&sv1, &keys_f[0], &rseg_node1, exp)
+        .map_err(|e| format!("fs create node1: {:?}", e))?;
+    let fs2 = hornet::packet::fs_core::create(&sv2, &keys_f[1], &rseg_node2, exp)
+        .map_err(|e| format!("fs create node2: {:?}", e))?;
+    let fses = vec![fs1, fs2];
+
+    // AHDR を生成
+    let mut ah_rng = SmallRng::seed_from_u64(0x9E37_79B9_7F4A_7C15);
+    let ahdr = hornet::packet::ahdr::create_ahdr(&keys_f, &fses, keys_f.len(), &mut ah_rng)
+        .map_err(|e| format!("create_ahdr: {:?}", e))?;
+
+    // ノードスレッドを起動
+    let (delivery_tx, delivery_rx) = mpsc::channel::<Vec<u8>>();
+    let handle_node1 = spawn_node("node1", socket_node1, sv1, None);
+    let handle_node2 = spawn_node("node2", socket_node2, sv2, Some(delivery_tx));
+
+    // スレッド起動待ち（簡易同期）
+    thread::sleep(Duration::from_millis(200));
+
+    // 送信ペイロードを準備
+    let mut payload = b"HORNET over UDP demo".to_vec();
+    let mut iv0_bytes = [0u8; 16];
+    rng.fill_bytes(&mut iv0_bytes);
+    let mut iv0 = hornet::types::Nonce(iv0_bytes);
+    let mut chdr = hornet::packet::chdr::data_header(keys_f.len() as u8, iv0);
+
+    // データパケットを構築（オニオン暗号付与）
+    hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut payload)
+        .map_err(|e| format!("build_data_packet: {:?}", e))?;
+    let wire_bytes = hornet::wire::encode(&chdr, &ahdr, &payload);
+
+    println!(
+        "[source] 初期IV={} ペイロード長={}",
+        hex(&chdr.specific),
+        payload.len()
+    );
+
+    // ソースから最初のノードへ送信
+    let source_socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    source_socket.send_to(&wire_bytes, node1_addr)?;
+    println!(
+        "[source] {} バイトを {} に送信",
+        wire_bytes.len(),
+        node1_addr
+    );
+
+    // 最終ノードでの復元結果を受信
+    let recovered = delivery_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "destination timeout".to_string())?;
+    println!(
+        "[dest] 受信ペイロード: {}",
+        String::from_utf8_lossy(&recovered)
+    );
+
+    handle_node1.join().expect("node1 thread panicked");
+    handle_node2.join().expect("node2 thread panicked");
+
+    println!("=== デモ完了 ===");
+    Ok(())
+}
+
+fn random_sv(rng: &mut SmallRng) -> hornet::types::Sv {
+    let mut buf = [0u8; 16];
+    rng.fill_bytes(&mut buf);
+    hornet::types::Sv(buf)
+}
+
+fn random_si(rng: &mut SmallRng) -> hornet::types::Si {
+    let mut buf = [0u8; 16];
+    rng.fill_bytes(&mut buf);
+    hornet::types::Si(buf)
+}
+
+fn encode_route_ipv4(addr: SocketAddrV4) -> hornet::types::RoutingSegment {
+    let mut bytes = Vec::with_capacity(12);
+    bytes.push(0x01); // IPv4
+    bytes.push(6); // length of following data
+    bytes.extend_from_slice(&addr.ip().octets());
+    bytes.extend_from_slice(&addr.port().to_be_bytes());
+    hornet::types::RoutingSegment(bytes)
+}
+
+fn encode_route_deliver() -> hornet::types::RoutingSegment {
+    hornet::types::RoutingSegment(vec![0xFF, 0])
+}
+
+fn spawn_node(
+    name: &'static str,
+    socket: UdpSocket,
+    sv: hornet::types::Sv,
+    delivery: Option<mpsc::Sender<Vec<u8>>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        if let Err(e) = run_node(name, socket, sv, delivery) {
+            eprintln!("[{}] エラー: {}", name, e);
+        }
+    })
+}
+
+fn run_node(
+    name: &'static str,
+    socket: UdpSocket,
+    sv: hornet::types::Sv,
+    delivery: Option<mpsc::Sender<Vec<u8>>>,
+) -> Result<(), AnyError> {
+    let mut buf = vec![0u8; 2048];
+    let (len, src) = socket.recv_from(&mut buf)?;
+    buf.truncate(len);
+    println!("[{}] {} バイト受信 from {}", name, len, src);
+
+    let (mut chdr, mut ahdr, mut payload) =
+        hornet::wire::decode(&buf).map_err(|e| format!("wire decode: {:?}", e))?;
+
+    let mut forward = UdpForward::new(name, socket, delivery);
+    let mut replay = hornet::node::ReplayCache::new();
+    let time = SystemTimeProvider;
+    let mut ctx = hornet::node::NodeCtx {
+        sv,
+        now: &time,
+        forward: &mut forward,
+        replay: &mut replay,
+    };
+
+    hornet::node::process_data_forward(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
+        .map_err(|e| format!("process_data_forward: {:?}", e))?;
+
+    println!("[{}] 処理完了", name);
+    Ok(())
+}
+
+struct UdpForward {
+    name: &'static str,
+    socket: UdpSocket,
+    delivery: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+impl UdpForward {
+    fn new(name: &'static str, socket: UdpSocket, delivery: Option<mpsc::Sender<Vec<u8>>>) -> Self {
+        Self {
+            name,
+            socket,
+            delivery,
+        }
+    }
+}
+
+impl hornet::forward::Forward for UdpForward {
+    fn send(
+        &mut self,
+        rseg: &hornet::types::RoutingSegment,
+        chdr: &hornet::types::Chdr,
+        ahdr: &hornet::types::Ahdr,
+        payload: &mut [u8],
+    ) -> hornet::types::Result<()> {
+        match decode_route(rseg)? {
+            RouteTarget::Udp(addr) => {
+                let bytes = hornet::wire::encode(chdr, ahdr, payload);
+                self.socket
+                    .send_to(&bytes, addr)
+                    .map(|_| ())
+                    .map_err(|_| hornet::types::Error::NotImplemented)?;
+                println!(
+                    "[{}] 次ホップ {} へ {} バイト転送",
+                    self.name,
+                    addr,
+                    bytes.len()
+                );
+                Ok(())
+            }
+            RouteTarget::Deliver(delivery) => {
+                match delivery {
+                    DeliveryTarget::AppText => {
+                        // strip trailing zero padding
+                        let trimmed = match payload.iter().rposition(|&b| b != 0) {
+                            Some(pos) => &payload[..=pos],
+                            None => &payload[..0],
+                        };
+                        println!(
+                            "[{}] 終端に到達。App payload: {}",
+                            self.name,
+                            String::from_utf8_lossy(trimmed)
+                        );
+                        if let Some(tx) = &self.delivery {
+                            let _ = tx.send(trimmed.to_vec());
+                        }
+                    }
+                    DeliveryTarget::AppBinary => {
+                        println!("[{}] 終端に到達。Binary len={}", self.name, payload.len());
+                        if let Some(tx) = &self.delivery {
+                            let _ = tx.send(payload.to_vec());
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+enum RouteTarget {
+    Udp(SocketAddr),
+    Deliver(DeliveryTarget),
+}
+
+enum DeliveryTarget {
+    AppText,
+    AppBinary,
+}
+
+fn decode_route(rseg: &hornet::types::RoutingSegment) -> hornet::types::Result<RouteTarget> {
+    if rseg.0.len() < 2 {
+        return Err(hornet::types::Error::Length);
+    }
+    let kind = rseg.0[0];
+    let len = rseg.0[1] as usize;
+    if 2 + len > rseg.0.len() {
+        return Err(hornet::types::Error::Length);
+    }
+    let data = &rseg.0[2..2 + len];
+    match kind {
+        0x01 => {
+            if len != 6 {
+                return Err(hornet::types::Error::Length);
+            }
+            let mut ip = [0u8; 4];
+            ip.copy_from_slice(&data[0..4]);
+            let port = u16::from_be_bytes([data[4], data[5]]);
+            Ok(RouteTarget::Udp(SocketAddr::from((
+                Ipv4Addr::from(ip),
+                port,
+            ))))
+        }
+        0xFF => Ok(RouteTarget::Deliver(DeliveryTarget::AppText)),
+        _ => Err(hornet::types::Error::NotImplemented),
+    }
+}
+
+struct SystemTimeProvider;
+
+impl hornet::time::TimeProvider for SystemTimeProvider {
+    fn now_coarse(&self) -> u32 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_secs() as u32
+    }
+}
+
+fn hex(buf: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(buf.len() * 2);
+    for &b in buf {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0F) as usize]);
+    }
+    String::from_utf8(out).unwrap()
 }

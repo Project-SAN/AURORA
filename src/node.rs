@@ -1,12 +1,47 @@
+use alloc::collections::BTreeSet;
+
+use crate::crypto::prp;
 use crate::packet::ahdr::proc_ahdr;
-use crate::packet::onion;
+use crate::routing::{self, RouteElem};
+use crate::sphinx::strict;
 use crate::types::{Ahdr, Chdr, Exp, Result, RoutingSegment, Sv};
+
+pub trait ReplayFilter {
+    fn check_and_insert(&mut self, tag: [u8; crate::sphinx::TAU_TAG_BYTES]) -> bool;
+}
+
+pub struct ReplayCache {
+    seen: BTreeSet<[u8; crate::sphinx::TAU_TAG_BYTES]>,
+}
+
+impl ReplayCache {
+    pub fn new() -> Self {
+        Self {
+            seen: BTreeSet::new(),
+        }
+    }
+}
+
+impl ReplayFilter for ReplayCache {
+    fn check_and_insert(&mut self, tag: [u8; crate::sphinx::TAU_TAG_BYTES]) -> bool {
+        self.seen.insert(tag)
+    }
+}
+
+pub struct NoReplay;
+
+impl ReplayFilter for NoReplay {
+    fn check_and_insert(&mut self, _tag: [u8; crate::sphinx::TAU_TAG_BYTES]) -> bool {
+        true
+    }
+}
 
 pub struct NodeCtx<'a> {
     pub sv: Sv,
     pub now: &'a dyn crate::time::TimeProvider,
     // Forwarding abstraction: implementor sends to next hop
     pub forward: &'a mut dyn crate::forward::Forward,
+    pub replay: &'a mut dyn ReplayFilter,
 }
 
 pub fn process_data_forward(
@@ -17,11 +52,29 @@ pub fn process_data_forward(
 ) -> Result<()> {
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
-    // Remove one onion layer and mutate IV in CHDR.specific
-    let mut iv = chdr.specific;
-    onion::remove_layer(&res.s, &mut iv, payload)?;
-    chdr.specific = iv;
-    // Forward to next hop using routing segment
+    let tau = strict::derive_tau_tag(&res.s);
+    if !ctx.replay.check_and_insert(tau) {
+        return Err(crate::types::Error::Replay);
+    }
+    if payload.len() < 16 {
+        return Err(crate::types::Error::Length);
+    }
+    let pi_key = strict::derive_pi_key(&res.s);
+    prp::lioness_decrypt(&pi_key, payload);
+    match decode_route(&res.r)? {
+        RouteElem::NextHop { .. } => {}
+        RouteElem::ExitTcp { .. } => {
+            if payload.len() >= crate::sphinx::KAPPA_BYTES {
+                let offset = crate::sphinx::KAPPA_BYTES;
+                payload.rotate_left(offset);
+                let len = payload.len();
+                let tail_start = len - offset;
+                for b in payload[tail_start..len].iter_mut() {
+                    *b = 0;
+                }
+            }
+        }
+    }
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
@@ -33,10 +86,29 @@ pub fn process_data_backward(
 ) -> Result<()> {
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
-    // Add one onion layer and mutate IV in CHDR.specific
-    let mut iv = chdr.specific;
-    onion::add_layer(&res.s, &mut iv, payload)?;
-    chdr.specific = iv;
+    let tau = strict::derive_tau_tag(&res.s);
+    if !ctx.replay.check_and_insert(tau) {
+        return Err(crate::types::Error::Replay);
+    }
+    if payload.len() < 16 {
+        return Err(crate::types::Error::Length);
+    }
+    let pi_key = strict::derive_pi_key(&res.s);
+    prp::lioness_decrypt(&pi_key, payload);
+    match decode_route(&res.r)? {
+        RouteElem::NextHop { .. } => {}
+        RouteElem::ExitTcp { .. } => {
+            if payload.len() >= crate::sphinx::KAPPA_BYTES {
+                let offset = crate::sphinx::KAPPA_BYTES;
+                payload.rotate_left(offset);
+                let len = payload.len();
+                let tail_start = len - offset;
+                for b in payload[tail_start..len].iter_mut() {
+                    *b = 0;
+                }
+            }
+        }
+    }
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
@@ -49,4 +121,9 @@ pub fn create_fs_from_setup(
     r: &RoutingSegment,
 ) -> Result<crate::types::Fs> {
     crate::packet::create_from_chdr(sv, s, r, chdr)
+}
+
+fn decode_route(rseg: &RoutingSegment) -> Result<RouteElem> {
+    let elems = routing::elems_from_segment(rseg)?;
+    elems.into_iter().next().ok_or(crate::types::Error::Length)
 }

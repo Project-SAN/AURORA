@@ -1,6 +1,6 @@
 use crate::packet::{fs_core, fs_payload};
 use crate::sphinx;
-use crate::types::{C_BLOCK, Chdr, Exp, Result, RoutingSegment, Si, Sv};
+use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
 
 // Strict Sphinx-based setup packet carrying FS payload per HORNET setup.
@@ -26,9 +26,9 @@ pub fn source_init_strict(
     exp: Exp,
     rng: &mut dyn RngCore,
 ) -> SourceSetupState {
-    let beta_len = rmax * C_BLOCK;
     let (shdr, keys_f, eph_pub) =
-        sphinx::strict::source_create_forward_strict(x_s, node_pubs, beta_len);
+        sphinx::strict::source_create_forward_strict(x_s, node_pubs, rmax)
+            .expect("sphinx header generation");
     // Initialize FS payload with random seed
     let mut seed = [0u8; 16];
     rng.fill_bytes(&mut seed);
@@ -104,7 +104,6 @@ mod tests {
         let lf = 3usize;
         let rmax = lf;
         let _sp_len = rmax * C_BLOCK;
-        let beta_len = rmax * C_BLOCK;
         fn gen_node(seed: u64) -> ([u8; 32], [u8; 32], Sv) {
             let mut sk = [0u8; 32];
             let mut tmp = [0u8; 32];
@@ -154,7 +153,6 @@ mod tests {
         for (a, b) in fses.iter().zip(fses_created.iter()) {
             assert_eq!(a.0, b.0);
         }
-        let _ = beta_len; // silence unused warnings in some configurations
     }
 
     #[test]
@@ -164,7 +162,6 @@ mod tests {
         let lf = 3usize;
         let lb = 3usize;
         let rmax = core::cmp::max(lf, lb);
-        let beta_len = rmax * C_BLOCK;
         let sp_len = rmax * C_BLOCK;
         fn gen_node(seed: u64) -> ([u8; 32], [u8; 32], Sv) {
             let mut sk = [0u8; 32];
@@ -216,7 +213,8 @@ mod tests {
         }
         // SPb formation step omitted (non-strict helper removed)
         let (_sh_b, keys_b, _eph_pub_b) =
-            crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs_b, beta_len);
+            crate::sphinx::strict::source_create_forward_strict(&x_s, &pubs_b, rmax)
+                .expect("backward header");
         let mut keys_b_rev = keys_b.clone();
         keys_b_rev.reverse();
         let mut svs_b_rev: alloc::vec::Vec<Sv> = nodes_b.iter().map(|n| n.2).collect();
