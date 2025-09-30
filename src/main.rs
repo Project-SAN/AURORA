@@ -218,8 +218,15 @@ impl hornet::forward::Forward for UdpForward {
                 Ok(())
             }
             RouteTarget::Deliver => {
-                let start = hornet::sphinx::KAPPA_BYTES.min(payload.len());
-                let trimmed = &payload[start..];
+                let trimmed = if payload.len() >= hornet::sphinx::KAPPA_BYTES
+                    && payload[..hornet::sphinx::KAPPA_BYTES]
+                        .iter()
+                        .all(|&b| b == 0)
+                {
+                    &payload[hornet::sphinx::KAPPA_BYTES..]
+                } else {
+                    payload
+                };
                 println!(
                     "[{}] 終端に到達。App payload: {}",
                     self.name,

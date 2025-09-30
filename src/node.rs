@@ -1,7 +1,7 @@
 use alloc::collections::BTreeSet;
 
-use crate::crypto::prp;
 use crate::packet::ahdr::proc_ahdr;
+use crate::packet::onion;
 use crate::sphinx::strict;
 use crate::types::{Ahdr, Chdr, Exp, Result, RoutingSegment, Sv};
 
@@ -55,11 +55,9 @@ pub fn process_data_forward(
     if !ctx.replay.check_and_insert(tau) {
         return Err(crate::types::Error::Replay);
     }
-    if payload.len() < 16 {
-        return Err(crate::types::Error::Length);
-    }
-    let pi_key = strict::derive_pi_key(&res.s);
-    prp::lioness_decrypt(&pi_key, payload);
+    let mut iv = chdr.specific;
+    onion::remove_layer(&res.s, &mut iv, payload)?;
+    chdr.specific = iv;
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
@@ -75,11 +73,9 @@ pub fn process_data_backward(
     if !ctx.replay.check_and_insert(tau) {
         return Err(crate::types::Error::Replay);
     }
-    if payload.len() < 16 {
-        return Err(crate::types::Error::Length);
-    }
-    let pi_key = strict::derive_pi_key(&res.s);
-    prp::lioness_decrypt(&pi_key, payload);
+    let mut iv = chdr.specific;
+    onion::add_layer(&res.s, &mut iv, payload)?;
+    chdr.specific = iv;
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
