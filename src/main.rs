@@ -15,97 +15,97 @@ fn main() {
 }
 
 fn run_demo() -> Result<(), AnyError> {
-    println!("=== HORNET UDP デモを開始します ===");
+    println!("=== HORNET UDP  ===");
 
-    // ノードのアドレス設定（ループバック上のUDPポートを使用）
+    // setting up two nodes for a 2-hop route
     let node1_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 41001);
     let node2_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 41002);
 
-    // 各ノード用のUDPソケットを用意
+    // prepare UDP sockets for each node
     let socket_node1 = UdpSocket::bind(node1_addr)?;
     let socket_node2 = UdpSocket::bind(node2_addr)?;
 
-    // デモ用の疑似乱数生成器（シード固定で再現性を確保）
+    // Note: In production, use a secure RNG like `rand::rngs::OsRng`.
     let mut rng = SmallRng::seed_from_u64(0x1234_5678_9ABC_DEF0);
 
-    // ノード長期鍵 (Sv) と共有鍵 (Si) を生成
+    // generate long-term node keys (Sv) and shared keys (Si)
     let sv1 = random_sv(&mut rng);
     let sv2 = random_sv(&mut rng);
     let si1 = random_si(&mut rng);
     let si2 = random_si(&mut rng);
     let keys_f = vec![si1, si2];
 
-    // ルーティングセグメント（FSに埋め込まれる次ホップ）を構築
+    // build routing segments for each hop
     let rseg_node1 = encode_route_ipv4(node2_addr);
     let rseg_node2 = encode_route_deliver();
 
-    // EXP（有効期限）を現在時刻 + 60 秒で設定
+    // setting EXP to current time + 60 seconds
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_secs() as u32;
     let exp = hornet::types::Exp(now_secs.saturating_add(60));
 
-    // 各ホップ用のFSを生成
+    // generate FS for each hop
     let fs1 = hornet::packet::fs_core::create(&sv1, &keys_f[0], &rseg_node1, exp)
         .map_err(|e| format!("fs create node1: {:?}", e))?;
     let fs2 = hornet::packet::fs_core::create(&sv2, &keys_f[1], &rseg_node2, exp)
         .map_err(|e| format!("fs create node2: {:?}", e))?;
     let fses = vec![fs1, fs2];
 
-    // AHDR を生成
+    // generate AHDR
     let mut ah_rng = SmallRng::seed_from_u64(0x9E37_79B9_7F4A_7C15);
     let ahdr = hornet::packet::ahdr::create_ahdr(&keys_f, &fses, keys_f.len(), &mut ah_rng)
         .map_err(|e| format!("create_ahdr: {:?}", e))?;
 
-    // ノードスレッドを起動
+    // start node threads
     let (delivery_tx, delivery_rx) = mpsc::channel::<Vec<u8>>();
     let handle_node1 = spawn_node("node1", socket_node1, sv1, None);
     let handle_node2 = spawn_node("node2", socket_node2, sv2, Some(delivery_tx));
 
-    // スレッド起動待ち（簡易同期）
+    // give nodes a moment to start up
     thread::sleep(Duration::from_millis(200));
 
-    // 送信ペイロードを準備
+    // prepare the sending payload
     let mut payload = b"HORNET over UDP demo".to_vec();
     let mut iv0_bytes = [0u8; 16];
     rng.fill_bytes(&mut iv0_bytes);
     let mut iv0 = hornet::types::Nonce(iv0_bytes);
     let mut chdr = hornet::packet::chdr::data_header(keys_f.len() as u8, iv0);
 
-    // データパケットを構築（オニオン暗号付与）
+    // build a data packet（adapt onion encryption）
     hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut payload)
         .map_err(|e| format!("build_data_packet: {:?}", e))?;
     let wire_bytes = hornet::wire::encode(&chdr, &ahdr, &payload);
 
     println!(
-        "[source] 初期IV={} ペイロード長={}",
+        "[source] Initial IV={} payload length={}",
         hex(&chdr.specific),
         payload.len()
     );
 
-    // ソースから最初のノードへ送信
+    // send to first node from source
     let source_socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     source_socket.send_to(&wire_bytes, node1_addr)?;
     println!(
-        "[source] {} バイトを {} に送信",
+        "[source] {} bytes sent to {}",
         wire_bytes.len(),
         node1_addr
     );
 
-    // 最終ノードでの復元結果を受信
+    // receive the reconstruction result at the final node
     let recovered = delivery_rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| "destination timeout".to_string())?;
     println!(
-        "[dest] 受信ペイロード: {}",
+        "[dest] Received payload: {}",
         String::from_utf8_lossy(&recovered)
     );
 
     handle_node1.join().expect("node1 thread panicked");
     handle_node2.join().expect("node2 thread panicked");
 
-    println!("=== デモ完了 ===");
+    println!("=== Demo complete ===");
     Ok(())
 }
 
@@ -142,7 +142,7 @@ fn spawn_node(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if let Err(e) = run_node(name, socket, sv, delivery) {
-            eprintln!("[{}] エラー: {}", name, e);
+            eprintln!("[{}] Error: {}", name, e);
         }
     })
 }
@@ -156,7 +156,7 @@ fn run_node(
     let mut buf = vec![0u8; 2048];
     let (len, src) = socket.recv_from(&mut buf)?;
     buf.truncate(len);
-    println!("[{}] {} バイト受信 from {}", name, len, src);
+    println!("[{}] {} bytes received from {}", name, len, src);
 
     let (mut chdr, mut ahdr, mut payload) =
         hornet::wire::decode(&buf).map_err(|e| format!("wire decode: {:?}", e))?;
@@ -174,7 +174,7 @@ fn run_node(
     hornet::node::process_data_forward(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
         .map_err(|e| format!("process_data_forward: {:?}", e))?;
 
-    println!("[{}] 処理完了", name);
+    println!("[{}] Processing complete", name);
     Ok(())
 }
 
@@ -210,7 +210,7 @@ impl hornet::forward::Forward for UdpForward {
                     .map(|_| ())
                     .map_err(|_| hornet::types::Error::NotImplemented)?;
                 println!(
-                    "[{}] 次ホップ {} へ {} バイト転送",
+                    "[{}] Next hop {}: {} bytes forwarded",
                     self.name,
                     addr,
                     bytes.len()
@@ -228,7 +228,7 @@ impl hornet::forward::Forward for UdpForward {
                     payload
                 };
                 println!(
-                    "[{}] 終端に到達。App payload: {}",
+                    "[{}] Reached final destination. App payload: {}",
                     self.name,
                     String::from_utf8_lossy(trimmed)
                 );
