@@ -20,7 +20,7 @@ use curve25519_dalek::{
 };
 
 #[derive(Clone)]
-pub struct HeaderStrict {
+pub struct Header {
     pub alpha: [u8; GROUP_LEN],
     pub beta: Vec<u8>,
     pub gamma: [u8; MU_LEN],
@@ -31,14 +31,14 @@ pub struct HeaderStrict {
 
 #[derive(Clone)]
 pub struct ForwardMessage {
-    pub header: HeaderStrict,
+    pub header: Header,
     pub body: Vec<u8>,
 }
 
 #[derive(Clone)]
 pub struct ReplyBlock {
     pub first_node_id: [u8; KAPPA_BYTES],
-    pub header: HeaderStrict,
+    pub header: Header,
     pub k_tilde: [u8; KAPPA_BYTES],
 }
 
@@ -104,7 +104,7 @@ fn create_header_internal(
     rmax: usize,
     dest_override: Option<&[u8]>,
     id_override: Option<&[u8]>,
-) -> core::result::Result<(HeaderStrict, Vec<Si>, [u8; 32]), Error> {
+) -> core::result::Result<(Header, Vec<Si>, [u8; 32]), Error> {
     let hops = node_pubs.len();
     if hops == 0 || hops > rmax {
         return Err(Error::Length);
@@ -204,7 +204,7 @@ fn create_header_internal(
         gammas[idx] = mac::mac_trunc16(&mu_key, &betas[idx]).0;
     }
 
-    let header = HeaderStrict {
+    let header = Header {
         alpha: alpha_list[0],
         beta: betas[0].clone(),
         gamma: gammas[0],
@@ -216,18 +216,18 @@ fn create_header_internal(
     Ok((header, sis, eph_pub))
 }
 
-pub fn source_create_forward_strict(
+pub fn source_create_forward(
     ephemeral_secret: &[u8; 32],
     node_pubs: &[[u8; 32]],
     rmax: usize,
-) -> core::result::Result<(HeaderStrict, Vec<Si>, [u8; 32]), Error> {
+) -> core::result::Result<(Header, Vec<Si>, [u8; 32]), Error> {
     let (header, sis, eph) =
         create_header_internal(ephemeral_secret, node_pubs, rmax, None, None)?;
     Ok((header, sis, eph))
 }
 
-pub fn node_process_forward_strict(
-    h: &mut HeaderStrict,
+pub fn node_process_forward(
+    h: &mut Header,
     node_secret: &[u8; 32],
 ) -> core::result::Result<Si, Error> {
     if h.stage >= h.hops {
@@ -468,10 +468,10 @@ mod tests {
         x_s[0] &= 248;
         x_s[31] &= 127;
         x_s[31] |= 64;
-        let (forward, _, _) = source_create_forward_strict(&x_s, &pubs, 2).unwrap();
+        let (forward, _, _) = source_create_forward(&x_s, &pubs, 2).unwrap();
         let mut header = forward;
         header.beta[0] ^= 0xAA;
-        let res = node_process_forward_strict(&mut header, &nodes[0].0);
+        let res = node_process_forward(&mut header, &nodes[0].0);
         assert!(res.is_err());
     }
 
@@ -516,7 +516,7 @@ mod tests {
         let mut pi_keys_from_nodes = Vec::with_capacity(hops);
         for (idx, node) in nodes.iter().enumerate() {
             let si =
-                node_process_forward_strict(&mut header, &node.0).expect("node process");
+                node_process_forward(&mut header, &node.0).expect("node process");
             assert_eq!(si.0, sis[idx].0);
             let pi = derive_pi_key(&si);
             pi_keys_from_nodes.push(pi);
