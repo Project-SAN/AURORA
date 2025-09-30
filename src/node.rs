@@ -2,7 +2,6 @@ use alloc::collections::BTreeSet;
 
 use crate::crypto::prp;
 use crate::packet::ahdr::proc_ahdr;
-use crate::routing::{self, RouteElem};
 use crate::sphinx::strict;
 use crate::types::{Ahdr, Chdr, Exp, Result, RoutingSegment, Sv};
 
@@ -61,20 +60,6 @@ pub fn process_data_forward(
     }
     let pi_key = strict::derive_pi_key(&res.s);
     prp::lioness_decrypt(&pi_key, payload);
-    match decode_route(&res.r)? {
-        RouteElem::NextHop { .. } => {}
-        RouteElem::ExitTcp { .. } => {
-            if payload.len() >= crate::sphinx::KAPPA_BYTES {
-                let offset = crate::sphinx::KAPPA_BYTES;
-                payload.rotate_left(offset);
-                let len = payload.len();
-                let tail_start = len - offset;
-                for b in payload[tail_start..len].iter_mut() {
-                    *b = 0;
-                }
-            }
-        }
-    }
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
@@ -95,20 +80,6 @@ pub fn process_data_backward(
     }
     let pi_key = strict::derive_pi_key(&res.s);
     prp::lioness_decrypt(&pi_key, payload);
-    match decode_route(&res.r)? {
-        RouteElem::NextHop { .. } => {}
-        RouteElem::ExitTcp { .. } => {
-            if payload.len() >= crate::sphinx::KAPPA_BYTES {
-                let offset = crate::sphinx::KAPPA_BYTES;
-                payload.rotate_left(offset);
-                let len = payload.len();
-                let tail_start = len - offset;
-                for b in payload[tail_start..len].iter_mut() {
-                    *b = 0;
-                }
-            }
-        }
-    }
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
 }
 
@@ -121,9 +92,4 @@ pub fn create_fs_from_setup(
     r: &RoutingSegment,
 ) -> Result<crate::types::Fs> {
     crate::packet::create_from_chdr(sv, s, r, chdr)
-}
-
-fn decode_route(rseg: &RoutingSegment) -> Result<RouteElem> {
-    let elems = routing::elems_from_segment(rseg)?;
-    elems.into_iter().next().ok_or(crate::types::Error::Length)
 }

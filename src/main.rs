@@ -217,29 +217,16 @@ impl hornet::forward::Forward for UdpForward {
                 );
                 Ok(())
             }
-            RouteTarget::Deliver(delivery) => {
-                match delivery {
-                    DeliveryTarget::AppText => {
-                        // strip trailing zero padding
-                        let trimmed = match payload.iter().rposition(|&b| b != 0) {
-                            Some(pos) => &payload[..=pos],
-                            None => &payload[..0],
-                        };
-                        println!(
-                            "[{}] 終端に到達。App payload: {}",
-                            self.name,
-                            String::from_utf8_lossy(trimmed)
-                        );
-                        if let Some(tx) = &self.delivery {
-                            let _ = tx.send(trimmed.to_vec());
-                        }
-                    }
-                    DeliveryTarget::AppBinary => {
-                        println!("[{}] 終端に到達。Binary len={}", self.name, payload.len());
-                        if let Some(tx) = &self.delivery {
-                            let _ = tx.send(payload.to_vec());
-                        }
-                    }
+            RouteTarget::Deliver => {
+                let start = hornet::sphinx::KAPPA_BYTES.min(payload.len());
+                let trimmed = &payload[start..];
+                println!(
+                    "[{}] 終端に到達。App payload: {}",
+                    self.name,
+                    String::from_utf8_lossy(trimmed)
+                );
+                if let Some(tx) = &self.delivery {
+                    let _ = tx.send(trimmed.to_vec());
                 }
                 Ok(())
             }
@@ -249,12 +236,7 @@ impl hornet::forward::Forward for UdpForward {
 
 enum RouteTarget {
     Udp(SocketAddr),
-    Deliver(DeliveryTarget),
-}
-
-enum DeliveryTarget {
-    AppText,
-    AppBinary,
+    Deliver,
 }
 
 fn decode_route(rseg: &hornet::types::RoutingSegment) -> hornet::types::Result<RouteTarget> {
@@ -280,7 +262,7 @@ fn decode_route(rseg: &hornet::types::RoutingSegment) -> hornet::types::Result<R
                 port,
             ))))
         }
-        0xFF => Ok(RouteTarget::Deliver(DeliveryTarget::AppText)),
+        0xFF => Ok(RouteTarget::Deliver),
         _ => Err(hornet::types::Error::NotImplemented),
     }
 }
