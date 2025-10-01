@@ -1,0 +1,23 @@
+[package]
+name = "groth16"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc", "ark-std/std", "ark-serialize/std"]
+
+[dependencies]
+ark-ff = { version = "0.4", default-features = false }
+ark-ec = { version = "0.4", default-features = false }
+ark-serialize = { version = "0.4", default-features = false }
+ark-poly = { version = "0.4", default-features = false }
+ark-bls12-381 = { version = "0.4", default-features = false, features = ["curve"] }
+ark-std = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+rand = { version = "0.8", default-features = false, features = ["std_rng"] }
