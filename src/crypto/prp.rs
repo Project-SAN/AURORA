@@ -15,34 +15,34 @@ fn derive_prp_key(key_src: &[u8]) -> [u8; 16] {
 pub fn prp_enc(key_src: &[u8], block: &mut [u8; 16]) {
     let k = derive_prp_key(key_src);
     let cipher = Aes128::new(GenericArray::from_slice(&k));
-    let mut b = GenericArray::from_mut_slice(&mut block[..]);
-    cipher.encrypt_block(&mut b);
+    let block = GenericArray::from_mut_slice(&mut block[..]);
+    cipher.encrypt_block(block);
 }
 
 pub fn prp_dec(key_src: &[u8], block: &mut [u8; 16]) {
     let k = derive_prp_key(key_src);
     let cipher = Aes128::new(GenericArray::from_slice(&k));
-    let mut b = GenericArray::from_mut_slice(&mut block[..]);
-    cipher.decrypt_block(&mut b);
+    let block = GenericArray::from_mut_slice(&mut block[..]);
+    cipher.decrypt_block(block);
 }
 
 pub fn prp_enc_bytes(key_src: &[u8], data: &mut [u8]) {
-    assert!(data.len() % 16 == 0);
+    assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
     let cipher = Aes128::new(GenericArray::from_slice(&k));
     for chunk in data.chunks_mut(16) {
-        let mut b = GenericArray::from_mut_slice(chunk);
-        cipher.encrypt_block(&mut b);
+        let block = GenericArray::from_mut_slice(chunk);
+        cipher.encrypt_block(block);
     }
 }
 
 pub fn prp_dec_bytes(key_src: &[u8], data: &mut [u8]) {
-    assert!(data.len() % 16 == 0);
+    assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
     let cipher = Aes128::new(GenericArray::from_slice(&k));
     for chunk in data.chunks_mut(16) {
-        let mut b = GenericArray::from_mut_slice(chunk);
-        cipher.decrypt_block(&mut b);
+        let block = GenericArray::from_mut_slice(chunk);
+        cipher.decrypt_block(block);
     }
 }
 

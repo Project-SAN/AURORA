@@ -27,8 +27,7 @@ pub fn source_init(
     rng: &mut dyn RngCore,
 ) -> SourceSetupState {
     let (shdr, keys_f, eph_pub) =
-        sphinx::source_create_forward(x_s, node_pubs, rmax)
-            .expect("sphinx header generation");
+        sphinx::source_create_forward(x_s, node_pubs, rmax).expect("sphinx header generation");
     // Initialize FS payload with random seed
     let mut seed = [0u8; 16];
     rng.fill_bytes(&mut seed);
@@ -136,9 +135,8 @@ mod tests {
         let mut st = crate::setup::source_init(&x_s, &pubs, rmax, exp, &mut rng);
         let mut fses_created: alloc::vec::Vec<Fs> = alloc::vec::Vec::new();
         for i in 0..lf {
-            let si_i =
-                crate::setup::node_process(&mut st.packet, &nodes[i].0, &nodes[i].2, &rs[i])
-                    .expect("setup hop");
+            let si_i = crate::setup::node_process(&mut st.packet, &nodes[i].0, &nodes[i].2, &rs[i])
+                .expect("setup hop");
             let fs_i = crate::packet::create_from_chdr(&nodes[i].2, &si_i, &rs[i], &st.packet.chdr)
                 .expect("fs local");
             fses_created.push(fs_i);
@@ -203,18 +201,13 @@ mod tests {
         x_s[31] |= 64;
         let mut st = crate::setup::source_init(&x_s, &pubs_f, rmax, exp_f, &mut rng);
         for i in 0..lf {
-            let _ = crate::setup::node_process(
-                &mut st.packet,
-                &nodes_f[i].0,
-                &nodes_f[i].2,
-                &rs_f[i],
-            )
-            .expect("setup hop f");
+            let _ =
+                crate::setup::node_process(&mut st.packet, &nodes_f[i].0, &nodes_f[i].2, &rs_f[i])
+                    .expect("setup hop f");
         }
-        // SPb formation step omitted 
+        // SPb formation step omitted
         let (_sh_b, keys_b, _eph_pub_b) =
-            crate::sphinx::source_create_forward(&x_s, &pubs_b, rmax)
-                .expect("backward header");
+            crate::sphinx::source_create_forward(&x_s, &pubs_b, rmax).expect("backward header");
         let mut keys_b_rev = keys_b.clone();
         keys_b_rev.reverse();
         let mut svs_b_rev: alloc::vec::Vec<Sv> = nodes_b.iter().map(|n| n.2).collect();

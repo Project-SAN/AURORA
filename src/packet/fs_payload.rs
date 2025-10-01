@@ -62,10 +62,10 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> 
     let psi_len = l * C_BLOCK;
     let mut psi = pinit[(payload.rmax - l) * C_BLOCK..rc].to_vec(); // length l*c
     // XOR with terms for t = 0..l-2
-    for t in 0..l.saturating_sub(1) {
+    for (t, key) in keys.iter().enumerate().take(l.saturating_sub(1)) {
         let start = (payload.rmax - l + 1 + t) * C_BLOCK;
         let mut mask_full = vec![0u8; rc];
-        prg::prg0(&keys[t].0, &mut mask_full);
+        prg::prg0(&key.0, &mut mask_full);
         let slice = &mask_full[start..rc]; // length (l-1-t)*c
         let mut m = vec![0u8; psi_len];
         let copy_len = core::cmp::min(slice.len(), psi_len.saturating_sub((t + 1) * C_BLOCK));
@@ -81,21 +81,21 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> 
     pfull.extend_from_slice(&psi);
     // Recover FSes in reverse
     let mut fses_rev: Vec<Fs> = Vec::with_capacity(l);
-    for i in (0..l).rev() {
+    for key in keys.iter().rev() {
         // check MAC on window [0..rc)
         let mut hkey = [0u8; 16];
-        hop_key(&keys[i].0, OpLabel::Mac, &mut hkey);
+        hop_key(&key.0, OpLabel::Mac, &mut hkey);
         let alpha = &pfull[0..crate::types::K_MAC];
         let rest = &pfull[crate::types::K_MAC..rc];
         let expected = mac::mac_trunc16(&hkey, rest);
-        if expected.0 != *alpha {
+        if expected.0.as_slice() != alpha {
             return Err(Error::InvalidMac);
         }
         // unmask: Pfull ^= PRG0(si) || 0^{(i+1)c}
         let mut mask_rc = vec![0u8; rc];
-        prg::prg0(&keys[i].0, &mut mask_rc);
-        for j in 0..rc {
-            pfull[j] ^= mask_rc[j];
+        prg::prg0(&key.0, &mut mask_rc);
+        for (dst, mask) in pfull.iter_mut().take(rc).zip(mask_rc.iter()) {
+            *dst ^= *mask;
         }
         // extract FS_i
         let mut fs_bytes = [0u8; crate::types::FS_LEN];

@@ -21,6 +21,12 @@ impl ReplayCache {
     }
 }
 
+impl Default for ReplayCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReplayFilter for ReplayCache {
     fn check_and_insert(&mut self, tag: [u8; crate::sphinx::TAU_TAG_BYTES]) -> bool {
         self.seen.insert(tag)

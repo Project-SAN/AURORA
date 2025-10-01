@@ -48,15 +48,15 @@ fn run_demo() -> Result<(), AnyError> {
 
     // generate FS for each hop
     let fs1 = hornet::packet::fs_core::create(&sv1, &keys_f[0], &rseg_node1, exp)
-        .map_err(|e| format!("fs create node1: {:?}", e))?;
+        .map_err(|e| format!("fs create node1: {e:?}"))?;
     let fs2 = hornet::packet::fs_core::create(&sv2, &keys_f[1], &rseg_node2, exp)
-        .map_err(|e| format!("fs create node2: {:?}", e))?;
+        .map_err(|e| format!("fs create node2: {e:?}"))?;
     let fses = vec![fs1, fs2];
 
     // generate AHDR
     let mut ah_rng = SmallRng::seed_from_u64(0x9E37_79B9_7F4A_7C15);
     let ahdr = hornet::packet::ahdr::create_ahdr(&keys_f, &fses, keys_f.len(), &mut ah_rng)
-        .map_err(|e| format!("create_ahdr: {:?}", e))?;
+        .map_err(|e| format!("create_ahdr: {e:?}"))?;
 
     // start node threads
     let (delivery_tx, delivery_rx) = mpsc::channel::<Vec<u8>>();
@@ -75,7 +75,7 @@ fn run_demo() -> Result<(), AnyError> {
 
     // build a data packet（adapt onion encryption）
     hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut payload)
-        .map_err(|e| format!("build_data_packet: {:?}", e))?;
+        .map_err(|e| format!("build_data_packet: {e:?}"))?;
     let wire_bytes = hornet::wire::encode(&chdr, &ahdr, &payload);
 
     println!(
@@ -87,11 +87,7 @@ fn run_demo() -> Result<(), AnyError> {
     // send to first node from source
     let source_socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     source_socket.send_to(&wire_bytes, node1_addr)?;
-    println!(
-        "[source] {} bytes sent to {}",
-        wire_bytes.len(),
-        node1_addr
-    );
+    println!("[source] {} bytes sent to {}", wire_bytes.len(), node1_addr);
 
     // receive the reconstruction result at the final node
     let recovered = delivery_rx
@@ -142,7 +138,7 @@ fn spawn_node(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if let Err(e) = run_node(name, socket, sv, delivery) {
-            eprintln!("[{}] Error: {}", name, e);
+            eprintln!("[{name}] Error: {e}");
         }
     })
 }
@@ -156,10 +152,10 @@ fn run_node(
     let mut buf = vec![0u8; 2048];
     let (len, src) = socket.recv_from(&mut buf)?;
     buf.truncate(len);
-    println!("[{}] {} bytes received from {}", name, len, src);
+    println!("[{name}] {len} bytes received from {src}");
 
     let (mut chdr, mut ahdr, mut payload) =
-        hornet::wire::decode(&buf).map_err(|e| format!("wire decode: {:?}", e))?;
+        hornet::wire::decode(&buf).map_err(|e| format!("wire decode: {e:?}"))?;
 
     let mut forward = UdpForward::new(name, socket, delivery);
     let mut replay = hornet::node::ReplayCache::new();
@@ -172,9 +168,9 @@ fn run_node(
     };
 
     hornet::node::process_data_forward(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
-        .map_err(|e| format!("process_data_forward: {:?}", e))?;
+        .map_err(|e| format!("process_data_forward: {e:?}"))?;
 
-    println!("[{}] Processing complete", name);
+    println!("[{name}] Processing complete");
     Ok(())
 }
 

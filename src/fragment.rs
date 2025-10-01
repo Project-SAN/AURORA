@@ -71,7 +71,7 @@ pub fn split(msg: &[u8], cap: usize, msg_id: u32) -> Result<Vec<Vec<u8>>> {
         return Err(Error::Length);
     }
     let chunk = cap - HDR_LEN;
-    let total = ((msg.len() + chunk - 1) / chunk).max(1) as u16;
+    let total = msg.len().div_ceil(chunk).max(1) as u16;
     let mut out = Vec::with_capacity(total as usize);
     for i in 0..(total as usize) {
         let start = i * chunk;

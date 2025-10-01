@@ -21,8 +21,8 @@ pub fn build_data_packet(
     }
     // Start from the provided IV0 (random nonce) and apply layers from last to first
     let mut iv = iv0.0;
-    for i in (0..keys_f.len()).rev() {
-        crate::packet::onion::add_layer(&keys_f[i], &mut iv, payload)?;
+    for key in keys_f.iter().rev() {
+        crate::packet::onion::add_layer(key, &mut iv, payload)?;
     }
     // Update IV0 (for caller) and CHDR.specific to the final IV carried on the wire
     iv0.0 = iv;
@@ -43,8 +43,8 @@ pub fn build_data_packet(
 // Encrypt a forward payload at the source: apply layers from last to first
 pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut [u8]) -> Result<()> {
     let mut iv = *iv0;
-    for i in (0..keys.len()).rev() {
-        crate::packet::onion::add_layer(&keys[i], &mut iv, payload)?;
+    for key in keys.iter().rev() {
+        crate::packet::onion::add_layer(key, &mut iv, payload)?;
     }
     *iv0 = iv;
     Ok(())
@@ -53,8 +53,8 @@ pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut [u
 // Decrypt a backward payload at the source: remove layers from first to last
 pub fn decrypt_backward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut [u8]) -> Result<()> {
     let mut iv = *iv0;
-    for i in 0..keys.len() {
-        crate::packet::onion::remove_layer(&keys[i], &mut iv, payload)?;
+    for key in keys {
+        crate::packet::onion::remove_layer(key, &mut iv, payload)?;
     }
     *iv0 = iv;
     Ok(())

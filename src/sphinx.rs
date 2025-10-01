@@ -15,9 +15,7 @@ const ZERO_KAPPA: [u8; KAPPA_BYTES] = [0u8; KAPPA_BYTES];
 use crate::crypto::mac;
 use alloc::vec;
 use alloc::vec::Vec;
-use curve25519_dalek::{
-    constants::X25519_BASEPOINT, montgomery::MontgomeryPoint, scalar::Scalar,
-};
+use curve25519_dalek::{constants::X25519_BASEPOINT, montgomery::MontgomeryPoint, scalar::Scalar};
 
 #[derive(Clone)]
 pub struct Header {
@@ -48,6 +46,8 @@ pub struct ReplyState {
     pub k_tilde: [u8; KAPPA_BYTES],
     pub pi_keys: Vec<[u8; 16]>,
 }
+
+pub type ForwardBundle = (ForwardMessage, Vec<Si>, [u8; 32], Vec<[u8; 16]>);
 
 fn derive_si(shared_secret: &[u8; 32]) -> Si {
     let mut si = [0u8; 16];
@@ -128,10 +128,10 @@ fn create_header_internal(
     let mut node_ids: Vec<[u8; KAPPA_BYTES]> = Vec::with_capacity(hops);
 
     for (idx, pub_pt) in pub_points.iter().enumerate() {
-        let alpha_pt: MontgomeryPoint = &X25519_BASEPOINT * &scalar_cur;
+        let alpha_pt: MontgomeryPoint = X25519_BASEPOINT * scalar_cur;
         alpha_list.push(alpha_pt.to_bytes());
 
-        let shared_pt: MontgomeryPoint = pub_pt * &scalar_cur;
+        let shared_pt: MontgomeryPoint = pub_pt * scalar_cur;
         let shared = shared_pt.to_bytes();
         shared_list.push(shared);
         sis.push(derive_si(&shared));
@@ -143,7 +143,7 @@ fn create_header_internal(
         }
     }
 
-    let eph_pub = (&x_scalar * &X25519_BASEPOINT).to_bytes();
+    let eph_pub = (x_scalar * X25519_BASEPOINT).to_bytes();
 
     let mut fillers: Vec<Vec<u8>> = Vec::with_capacity(hops);
     fillers.push(Vec::new());
@@ -221,8 +221,7 @@ pub fn source_create_forward(
     node_pubs: &[[u8; 32]],
     rmax: usize,
 ) -> core::result::Result<(Header, Vec<Si>, [u8; 32]), Error> {
-    let (header, sis, eph) =
-        create_header_internal(ephemeral_secret, node_pubs, rmax, None, None)?;
+    let (header, sis, eph) = create_header_internal(ephemeral_secret, node_pubs, rmax, None, None)?;
     Ok((header, sis, eph))
 }
 
@@ -240,7 +239,7 @@ pub fn node_process_forward(
     sk_bytes[31] |= 64;
     let sk = Scalar::from_bytes_mod_order(sk_bytes);
     let alpha_pt = MontgomeryPoint(h.alpha);
-    let shared_pt: MontgomeryPoint = &sk * &alpha_pt;
+    let shared_pt: MontgomeryPoint = sk * alpha_pt;
     let shared = shared_pt.to_bytes();
 
     let mu_key = derive_mu_key(&shared);
@@ -265,7 +264,7 @@ pub fn node_process_forward(
     let beta_next_slice = &beta_extended[2 * KAPPA_BYTES..];
 
     let blind = derive_blinding_scalar(&h.alpha, &shared);
-    let new_alpha_pt: MontgomeryPoint = &alpha_pt * &blind;
+    let new_alpha_pt: MontgomeryPoint = alpha_pt * blind;
     h.alpha = new_alpha_pt.to_bytes();
     h.beta.clear();
     h.beta.extend_from_slice(beta_next_slice);
@@ -283,7 +282,7 @@ pub fn create_forward_message(
     rmax: usize,
     dest: &[u8],
     payload: &[u8],
-) -> core::result::Result<(ForwardMessage, Vec<Si>, [u8; 32], Vec<[u8; 16]>), Error> {
+) -> core::result::Result<ForwardBundle, Error> {
     let (header, sis, eph) = create_header_internal(
         ephemeral_secret,
         node_pubs,
@@ -447,8 +446,7 @@ mod tests {
         let dest = b"dest@example";
         let payload = b"hello sphinx";
         let (forward, _sis, _eph, pi_keys) =
-            create_forward_message(&x_s, &pubs, rmax, dest, payload)
-                .expect("forward message");
+            create_forward_message(&x_s, &pubs, rmax, dest, payload).expect("forward message");
         let mut body = forward.body.clone();
         for key in pi_keys.iter() {
             prp::lioness_decrypt(key, &mut body);
@@ -515,8 +513,7 @@ mod tests {
         let mut header = reply.header.clone();
         let mut pi_keys_from_nodes = Vec::with_capacity(hops);
         for (idx, node) in nodes.iter().enumerate() {
-            let si =
-                node_process_forward(&mut header, &node.0).expect("node process");
+            let si = node_process_forward(&mut header, &node.0).expect("node process");
             assert_eq!(si.0, sis[idx].0);
             let pi = derive_pi_key(&si);
             pi_keys_from_nodes.push(pi);
