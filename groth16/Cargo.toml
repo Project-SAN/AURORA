@@ -18,6 +18,9 @@ ark-serialize = { version = "0.4", default-features = false }
 ark-poly = { version = "0.4", default-features = false }
 ark-bls12-381 = { version = "0.4", default-features = false, features = ["curve"] }
 ark-std = { version = "0.4", default-features = false }
+ark-groth16 = { version = "0.4", default-features = false }
+ark-relations = { version = "0.4", default-features = false }
+ark-snark = { version = "0.4", default-features = false }
 
 [dev-dependencies]
-rand = { version = "0.8", default-features = false, features = ["std_rng"] }
+rand = { version = "0.8", default-features = true, features = ["std_rng"] }

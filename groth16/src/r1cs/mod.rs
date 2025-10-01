@@ -145,6 +145,7 @@ impl<F: Field> Constraint<F> {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct ConstraintSystem<F: Field> {
     pub inputs: Vec<F>,
     pub aux: Vec<F>,
