@@ -17,7 +17,7 @@ pub struct ProcResult {
 // Algorithm 3: Process an AHDR at a hop
 pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let rc = ahdr.bytes.len();
-    if rc % C_BLOCK != 0 {
+    if !rc.is_multiple_of(C_BLOCK) {
         return Err(Error::Length);
     }
     // number of blocks r = rc / C_BLOCK (not needed explicitly)
@@ -38,7 +38,7 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     mac_input.extend_from_slice(&fs.0);
     mac_input.extend_from_slice(beta);
     let tag = mac::mac_trunc16(&mac_key, &mac_input);
-    if &tag.0 != gamma {
+    if tag.0.as_slice() != gamma {
         return Err(Error::InvalidMac);
     }
     // Compute next header: (beta || 0^c) XOR PRG2(s)
@@ -69,9 +69,9 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
     let rc = rmax * C_BLOCK;
     // Compute paddings phi
     let mut phi: Vec<u8> = Vec::new(); // length i*c at step i
-    for i in 0..(l.saturating_sub(1)) {
+    for (i, key) in keys.iter().enumerate().take(l.saturating_sub(1)) {
         let mut mask = vec![0u8; rc];
-        prg::prg2(&keys[i].0, &mut mask);
+        prg::prg2(&key.0, &mut mask);
         let start = (rmax - 1 - i) * C_BLOCK;
         let end = rc;
         let slice = &mask[start..end]; // length (i+1)*c
@@ -101,7 +101,7 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
     mac_input.extend_from_slice(&beta);
     let mut gamma = mac::mac_trunc16(&hkey, &mac_input).0.to_vec();
     // iterate i = l-2 .. 0 (only if l >= 2)
-    for i in (0..l.saturating_sub(1)).rev() {
+    for (i, key) in keys.iter().enumerate().take(l.saturating_sub(1)).rev() {
         // base = FSi+1 || gamma_{i+1} || beta_{i+1}[0..(r-2)c]
         let mut base = Vec::with_capacity((rmax - 1) * C_BLOCK);
         base.extend_from_slice(&fses[i + 1].0);
@@ -110,7 +110,7 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
         base.extend_from_slice(&beta[0..tail_len.min(beta.len())]);
         // mask = PRG2(s_i)[0..(r-1)c]
         let mut mask = vec![0u8; (rmax - 1) * C_BLOCK];
-        prg::prg2(&keys[i].0, &mut mask);
+        prg::prg2(&key.0, &mut mask);
         // beta_i = base XOR mask
         for (b, m) in base.iter_mut().zip(mask.iter()) {
             *b ^= *m;
@@ -118,7 +118,7 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
         beta = base;
         // gamma_i = MAC(hMAC(s_i); FS_i || beta_i)
         let mut hkey_i = [0u8; 16];
-        hop_key(&keys[i].0, OpLabel::Mac, &mut hkey_i);
+        hop_key(&key.0, OpLabel::Mac, &mut hkey_i);
         let mut mac_input_i = Vec::with_capacity(FS_LEN + beta.len());
         mac_input_i.extend_from_slice(&fses[i].0);
         mac_input_i.extend_from_slice(&beta);
@@ -155,9 +155,10 @@ pub fn create_nested_ahdr(
     }
     // φ computation
     let mut phi: Vec<u8> = Vec::new();
-    for i in 1..l {
+    for (offset, key) in keys.iter().enumerate().take(l.saturating_sub(1)) {
+        let i = offset + 1;
         let mut mask = vec![0u8; 2 * rc];
-        prg::prg0(&keys[i - 1].0, &mut mask);
+        prg::prg0(&key.0, &mut mask);
         let start = (2 * rmax - i) * C_BLOCK;
         let slice = &mask[start..]; // length = i*c
         let mut new_phi = Vec::with_capacity(phi.len() + C_BLOCK);
@@ -193,7 +194,7 @@ pub fn create_nested_ahdr(
     mac_input.extend_from_slice(&beta);
     let mut gamma = mac::mac_trunc16(&hkey, &mac_input).0.to_vec();
     // Iterate i = l-2 .. 0
-    for i in (0..=(l - 1).saturating_sub(1)).rev() {
+    for (i, key) in keys.iter().enumerate().take(l.saturating_sub(1)).rev() {
         // base = FS_{i+1} || gamma_{i+1} || beta_{i+1}[0 .. c(2r-1)-1]
         let mut base = Vec::with_capacity(2 * rc);
         base.extend_from_slice(&fses[i + 1].0);
@@ -203,14 +204,14 @@ pub fn create_nested_ahdr(
         // XOR first c(2r - l) bytes with PRG0(s_i)
         let xor_len = rc + (rmax - l) * C_BLOCK; // c(2r - l)
         let mut mask_i = vec![0u8; xor_len];
-        prg::prg0(&keys[i].0, &mut mask_i);
-        for j in 0..xor_len {
-            base[j] ^= mask_i[j];
+        prg::prg0(&key.0, &mut mask_i);
+        for (b, m) in base.iter_mut().take(xor_len).zip(mask_i.iter()) {
+            *b ^= *m;
         }
         beta = base;
         // gamma_i
         let mut hkey_i = [0u8; 16];
-        hop_key(&keys[i].0, OpLabel::Mac, &mut hkey_i);
+        hop_key(&key.0, OpLabel::Mac, &mut hkey_i);
         let mut mac_input_i = Vec::with_capacity(FS_LEN + beta.len());
         mac_input_i.extend_from_slice(&fses[i].0);
         mac_input_i.extend_from_slice(&beta);

@@ -56,4 +56,5 @@ pub enum Error {
     Length,
     Crypto,
     NotImplemented,
+    Replay,
 }
