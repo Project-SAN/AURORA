@@ -8,11 +8,12 @@
 //! [4..20]  : 16B  chdr.specific (EXP for Setup, Nonce/IV for Data)
 //! [20..24] : u32  ahdr_len (big-endian)
 //! [24..28] : u32  payload_len (big-endian)
-//! [28..]   : ahdr bytes || payload bytes
+//! [28..]   : optional POLICY section || ahdr bytes || payload bytes
 //!
 //! The caller is responsible for validating semantic sizes (e.g., AHDR length
 //! matches r*c) at a higher layer. This module only enforces basic length checks.
 
+use crate::policy::encoder::{self, PolicySection};
 use crate::types::{Ahdr, Chdr, Error, PacketType, Result};
 use alloc::vec::Vec;
 
@@ -43,10 +44,17 @@ fn read_be_u32(b: &[u8]) -> u32 {
     u32::from_be_bytes(tmp)
 }
 
-pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
+pub fn encode(
+    chdr: &Chdr,
+    policy: Option<&PolicySection>,
+    ahdr: &Ahdr,
+    payload: &[u8],
+) -> Vec<u8> {
     let ah_len = ahdr.bytes.len();
     let pl_len = payload.len();
-    let mut out = Vec::with_capacity(FIXED_HDR_LEN + ah_len + pl_len);
+    let policy_bytes = policy.map(encoder::encode);
+    let policy_len = policy_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
+    let mut out = Vec::with_capacity(FIXED_HDR_LEN + policy_len + ah_len + pl_len);
     out.push(WIRE_VERSION);
     out.push(pkt_type_to_u8(chdr.typ));
     out.push(chdr.hops);
@@ -54,12 +62,15 @@ pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&chdr.specific);
     out.extend_from_slice(&be_u32(ah_len as u32));
     out.extend_from_slice(&be_u32(pl_len as u32));
+    if let Some(policy_buf) = policy_bytes {
+        out.extend_from_slice(&policy_buf);
+    }
     out.extend_from_slice(&ahdr.bytes);
     out.extend_from_slice(payload);
     out
 }
 
-pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
+pub fn decode(buf: &[u8]) -> Result<(Chdr, Option<PolicySection>, Ahdr, Vec<u8>)> {
     if buf.len() < FIXED_HDR_LEN {
         return Err(Error::Length);
     }
@@ -73,12 +84,33 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
     specific.copy_from_slice(&buf[4..20]);
     let ah_len = read_be_u32(&buf[20..24]) as usize;
     let pl_len = read_be_u32(&buf[24..28]) as usize;
-    let need = FIXED_HDR_LEN + ah_len + pl_len;
-    if buf.len() < need {
+    let remaining = buf.len() - FIXED_HDR_LEN;
+    if remaining < ah_len + pl_len {
         return Err(Error::Length);
     }
-    let ah_bytes = &buf[FIXED_HDR_LEN..FIXED_HDR_LEN + ah_len];
-    let pl_bytes = &buf[FIXED_HDR_LEN + ah_len..need];
+    let policy_region_len = remaining - (ah_len + pl_len);
+    let mut cursor = FIXED_HDR_LEN;
+    let policy = if policy_region_len > 0 {
+        if policy_region_len < 2 {
+            return Err(Error::Length);
+        }
+        let end = cursor + policy_region_len;
+        let section = encoder::decode(&buf[cursor..end]).map_err(|_| Error::Length)?;
+        cursor = end;
+        Some(section)
+    } else {
+        None
+    };
+
+    let ah_end = cursor + ah_len;
+    let pl_end = ah_end + pl_len;
+
+    if pl_end > buf.len() {
+        return Err(Error::Length);
+    }
+
+    let ah_bytes = &buf[cursor..ah_end];
+    let pl_bytes = &buf[ah_end..pl_end];
     let chdr = Chdr {
         typ,
         hops,
@@ -88,7 +120,7 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
         bytes: Vec::from(ah_bytes),
     };
     let payload = Vec::from(pl_bytes);
-    Ok((chdr, ahdr, payload))
+    Ok((chdr, policy, ahdr, payload))
 }
 
 #[cfg(test)]
@@ -107,8 +139,9 @@ mod tests {
             bytes: alloc::vec![0xAA; 96],
         };
         let payload = alloc::vec![0x55; 80];
-        let encoded = encode(&ch, &ah, &payload);
-        let (ch2, ah2, pl2) = decode(&encoded).expect("decode");
+        let encoded = encode(&ch, None, &ah, &payload);
+        let (ch2, policy, ah2, pl2) = decode(&encoded).expect("decode");
+        assert!(policy.is_none());
         assert!(matches!(ch2.typ, PacketType::Data));
         assert_eq!(ch2.hops, 3);
         assert_eq!(ch2.specific, ch.specific);
@@ -135,5 +168,38 @@ mod tests {
         buf[24..28].copy_from_slice(&1u32.to_be_bytes());
         // missing body
         assert!(decode(&buf).is_err());
+    }
+
+    #[test]
+    fn policy_section_roundtrip() {
+        let ch = Chdr {
+            typ: PacketType::Data,
+            hops: 1,
+            specific: Nonce([0u8; 16]).0,
+        };
+        let ah = Ahdr {
+            bytes: alloc::vec![0xBB; 64],
+        };
+        let payload = alloc::vec![0xCC; 40];
+
+        let section = crate::policy::encoder::PolicySection::new(
+            0x01,
+            42,
+            10,
+            0,
+            [1u8; 32],
+            [2u8; 32],
+            [3u8; 48],
+            [4u8; crate::policy::encoder::PROOF_LEN],
+        );
+
+        let encoded = encode(&ch, Some(&section), &ah, &payload);
+        let (_ch2, policy, ah2, pl2) = decode(&encoded).expect("decode");
+        let decoded_section = policy.expect("policy section");
+        assert_eq!(decoded_section.policy_id, 42);
+        assert_eq!(decoded_section.c_token, [2u8; 32]);
+        assert_eq!(decoded_section.c_req, [3u8; 48]);
+        assert_eq!(ah2.bytes, ah.bytes);
+        assert_eq!(pl2, payload);
     }
 }
