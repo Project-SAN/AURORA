@@ -4,6 +4,7 @@ use ark_bls12_381::Fr;
 use ark_ff::PrimeField;
 use sha2::{Digest, Sha256, Sha384};
 
+use crate::policy::encoder::{self, EncodeError, PolicySection};
 use crate::policy::manifest::{self, PoseidonMerkleSibling, Rule, RulePackage};
 
 const PAYLOAD_SLICE_LEN: usize = 64;
@@ -65,6 +66,16 @@ pub struct ProofMaterial {
     pub public_inputs: PublicInputs,
     pub witness: WitnessInputs,
     pub commitments: Commitments,
+}
+
+impl ProofMaterial {
+    pub fn build_policy_section(&self, proof_bytes: &[u8]) -> Result<PolicySection, EncodeError> {
+        encoder::section_from_proof_slice(self, proof_bytes)
+    }
+
+    pub fn public_inputs_as_fields(&self) -> Vec<Fr> {
+        self.public_inputs.to_field_elements()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +246,12 @@ mod tests {
         assert_eq!(material.public_inputs.policy_id, 7);
         assert_eq!(material.witness.rule.port_start, 1000);
         assert_eq!(material.commitments.c_payload.len(), COMM_LEN);
+
+        let proof_bytes = [8u8; crate::policy::encoder::PROOF_LEN];
+        let section = material
+            .build_policy_section(&proof_bytes)
+            .expect("policy section");
+        assert_eq!(section.proof_bytes, proof_bytes);
     }
 
     fn export_package(tree: &PolicyTree) -> RulePackage {

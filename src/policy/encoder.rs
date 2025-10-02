@@ -79,6 +79,18 @@ pub fn encode(section: &PolicySection) -> Vec<u8> {
     buf
 }
 
+pub fn section_from_proof_slice(
+    material: &ProofMaterial,
+    proof_bytes: &[u8],
+) -> Result<PolicySection, EncodeError> {
+    if proof_bytes.len() != PROOF_LEN {
+        return Err(EncodeError::Length);
+    }
+    let mut arr = [0u8; PROOF_LEN];
+    arr.copy_from_slice(proof_bytes);
+    Ok(PolicySection::from_material(material, arr))
+}
+
 pub fn decode(bytes: &[u8]) -> Result<PolicySection, EncodeError> {
     if bytes.len() < 2 {
         return Err(EncodeError::Length);
@@ -133,6 +145,7 @@ pub fn decode(bytes: &[u8]) -> Result<PolicySection, EncodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use crate::policy::manifest::{build_policy_tree, Rule};
     use crate::policy::witness::{build_proof_material, WitnessBuilderInput};
 

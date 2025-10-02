@@ -1,5 +1,6 @@
 use alloc::collections::BTreeSet;
 
+use crate::policy::encoder::PolicySection;
 use crate::packet::ahdr::proc_ahdr;
 use crate::packet::onion;
 use crate::sphinx::*;
@@ -51,10 +52,12 @@ pub struct NodeCtx<'a> {
 
 pub fn process_data_forward(
     ctx: &mut NodeCtx,
+    policy: Option<&PolicySection>,
     chdr: &mut Chdr,
     ahdr: &mut Ahdr,
     payload: &mut [u8],
 ) -> Result<()> {
+    let _ = policy;
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
     let tau = derive_tau_tag(&res.s);
@@ -64,15 +67,17 @@ pub fn process_data_forward(
     let mut iv = chdr.specific;
     onion::remove_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
+    ctx.forward.send(&res.r, chdr, policy, &res.ahdr_next, payload)
 }
 
 pub fn process_data_backward(
     ctx: &mut NodeCtx,
+    policy: Option<&PolicySection>,
     chdr: &mut Chdr,
     ahdr: &mut Ahdr,
     payload: &mut [u8],
 ) -> Result<()> {
+    let _ = policy;
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
     let tau = derive_tau_tag(&res.s);
@@ -82,7 +87,7 @@ pub fn process_data_backward(
     let mut iv = chdr.specific;
     onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
+    ctx.forward.send(&res.r, chdr, policy, &res.ahdr_next, payload)
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

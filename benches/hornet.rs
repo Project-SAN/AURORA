@@ -94,6 +94,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                         };
                         hornet::node::process_data_forward(
                             &mut ctx,
+                            None,
                             &mut chdr,
                             &mut ahdr,
                             &mut payload,
@@ -204,6 +205,7 @@ impl HornetFixture {
             .expect("fixture build data packet");
         ForwardPacket {
             chdr,
+            policy: None,
             ahdr: clone_ahdr(&self.ahdr),
             payload,
         }
@@ -212,6 +214,7 @@ impl HornetFixture {
 
 struct ForwardPacket {
     chdr: hornet::types::Chdr,
+    policy: Option<hornet::policy::encoder::PolicySection>,
     ahdr: hornet::types::Ahdr,
     payload: Vec<u8>,
 }

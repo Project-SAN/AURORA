@@ -1,3 +1,7 @@
+use alloc::vec::Vec;
+
+use crate::policy::encoder::{EncodeError, PolicySection};
+use crate::policy::witness::ProofMaterial;
 use crate::types::{Ahdr, Chdr, Error, Nonce, Result, Si};
 
 // (removed) initialize_session: thin AHDR wrapper was unnecessary
@@ -28,6 +32,25 @@ pub fn build_data_packet(
     iv0.0 = iv;
     chdr.specific = iv;
     Ok(())
+}
+
+pub fn encode_wire_with_policy(
+    chdr: &Chdr,
+    ahdr: &Ahdr,
+    payload: &[u8],
+    policy: Option<(&ProofMaterial, &[u8])>,
+) -> core::result::Result<(Vec<u8>, Option<PolicySection>), EncodeError> {
+    match policy {
+        Some((material, proof_bytes)) => {
+            let section = material.build_policy_section(proof_bytes)?;
+            let bytes = crate::wire::encode(chdr, Some(&section), ahdr, payload);
+            Ok((bytes, Some(section)))
+        }
+        None => {
+            let bytes = crate::wire::encode(chdr, None, ahdr, payload);
+            Ok((bytes, None))
+        }
+    }
 }
 
 // Destination-side helper: build backward AHDR from per-hop keys and node contexts.

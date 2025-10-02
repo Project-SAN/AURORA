@@ -76,7 +76,9 @@ fn run_demo() -> Result<(), AnyError> {
     // build a data packet（adapt onion encryption）
     hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut payload)
         .map_err(|e| format!("build_data_packet: {e:?}"))?;
-    let wire_bytes = hornet::wire::encode(&chdr, None, &ahdr, &payload);
+    let (wire_bytes, _policy_section) =
+        hornet::source::encode_wire_with_policy(&chdr, &ahdr, &payload, None)
+            .map_err(|e| format!("policy encode: {e:?}"))?;
 
     println!(
         "[source] Initial IV={} payload length={}",
@@ -154,7 +156,7 @@ fn run_node(
     buf.truncate(len);
     println!("[{name}] {len} bytes received from {src}");
 
-    let (mut chdr, _policy, mut ahdr, mut payload) =
+    let (mut chdr, policy, mut ahdr, mut payload) =
         hornet::wire::decode(&buf).map_err(|e| format!("wire decode: {e:?}"))?;
 
     let mut forward = UdpForward::new(name, socket, delivery);
@@ -167,7 +169,7 @@ fn run_node(
         replay: &mut replay,
     };
 
-    hornet::node::process_data_forward(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
+    hornet::node::process_data_forward(&mut ctx, policy.as_ref(), &mut chdr, &mut ahdr, &mut payload)
         .map_err(|e| format!("process_data_forward: {e:?}"))?;
 
     println!("[{name}] Processing complete");
@@ -195,12 +197,13 @@ impl hornet::forward::Forward for UdpForward {
         &mut self,
         rseg: &hornet::types::RoutingSegment,
         chdr: &hornet::types::Chdr,
+        policy: Option<&hornet::policy::encoder::PolicySection>,
         ahdr: &hornet::types::Ahdr,
         payload: &mut [u8],
     ) -> hornet::types::Result<()> {
         match decode_route(rseg)? {
             RouteTarget::Udp(addr) => {
-                let bytes = hornet::wire::encode(chdr, None, ahdr, payload);
+                let bytes = hornet::wire::encode(chdr, policy, ahdr, payload);
                 self.socket
                     .send_to(&bytes, addr)
                     .map(|_| ())
