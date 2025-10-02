@@ -56,6 +56,71 @@ pub fn poseidon_hash_two(
     )
 }
 
+/// Poseidon sponge (rate=2, capacity=1) を任意長シーケンスに対して適用する簡易ガジェット。
+/// 入力列を (label, len, elements...) という形で逐次吸収し、最初の rate スロットを出力。
+/// elements_values は elements_vars と同順で与えること。
+pub fn poseidon_hash_sequence(
+    cs: &mut ConstraintSystem<Fr>,
+    label: Fr,
+    elements_vars: &[Variable],
+    elements_values: &[Fr],
+) -> (Variable, Fr) {
+    assert_eq!(elements_vars.len(), elements_values.len());
+    let params = poseidon_config();
+    let state_len = params.rate + params.capacity; // 3
+    let mut state_vars: Vec<Variable> = Vec::with_capacity(state_len);
+    let mut state_vals = vec![Fr::from(0u64); state_len];
+
+    // allocate initial zero state
+    for value in &state_vals {
+        let var = cs.alloc_aux(*value);
+        enforce_variable_equals_constant(cs, var, *value);
+        state_vars.push(var);
+    }
+
+    // helper: absorb one field into next rate cell (cycling) + permute when rate full
+    let mut absorb_index = params.capacity; // start at first rate cell
+    let absorb = |cs: &mut ConstraintSystem<Fr>,
+                      state_vars: &mut [Variable],
+                      state_vals: &mut [Fr],
+                      idx: &mut usize,
+                      element_var: Variable,
+                      element_value: Fr| {
+        // add element into current rate position
+        let pos = *idx;
+        let (var, val) = absorb_element(cs, state_vars[pos], state_vals[pos], element_var, element_value);
+        state_vars[pos] = var;
+        state_vals[pos] = val;
+        // advance
+        *idx += 1;
+        if *idx >= params.capacity + params.rate { // consumed all rate slots -> permute
+            *idx = params.capacity;
+            apply_poseidon_permutation(cs, &params, state_vars, state_vals);
+        }
+    };
+
+    // absorb label
+    let label_var = cs.alloc_aux(label);
+    absorb(cs, &mut state_vars, &mut state_vals, &mut absorb_index, label_var, label);
+    // absorb length
+    let len_fr = Fr::from(elements_vars.len() as u64);
+    let len_var = cs.alloc_aux(len_fr);
+    absorb(cs, &mut state_vars, &mut state_vals, &mut absorb_index, len_var, len_fr);
+    // absorb elements
+    for (v, val) in elements_vars.iter().zip(elements_values.iter()) {
+        absorb(cs, &mut state_vars, &mut state_vals, &mut absorb_index, *v, *val);
+    }
+    // final permutation to finalize sponge (standard sponge would permute before squeeze
+    // if last absorption didn't trigger permutation)
+    if absorb_index != params.capacity { // partially filled -> permute once
+        apply_poseidon_permutation(cs, &params, &mut state_vars, &mut state_vals);
+    }
+    (
+        state_vars[params.capacity],
+        state_vals[params.capacity],
+    )
+}
+
 /// Poseidon mercle pathを R1CS 上で計算し、root hash変数と値を返す。
 /// `siblings_vars` と `sibling_values` は path.siblings と同じ長さであること。
 pub fn enforce_poseidon_merkle_path(

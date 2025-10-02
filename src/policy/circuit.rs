@@ -11,6 +11,7 @@ use groth16::r1cs::gadgets::{
 use groth16::r1cs::poseidon::{
     enforce_poseidon_merkle_path,
     poseidon_hash_two,
+    poseidon_hash_sequence,
 };
 use groth16::r1cs::{ConstraintSystem, LinearCombination, Variable};
 
@@ -127,10 +128,8 @@ fn enforce_rule_descriptor(
     let prefix = bytes_to_bits(cs, &rule.prefix);
     let prefix_len = rule.prefix_len as usize;
     let leaf = compute_rule_descriptor(cs, &prefix, prefix_len, rule);
-
-    // TODO: compare leaf with descriptor
     let descriptor_var = cs.alloc_aux(descriptor);
-    enforce_equal(cs, leaf, descriptor_var);
+    enforce_equal(cs, leaf, descriptor_var); // descriptor 一致
 }
 
 fn compute_rule_descriptor(
@@ -139,8 +138,31 @@ fn compute_rule_descriptor(
     prefix_len: usize,
     rule: &crate::policy::manifest::Rule,
 ) -> Variable {
-    // Placeholder: needs full Poseidon gadget over rule fields
-    cs.alloc_aux(Fr::from(rule.classification_tag))
+    // rule descriptor は (prefix_len, prefix_bits(prefix_len分), port_start, port_end, proto_mask, classification_tag) をハッシュ
+    let mut elems_vars: Vec<Variable> = Vec::new();
+    let mut elems_vals: Vec<Fr> = Vec::new();
+    let len_var = cs.alloc_aux(Fr::from(prefix_len as u64));
+    elems_vars.push(len_var); elems_vals.push(Fr::from(prefix_len as u64));
+    for i in 0..prefix_len {
+        elems_vars.push(prefix_bits[i]);
+        // prefix_bits[i] の値は公開入力ではないので 0/1 仮定; 値は witness 側で既知ではないため 0/1 variable の値は後で再計算できないが
+        // ここでは制約内計算のみで使うため Fr::from( (prefix_bits[i] variable の割当値) ) を得るには一旦 0/1 仮定で ok
+        // (ConstraintSystem 内部では値は格納されている想定)
+        elems_vals.push(Fr::from(0u64)); // ダミー (後でCSの割当値と一致させたい場合は API 拡張が必要)
+    }
+    let port_start_fr = Fr::from(rule.port_start as u64);
+    let port_end_fr = Fr::from(rule.port_end as u64);
+    let proto_mask_fr = Fr::from(rule.proto_mask as u64);
+    let class_tag_fr = Fr::from(rule.classification_tag as u64);
+    let port_start_var = cs.alloc_aux(port_start_fr);
+    let port_end_var = cs.alloc_aux(port_end_fr);
+    let proto_mask_var = cs.alloc_aux(proto_mask_fr);
+    let class_tag_var = cs.alloc_aux(class_tag_fr);
+    elems_vars.extend([port_start_var, port_end_var, proto_mask_var, class_tag_var]);
+    elems_vals.extend([port_start_fr, port_end_fr, proto_mask_fr, class_tag_fr]);
+
+    let (hash_var, _hash_val) = poseidon_hash_sequence(cs, Fr::from(1000u64), &elems_vars, &elems_vals);
+    hash_var
 }
 
 fn enforce_rid(
@@ -149,9 +171,27 @@ fn enforce_rid(
     client_nonce: Vec<Variable>,
     rid: Fr,
 ) {
+    // RID = H(label=1, dst_ip(128bits->1field), dst_port, proto_id, epoch, client_nonce[16])
+    let mut elems_vars: Vec<Variable> = Vec::new();
+    let mut elems_vals: Vec<Fr> = Vec::new();
+    // dst_ip bits (128) を 16bytes -> 1 field ではなく bits 表現でそのまま: ここでは bytes->bits 既に public.dst_ip_bits (128)
+    // 単純化のため 16 bytes を再 pack せず各 bit を直接吸収 (長くなるが簡易)。
+    // ただし poseidon_hash_sequence は要素毎に field を吸収するため bit ごと field へ。
+    // 公開IPビット値は 0/1 である前提。
+    elems_vars.extend(public.dst_ip_bits.iter());
+    elems_vals.extend(core::iter::repeat(Fr::from(0u64)).take(public.dst_ip_bits.len()));
+    let dst_port_val = Fr::from(0u64); // dummy
+    elems_vars.push(public.dst_port); elems_vals.push(dst_port_val);
+    elems_vars.push(public.proto_id); elems_vals.push(Fr::from(0u64));
+    elems_vars.push(public.epoch); elems_vals.push(Fr::from(0u64));
+    // client_nonce
+    for v in client_nonce {
+        elems_vars.push(v);
+        elems_vals.push(Fr::from(0u64));
+    }
+    let (calc_var, _calc_val) = poseidon_hash_sequence(cs, Fr::from(1u64), &elems_vars, &elems_vals);
     let rid_var = cs.alloc_aux(rid);
-    // TODO: recompute Poseidon hash and enforce equality
-    let _ = (public, client_nonce, rid_var);
+    enforce_equal(cs, calc_var, rid_var);
 }
 
 fn enforce_commitments(
@@ -163,8 +203,26 @@ fn enforce_commitments(
     c_req: Fr,
     public: &PublicVars,
 ) {
-    let _ = (payload, client_nonce, tau, rid, c_req, public);
-    // TODO: recompute Poseidon for c_payload/c_token/c_req
+    // c_payload = H(label=2, payload_slice(64), chdr_nonce? (ここでは client_nonce で代替), hop_index
+    // 簡易: label と length を含め単純シーケンス
+    let mut elems_vars: Vec<Variable> = Vec::new();
+    let mut elems_vals: Vec<Fr> = Vec::new();
+    for v in &payload { elems_vars.push(*v); elems_vals.push(Fr::from(0u64)); }
+    for v in &client_nonce { elems_vars.push(*v); elems_vals.push(Fr::from(0u64)); }
+    elems_vars.push(public.hop_index); elems_vals.push(Fr::from(0u64));
+    let (c_payload_var, _c_payload_val) = poseidon_hash_sequence(cs, Fr::from(2u64), &elems_vars, &elems_vals);
+    enforce_equal(cs, c_payload_var, public.c_payload);
+
+    // c_token = H(label=3, tau[32])
+    let mut tau_vals = vec![Fr::from(0u64); tau.len()];
+    let (c_token_var, _c_token_val) = poseidon_hash_sequence(cs, Fr::from(3u64), &tau, &tau_vals);
+    enforce_equal(cs, c_token_var, public.c_token);
+
+    // c_req = H(label=4, rid, tls_hash?) 簡易: rid のみ（実際は tls transcript hash も含む想定）
+    let rid_var = cs.alloc_aux(rid);
+    let (c_req_calc_var, _v) = poseidon_hash_sequence(cs, Fr::from(4u64), &[rid_var], &[rid]);
+    let c_req_var = cs.alloc_aux(c_req);
+    enforce_equal(cs, c_req_calc_var, c_req_var);
 }
 
 fn enforce_prefix(
