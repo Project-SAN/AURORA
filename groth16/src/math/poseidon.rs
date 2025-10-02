@@ -21,7 +21,7 @@ pub enum MerkleTreeError {
     IndexOutOfBounds,
 }
 
-fn poseidon_config() -> PoseidonConfig<Fr> {
+pub fn poseidon_config() -> PoseidonConfig<Fr> {
     let (ark, mds) = find_poseidon_ark_and_mds::<Fr>(
         Fr::MODULUS_BIT_SIZE as u64,
         POSEIDON_RATE,
