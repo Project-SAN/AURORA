@@ -189,7 +189,7 @@ mod tests {
             0,
             [1u8; 32],
             [2u8; 32],
-            [3u8; 48],
+            [3u8; 32],
             [4u8; crate::policy::encoder::PROOF_LEN],
         );
 
@@ -198,7 +198,7 @@ mod tests {
         let decoded_section = policy.expect("policy section");
         assert_eq!(decoded_section.policy_id, 42);
         assert_eq!(decoded_section.c_token, [2u8; 32]);
-        assert_eq!(decoded_section.c_req, [3u8; 48]);
+        assert_eq!(decoded_section.c_req, [3u8; 32]);
         assert_eq!(ah2.bytes, ah.bytes);
         assert_eq!(pl2, payload);
     }

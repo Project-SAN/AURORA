@@ -4,7 +4,7 @@ use core::convert::TryInto;
 use crate::policy::witness::ProofMaterial;
 
 pub const PROOF_LEN: usize = 192;
-const POLICY_FIXED_LEN: usize = 1 + 4 + 4 + 1 + 32 + 32 + 48 + PROOF_LEN;
+const POLICY_FIXED_LEN: usize = 1 + 4 + 4 + 1 + 32 + 32 + 32 + PROOF_LEN;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PolicySection {
@@ -14,7 +14,7 @@ pub struct PolicySection {
     pub hop_index: u8,
     pub c_payload: [u8; 32],
     pub c_token: [u8; 32],
-    pub c_req: [u8; 48],
+    pub c_req: [u8; 32],
     pub proof_bytes: [u8; PROOF_LEN],
 }
 
@@ -32,7 +32,7 @@ impl PolicySection {
         hop_index: u8,
         c_payload: [u8; 32],
         c_token: [u8; 32],
-        c_req: [u8; 48],
+        c_req: [u8; 32],
         proof_bytes: [u8; PROOF_LEN],
     ) -> Self {
         Self {
@@ -123,9 +123,9 @@ pub fn decode(bytes: &[u8]) -> Result<PolicySection, EncodeError> {
     let mut c_token = [0u8; 32];
     c_token.copy_from_slice(&bytes[offset..offset + 32]);
     offset += 32;
-    let mut c_req = [0u8; 48];
-    c_req.copy_from_slice(&bytes[offset..offset + 48]);
-    offset += 48;
+    let mut c_req = [0u8; 32];
+    c_req.copy_from_slice(&bytes[offset..offset + 32]);
+    offset += 32;
     let mut proof_bytes = [0u8; PROOF_LEN];
     proof_bytes.copy_from_slice(&bytes[offset..offset + PROOF_LEN]);
     // skip any extension fields for forward compatibility

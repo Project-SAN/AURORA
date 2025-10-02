@@ -1,17 +1,23 @@
 use alloc::vec::Vec;
 
 use ark_bls12_381::Fr;
-use ark_ff::PrimeField;
-use sha2::{Digest, Sha256, Sha384};
+use ark_ff::{BigInteger, PrimeField};
+use groth16::math::poseidon::PoseidonHasher;
 
 use crate::policy::encoder::{self, EncodeError, PolicySection};
 use crate::policy::manifest::{self, PoseidonMerkleSibling, Rule, RulePackage};
 
-const PAYLOAD_SLICE_LEN: usize = 64;
-const COMM_LEN: usize = 32;
-const REQ_COMM_LEN: usize = 48;
-const NONCE_LEN: usize = 16;
-const TAU_LEN: usize = 32;
+pub const PAYLOAD_SLICE_LEN: usize = 64;
+pub const COMM_LEN: usize = 32;
+pub const REQ_COMM_LEN: usize = 32;
+pub const NONCE_LEN: usize = 16;
+pub const TAU_LEN: usize = 32;
+pub const TLS_HASH_LEN: usize = 48;
+
+const LABEL_RID: u64 = 1;
+const LABEL_C_PAYLOAD: u64 = 2;
+const LABEL_C_TOKEN: u64 = 3;
+const LABEL_C_REQ: u64 = 4;
 
 #[derive(Clone, Debug)]
 pub struct PublicInputs {
@@ -22,8 +28,8 @@ pub struct PublicInputs {
     pub proto_id: u8,
     pub epoch: u32,
     pub hop_index: u8,
-    pub c_payload: [u8; COMM_LEN],
-    pub c_token: [u8; COMM_LEN],
+    pub c_payload: Fr,
+    pub c_token: Fr,
 }
 
 impl PublicInputs {
@@ -36,22 +42,22 @@ impl PublicInputs {
         elements.push(Fr::from(self.proto_id as u64));
         elements.push(Fr::from(self.epoch as u64));
         elements.push(Fr::from(self.hop_index as u64));
-        elements.push(fr_from_u256(&self.c_payload));
-        elements.push(fr_from_u256(&self.c_token));
+        elements.push(self.c_payload);
+        elements.push(self.c_token);
         elements
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct WitnessInputs {
-    pub rid: [u8; COMM_LEN],
+    pub rid: Fr,
     pub client_nonce: [u8; NONCE_LEN],
     pub tau: [u8; TAU_LEN],
     pub payload_slice: [u8; PAYLOAD_SLICE_LEN],
     pub rule: Rule,
     pub descriptor: Fr,
     pub merkle_path: Vec<PoseidonMerkleSibling>,
-    pub c_req: [u8; REQ_COMM_LEN],
+    pub c_req: Fr,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +65,7 @@ pub struct Commitments {
     pub c_payload: [u8; COMM_LEN],
     pub c_token: [u8; COMM_LEN],
     pub c_req: [u8; REQ_COMM_LEN],
+    pub rid: [u8; COMM_LEN],
 }
 
 #[derive(Clone, Debug)]
@@ -98,7 +105,7 @@ pub struct WitnessBuilderInput {
     pub chdr_nonce: [u8; NONCE_LEN],
     pub tau: [u8; TAU_LEN],
     pub client_nonce: [u8; NONCE_LEN],
-    pub tls_transcript_hash: [u8; REQ_COMM_LEN],
+    pub tls_transcript_hash: [u8; TLS_HASH_LEN],
     pub rule_package: RulePackage,
 }
 
@@ -109,7 +116,7 @@ pub fn build_proof_material(input: WitnessBuilderInput) -> Result<ProofMaterial,
     if input.chdr_nonce.len() != NONCE_LEN || input.client_nonce.len() != NONCE_LEN {
         return Err(WitnessError::NonceWrongLen);
     }
-    if input.tls_transcript_hash.len() != REQ_COMM_LEN {
+    if input.tls_transcript_hash.len() != TLS_HASH_LEN {
         return Err(WitnessError::TranscriptWrongLen);
     }
 
@@ -118,23 +125,20 @@ pub fn build_proof_material(input: WitnessBuilderInput) -> Result<ProofMaterial,
         return Err(WitnessError::RuleDescriptorMismatch);
     }
 
-    let c_payload = sha256_concat(&[
-        &input.payload_slice,
-        &input.chdr_nonce,
-        &[input.hop_index],
-    ]);
+    let (rid_fr, rid_bytes) = poseidon_hash_bytes(
+        LABEL_RID,
+        &[&input.dst_ip, &input.dst_port.to_be_bytes(), &[input.proto_id], &input.epoch.to_be_bytes(), &input.client_nonce],
+    );
 
-    let c_token = sha256(&input.tau);
+    let (c_payload_fr, c_payload_bytes) = poseidon_hash_bytes(
+        LABEL_C_PAYLOAD,
+        &[&input.payload_slice, &input.chdr_nonce, &[input.hop_index]],
+    );
 
-    let rid = sha256_concat(&[
-        &input.dst_ip,
-        &input.dst_port.to_be_bytes(),
-        &[input.proto_id],
-        &input.epoch.to_be_bytes(),
-        &input.client_nonce,
-    ]);
+    let (c_token_fr, c_token_bytes) = poseidon_hash_bytes(LABEL_C_TOKEN, &[&input.tau]);
 
-    let c_req = sha384_concat(&[&rid, &input.tls_transcript_hash]);
+    let (c_req_fr, c_req_bytes) =
+        poseidon_hash_bytes(LABEL_C_REQ, &[&rid_bytes, &input.tls_transcript_hash]);
 
     let public_inputs = PublicInputs {
         policy_id: input.policy_id,
@@ -144,25 +148,26 @@ pub fn build_proof_material(input: WitnessBuilderInput) -> Result<ProofMaterial,
         proto_id: input.proto_id,
         epoch: input.epoch,
         hop_index: input.hop_index,
-        c_payload,
-        c_token,
+        c_payload: c_payload_fr,
+        c_token: c_token_fr,
     };
 
     let witness = WitnessInputs {
-        rid,
+        rid: rid_fr,
         client_nonce: input.client_nonce,
         tau: input.tau,
         payload_slice: input.payload_slice,
         rule: input.rule_package.rule,
         descriptor: input.rule_package.descriptor,
         merkle_path: input.rule_package.path,
-        c_req,
+        c_req: c_req_fr,
     };
 
     let commitments = Commitments {
-        c_payload,
-        c_token,
-        c_req,
+        c_payload: c_payload_bytes,
+        c_token: c_token_bytes,
+        c_req: c_req_bytes,
+        rid: rid_bytes,
     };
 
     Ok(ProofMaterial {
@@ -172,38 +177,32 @@ pub fn build_proof_material(input: WitnessBuilderInput) -> Result<ProofMaterial,
     })
 }
 
-fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().into()
-}
-
-fn sha256_concat(chunks: &[&[u8]]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for chunk in chunks {
-        hasher.update(chunk);
-    }
-    hasher.finalize().into()
-}
-
-fn sha384_concat(chunks: &[&[u8]]) -> [u8; 48] {
-    let mut hasher = Sha384::new();
-    for chunk in chunks {
-        hasher.update(chunk);
-    }
-    let mut out = [0u8; 48];
-    out.copy_from_slice(&hasher.finalize());
-    out
-}
-
 fn fr_from_u128(bytes: &[u8; 16]) -> Fr {
     let mut wide = [0u8; 32];
     wide[16..].copy_from_slice(bytes);
     Fr::from_be_bytes_mod_order(&wide)
 }
 
-fn fr_from_u256(bytes: &[u8; 32]) -> Fr {
-    Fr::from_be_bytes_mod_order(bytes)
+fn poseidon_hash_bytes(label: u64, chunks: &[&[u8]]) -> (Fr, [u8; 32]) {
+    let mut hasher = PoseidonHasher::new();
+    hasher.absorb(Fr::from(label));
+    for chunk in chunks {
+        hasher.absorb(Fr::from(chunk.len() as u64));
+        for &byte in *chunk {
+            hasher.absorb(Fr::from(byte as u64));
+        }
+    }
+    let fr = hasher.squeeze();
+    (fr, fr_to_bytes32(fr))
+}
+
+fn fr_to_bytes32(value: Fr) -> [u8; 32] {
+    let bigint = value.into_bigint();
+    let raw = bigint.to_bytes_be();
+    let mut out = [0u8; 32];
+    let start = 32 - raw.len();
+    out[start..].copy_from_slice(&raw);
+    out
 }
 
 #[cfg(test)]
@@ -238,7 +237,7 @@ mod tests {
             chdr_nonce: [2u8; NONCE_LEN],
             tau: [3u8; TAU_LEN],
             client_nonce: [4u8; NONCE_LEN],
-            tls_transcript_hash: [5u8; REQ_COMM_LEN],
+            tls_transcript_hash: [5u8; TLS_HASH_LEN],
             rule_package: package,
         };
 
@@ -246,6 +245,7 @@ mod tests {
         assert_eq!(material.public_inputs.policy_id, 7);
         assert_eq!(material.witness.rule.port_start, 1000);
         assert_eq!(material.commitments.c_payload.len(), COMM_LEN);
+        assert_eq!(material.commitments.c_req.len(), REQ_COMM_LEN);
 
         let proof_bytes = [8u8; crate::policy::encoder::PROOF_LEN];
         let section = material
