@@ -56,7 +56,7 @@ pub fn poseidon_hash_two(
     )
 }
 
-/// Poseidon メルクルパスを R1CS 上で計算し、根ハッシュ変数と値を返す。
+/// Poseidon mercle pathを R1CS 上で計算し、root hash変数と値を返す。
 /// `siblings_vars` と `sibling_values` は path.siblings と同じ長さであること。
 pub fn enforce_poseidon_merkle_path(
     cs: &mut ConstraintSystem<Fr>,
