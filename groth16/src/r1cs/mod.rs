@@ -2,6 +2,8 @@ use alloc::vec::Vec;
 use core::ops::{Add, AddAssign, Mul, MulAssign, Neg};
 use ark_ff::Field;
 
+pub mod gadgets;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VariableType {
     Input,

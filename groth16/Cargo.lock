@@ -291,6 +291,7 @@ name = "groth16"
 version = "0.1.0"
 dependencies = [
  "ark-bls12-381",
+ "ark-crypto-primitives",
  "ark-ec",
  "ark-ff",
  "ark-groth16",
