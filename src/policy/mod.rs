@@ -2,6 +2,8 @@ pub mod capsule;
 #[cfg(feature = "policy-client")]
 pub mod client;
 pub mod metadata;
+#[cfg(feature = "policy-plonk")]
+pub mod plonk;
 pub mod registry;
 
 pub use capsule::PolicyCapsule;

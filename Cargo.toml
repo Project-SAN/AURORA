@@ -18,12 +18,14 @@ curve25519-dalek = { version = "3", default-features = false, features = ["u64_b
 rand = { version = "0.8", default-features = false, features = ["small_rng"] }
 dusk-plonk = { version = "0.14", default-features = false, features = ["alloc"], optional = true }
 dusk-bytes = { version = "0.1", default-features = false, optional = true }
+rand_chacha = { version = "0.3", default-features = false, optional = true }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 ureq = { version = "2.9", optional = true, default-features = false, features = ["json", "tls"] }
 
 [features]
-policy-plonk = ["dusk-plonk", "dusk-bytes"]
+policy-plonk = ["dusk-plonk", "dusk-bytes", "rand_chacha", "spin"]
 policy-client = ["serde", "serde_json", "ureq"]
 
 [dev-dependencies]

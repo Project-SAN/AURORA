@@ -2,9 +2,13 @@ use alloc::vec::Vec;
 
 use crate::types::{Error, Result};
 
+#[cfg(feature = "policy-client")]
+use serde::{Deserialize, Serialize};
+
 pub type PolicyId = [u8; 32];
 const HEADER_LEN: usize = 32 + 2 + 4 + 2 + 4;
 
+#[cfg_attr(feature = "policy-client", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PolicyMetadata {
     pub policy_id: PolicyId,

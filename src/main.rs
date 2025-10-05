@@ -49,6 +49,15 @@ fn run_demo() -> Result<(), AnyError> {
         .as_secs() as u32;
     let exp = hornet::types::Exp(now_secs.saturating_add(60));
 
+    #[cfg(feature = "policy-plonk")]
+    let policy_metadata = {
+        let policy = Arc::new(
+            hornet::policy::plonk::PlonkPolicy::new(b"demo-policy").expect("plonk policy"),
+        );
+        hornet::policy::plonk::register_policy(policy.clone());
+        Some(policy.metadata(exp.0, 0))
+    };
+
     #[cfg(not(feature = "policy-plonk"))]
     let policy_metadata = Some(PolicyMetadata {
         policy_id: [0xAB; 32],
@@ -57,9 +66,6 @@ fn run_demo() -> Result<(), AnyError> {
         flags: 0,
         verifier_blob: Vec::new(),
     });
-
-    #[cfg(feature = "policy-plonk")]
-    let policy_metadata: Option<PolicyMetadata> = None;
 
     let registry_node1 = Arc::new(Mutex::new(PolicyRegistry::new()));
     let registry_node2 = Arc::new(Mutex::new(PolicyRegistry::new()));
@@ -386,8 +392,26 @@ fn request_policy_capsule(meta: &PolicyMetadata, payload: &[u8]) -> Option<Polic
     request_policy_capsule_impl(meta, payload)
 }
 
-#[cfg(feature = "policy-client")]
+#[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
 fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    if let Ok(capsule) = hornet::policy::plonk::prove_for_payload(&meta.policy_id, payload) {
+        return Some(capsule);
+    }
+    request_policy_capsule_http(meta, payload)
+}
+
+#[cfg(all(feature = "policy-client", not(feature = "policy-plonk")))]
+fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    request_policy_capsule_http(meta, payload)
+}
+
+#[cfg(not(feature = "policy-client"))]
+fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCapsule> {
+    None
+}
+
+#[cfg(feature = "policy-client")]
+fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
     use hornet::policy::client::{HttpProofService, ProofRequest, ProofService};
     let endpoint = std::env::var("POLICY_PROOF_URL").ok()?;
     let service = HttpProofService::new(endpoint);
@@ -397,9 +421,4 @@ fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<
         aux: &[],
     };
     service.obtain_proof(&request).ok()
-}
-
-#[cfg(not(feature = "policy-client"))]
-fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCapsule> {
-    None
 }
