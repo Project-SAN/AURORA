@@ -91,6 +91,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                             now: &time,
                             forward: &mut forward,
                             replay: &mut replay,
+                            policy: None,
                         };
                         hornet::node::process_data_forward(
                             &mut ctx,

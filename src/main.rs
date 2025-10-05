@@ -1,9 +1,12 @@
+use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
+use hornet::setup::directory::{self, DirectoryAnnouncement};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use x25519_dalek::{X25519_BASEPOINT_BYTES, x25519};
 
 type AnyError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -46,6 +49,66 @@ fn run_demo() -> Result<(), AnyError> {
         .as_secs() as u32;
     let exp = hornet::types::Exp(now_secs.saturating_add(60));
 
+    #[cfg(not(feature = "policy-plonk"))]
+    let policy_metadata = Some(PolicyMetadata {
+        policy_id: [0xAB; 32],
+        version: 1,
+        expiry: exp.0,
+        flags: 0,
+        verifier_blob: Vec::new(),
+    });
+
+    #[cfg(feature = "policy-plonk")]
+    let policy_metadata: Option<PolicyMetadata> = None;
+
+    let registry_node1 = Arc::new(Mutex::new(PolicyRegistry::new()));
+    let registry_node2 = Arc::new(Mutex::new(PolicyRegistry::new()));
+
+    if let Some(meta) = policy_metadata.as_ref() {
+        let mut setup_rng = SmallRng::seed_from_u64(0xDEAD_BEEF_CAFE_BABE);
+        let mut x_s = [0u8; 32];
+        setup_rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
+
+        let mut node_privs = Vec::with_capacity(keys_f.len());
+        let mut node_pubs = Vec::with_capacity(keys_f.len());
+        for _ in 0..keys_f.len() {
+            let mut sk = [0u8; 32];
+            setup_rng.fill_bytes(&mut sk);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519(sk, X25519_BASEPOINT_BYTES);
+            node_privs.push(sk);
+            node_pubs.push(pk);
+        }
+
+        let mut setup_state =
+            hornet::setup::source_init(&x_s, &node_pubs, keys_f.len(), exp, &mut setup_rng);
+        let announcement = DirectoryAnnouncement::with_policy(meta.clone());
+        directory::apply_to_source_state(&mut setup_state, &announcement);
+
+        for (idx, secret) in node_privs.iter().enumerate() {
+            let mut registry_guard = if idx == 0 {
+                registry_node1.lock().expect("registry lock node1")
+            } else {
+                registry_node2.lock().expect("registry lock node2")
+            };
+            let sv_ref = if idx == 0 { &sv1 } else { &sv2 };
+            let rseg_ref = if idx == 0 { &rseg_node1 } else { &rseg_node2 };
+            let _ = hornet::setup::node_process_with_policy(
+                &mut setup_state.packet,
+                secret,
+                sv_ref,
+                rseg_ref,
+                Some(&mut *registry_guard),
+            )
+            .map_err(|e| format!("setup hop {idx}: {e:?}"))?;
+        }
+    }
+
     // generate FS for each hop
     let fs1 = hornet::packet::fs_core::create(&sv1, &keys_f[0], &rseg_node1, exp)
         .map_err(|e| format!("fs create node1: {e:?}"))?;
@@ -60,14 +123,31 @@ fn run_demo() -> Result<(), AnyError> {
 
     // start node threads
     let (delivery_tx, delivery_rx) = mpsc::channel::<Vec<u8>>();
-    let handle_node1 = spawn_node("node1", socket_node1, sv1, None);
-    let handle_node2 = spawn_node("node2", socket_node2, sv2, Some(delivery_tx));
+    let handle_node1 = spawn_node("node1", socket_node1, sv1, None, registry_node1.clone());
+    let handle_node2 = spawn_node(
+        "node2",
+        socket_node2,
+        sv2,
+        Some(delivery_tx),
+        registry_node2.clone(),
+    );
 
     // give nodes a moment to start up
     thread::sleep(Duration::from_millis(200));
 
     // prepare the sending payload
-    let mut payload = b"HORNET over UDP demo".to_vec();
+    let plaintext = b"HORNET over UDP demo";
+    let mut payload = plaintext.to_vec();
+    if let Some(meta) = policy_metadata.as_ref() {
+        let capsule = request_policy_capsule(meta, plaintext).unwrap_or_else(|| PolicyCapsule {
+            policy_id: meta.policy_id,
+            version: meta.version as u8,
+            proof: Vec::new(),
+            commitment: vec![0u8; 32],
+            aux: Vec::new(),
+        });
+        capsule.prepend_to(&mut payload);
+    }
     let mut iv0_bytes = [0u8; 16];
     rng.fill_bytes(&mut iv0_bytes);
     let mut iv0 = hornet::types::Nonce(iv0_bytes);
@@ -135,9 +215,10 @@ fn spawn_node(
     socket: UdpSocket,
     sv: hornet::types::Sv,
     delivery: Option<mpsc::Sender<Vec<u8>>>,
+    policy: Arc<Mutex<PolicyRegistry>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        if let Err(e) = run_node(name, socket, sv, delivery) {
+        if let Err(e) = run_node(name, socket, sv, delivery, policy) {
             eprintln!("[{name}] Error: {e}");
         }
     })
@@ -148,6 +229,7 @@ fn run_node(
     socket: UdpSocket,
     sv: hornet::types::Sv,
     delivery: Option<mpsc::Sender<Vec<u8>>>,
+    policy_registry: Arc<Mutex<PolicyRegistry>>,
 ) -> Result<(), AnyError> {
     let mut buf = vec![0u8; 2048];
     let (len, src) = socket.recv_from(&mut buf)?;
@@ -159,12 +241,21 @@ fn run_node(
 
     let mut forward = UdpForward::new(name, socket, delivery);
     let mut replay = hornet::node::ReplayCache::new();
+    let mut registry_guard = policy_registry
+        .lock()
+        .map_err(|_| "policy registry poisoned")?;
+    let policy_ref: Option<&mut PolicyRegistry> = if registry_guard.is_empty() {
+        None
+    } else {
+        Some(&mut *registry_guard)
+    };
     let time = SystemTimeProvider;
     let mut ctx = hornet::node::NodeCtx {
         sv,
         now: &time,
         forward: &mut forward,
         replay: &mut replay,
+        policy: policy_ref,
     };
 
     hornet::node::process_data_forward(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
@@ -196,11 +287,11 @@ impl hornet::forward::Forward for UdpForward {
         rseg: &hornet::types::RoutingSegment,
         chdr: &hornet::types::Chdr,
         ahdr: &hornet::types::Ahdr,
-        payload: &mut [u8],
+        payload: &mut Vec<u8>,
     ) -> hornet::types::Result<()> {
         match decode_route(rseg)? {
             RouteTarget::Udp(addr) => {
-                let bytes = hornet::wire::encode(chdr, ahdr, payload);
+                let bytes = hornet::wire::encode(chdr, ahdr, payload.as_slice());
                 self.socket
                     .send_to(&bytes, addr)
                     .map(|_| ())
@@ -221,7 +312,7 @@ impl hornet::forward::Forward for UdpForward {
                 {
                     &payload[hornet::sphinx::KAPPA_BYTES..]
                 } else {
-                    payload
+                    payload.as_slice()
                 };
                 println!(
                     "[{}] Reached final destination. App payload: {}",
@@ -289,4 +380,26 @@ fn hex(buf: &[u8]) -> String {
         out.push(HEX[(b & 0x0F) as usize]);
     }
     String::from_utf8(out).unwrap()
+}
+
+fn request_policy_capsule(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    request_policy_capsule_impl(meta, payload)
+}
+
+#[cfg(feature = "policy-client")]
+fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    use hornet::policy::client::{HttpProofService, ProofRequest, ProofService};
+    let endpoint = std::env::var("POLICY_PROOF_URL").ok()?;
+    let service = HttpProofService::new(endpoint);
+    let request = ProofRequest {
+        policy: meta,
+        payload,
+        aux: &[],
+    };
+    service.obtain_proof(&request).ok()
+}
+
+#[cfg(not(feature = "policy-client"))]
+fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCapsule> {
+    None
 }

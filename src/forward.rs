@@ -1,4 +1,5 @@
 use crate::types::{Ahdr, Chdr, Result, RoutingSegment};
+use alloc::vec::Vec;
 
 // Minimal forwarding abstraction for no_std environments.
 // Implementors encapsulate how to transmit a packet to the next hop.
@@ -8,7 +9,7 @@ pub trait Forward {
         rseg: &RoutingSegment,
         chdr: &Chdr,
         ahdr: &Ahdr,
-        payload: &mut [u8],
+        payload: &mut Vec<u8>,
     ) -> Result<()>;
 }
 
@@ -20,7 +21,7 @@ impl Forward for NoopForward {
         _rseg: &RoutingSegment,
         _chdr: &Chdr,
         _ahdr: &Ahdr,
-        _payload: &mut [u8],
+        _payload: &mut Vec<u8>,
     ) -> Result<()> {
         Ok(())
     }

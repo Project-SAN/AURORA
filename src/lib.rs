@@ -7,6 +7,7 @@ pub mod forward;
 pub mod fragment;
 pub mod node;
 pub mod packet;
+pub mod policy;
 pub mod routing;
 pub mod setup;
 pub mod source;

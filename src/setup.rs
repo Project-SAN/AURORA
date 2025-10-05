@@ -1,7 +1,10 @@
 use crate::packet::{fs_core, fs_payload};
+use crate::policy::{PolicyMetadata, PolicyRegistry};
 use crate::sphinx;
 use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
+
+pub mod directory;
 
 // Sphinx-based setup packet carrying FS payload per HORNET setup.
 pub struct SetupPacket {
@@ -9,6 +12,7 @@ pub struct SetupPacket {
     pub shdr: sphinx::Header,
     pub payload: fs_payload::FsPayload,
     pub rmax: usize,
+    pub tlvs: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
 
 pub struct SourceSetupState {
@@ -38,12 +42,21 @@ pub fn source_init(
         shdr,
         payload,
         rmax,
+        tlvs: alloc::vec::Vec::new(),
     };
     SourceSetupState {
         packet,
         keys_f,
         eph_pub,
         seed,
+    }
+}
+
+impl SourceSetupState {
+    pub fn attach_policy_metadata(&mut self, meta: &PolicyMetadata) {
+        self.packet
+            .tlvs
+            .push(crate::policy::encode_metadata_tlv(meta));
     }
 }
 
@@ -54,10 +67,33 @@ pub fn node_process(
     sv: &Sv,
     rseg: &RoutingSegment,
 ) -> Result<Si> {
+    node_process_with_policy(pkt, node_secret, sv, rseg, None)
+}
+
+pub fn node_process_with_policy(
+    pkt: &mut SetupPacket,
+    node_secret: &[u8; 32],
+    sv: &Sv,
+    rseg: &RoutingSegment,
+    policy: Option<&mut PolicyRegistry>,
+) -> Result<Si> {
     let si = sphinx::node_process_forward(&mut pkt.shdr, node_secret)?;
     let fs = fs_core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
     let _alpha = fs_payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
+    if let Some(reg) = policy {
+        install_policy_metadata(pkt, reg)?;
+    }
     Ok(si)
+}
+
+pub fn install_policy_metadata(pkt: &SetupPacket, registry: &mut PolicyRegistry) -> Result<()> {
+    for tlv in &pkt.tlvs {
+        if tlv.first().copied() == Some(crate::policy::POLICY_METADATA_TLV) {
+            let meta = crate::policy::decode_metadata_tlv(tlv)?;
+            registry.register(meta)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -151,6 +187,74 @@ mod tests {
         for (a, b) in fses.iter().zip(fses_created.iter()) {
             assert_eq!(a.0, b.0);
         }
+    }
+
+    #[cfg_attr(feature = "policy-plonk", ignore)]
+    #[test]
+    fn policy_metadata_registers_during_setup() {
+        use crate::policy::{PolicyMetadata, PolicyRegistry};
+        use crate::types::{Exp, RoutingSegment, Sv};
+
+        let mut rng = XorShift64(0xA1B2_C3D4_E5F6_7788);
+        let lf = 2usize;
+        let rmax = lf;
+
+        fn gen_node(seed: u64) -> ([u8; 32], [u8; 32], Sv) {
+            let mut sk = [0u8; 32];
+            let mut tmp = [0u8; 32];
+            XorShift64(seed).try_fill_bytes(&mut tmp).unwrap();
+            sk.copy_from_slice(&tmp);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519_dalek::x25519(sk, x25519_dalek::X25519_BASEPOINT_BYTES);
+            let mut svb = [0u8; 16];
+            XorShift64(seed ^ 0x4444_5555)
+                .try_fill_bytes(&mut svb)
+                .unwrap();
+            (sk, pk, Sv(svb))
+        }
+
+        let mut nodes = alloc::vec::Vec::new();
+        for i in 0..lf {
+            nodes.push(gen_node(0x9900 + i as u64));
+        }
+        let pubs: alloc::vec::Vec<[u8; 32]> = nodes.iter().map(|n| n.1).collect();
+        let rs: alloc::vec::Vec<RoutingSegment> = (0..lf)
+            .map(|i| RoutingSegment(alloc::vec![i as u8; 8]))
+            .collect();
+        let exp = Exp(1_234_567);
+
+        let mut x_s = [0u8; 32];
+        rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
+
+        let mut st = crate::setup::source_init(&x_s, &pubs, rmax, exp, &mut rng);
+        let policy = PolicyMetadata {
+            policy_id: [0x77; 32],
+            version: 1,
+            expiry: exp.0,
+            flags: 0,
+            verifier_blob: alloc::vec![0xAA, 0xBB],
+        };
+        st.attach_policy_metadata(&policy);
+        assert_eq!(st.packet.tlvs.len(), 1);
+        assert!(crate::policy::decode_metadata_tlv(&st.packet.tlvs[0]).is_ok());
+
+        let mut registry = PolicyRegistry::new();
+        for i in 0..lf {
+            let _ = crate::setup::node_process_with_policy(
+                &mut st.packet,
+                &nodes[i].0,
+                &nodes[i].2,
+                &rs[i],
+                Some(&mut registry),
+            )
+            .expect("setup hop");
+        }
+        assert!(registry.get(&policy.policy_id).is_some());
     }
 
     #[test]

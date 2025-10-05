@@ -57,4 +57,5 @@ pub enum Error {
     Crypto,
     NotImplemented,
     Replay,
+    PolicyViolation,
 }
