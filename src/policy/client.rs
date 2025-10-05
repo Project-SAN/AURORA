@@ -1,27 +1,23 @@
 #![cfg(feature = "policy-client")]
 
 use crate::policy::blocklist::{Blocklist, BlocklistEntry, MerkleProof};
-use crate::policy::{PolicyCapsule, PolicyMetadata, TargetValue};
+#[cfg(feature = "policy-plonk")]
+use crate::policy::plonk::{self, PlonkPolicy};
+use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
 use alloc::borrow::ToOwned;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-#[cfg(feature = "policy-plonk")]
-use crate::policy::Extractor;
-#[cfg(feature = "policy-plonk")]
-use crate::policy::plonk::{self, PlonkPolicy};
-#[cfg(feature = "policy-plonk")]
-use alloc::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct ProofRequest<'a> {
     pub policy: &'a PolicyMetadata,
     pub payload: &'a [u8],
     pub aux: &'a [u8],
-    pub non_membership: Option<&'a NonMembershipWitness>,
+    pub non_membership: Option<NonMembershipWitness>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,6 +74,76 @@ impl NonMembershipWitness {
     }
 }
 
+pub struct ProofPreprocessor<E> {
+    extractor: E,
+    blocklist: Arc<Blocklist>,
+    fail_open: bool,
+}
+
+impl<E> ProofPreprocessor<E>
+where
+    E: Extractor,
+{
+    pub fn new(extractor: E, blocklist: Blocklist) -> Self {
+        Self {
+            extractor,
+            blocklist: Arc::new(blocklist),
+            fail_open: false,
+        }
+    }
+
+    pub fn with_shared_blocklist(extractor: E, blocklist: Arc<Blocklist>) -> Self {
+        Self {
+            extractor,
+            blocklist,
+            fail_open: false,
+        }
+    }
+
+    pub fn fail_open(mut self, enabled: bool) -> Self {
+        self.fail_open = enabled;
+        self
+    }
+
+    pub fn prepare<'a>(
+        &self,
+        policy: &'a PolicyMetadata,
+        payload: &'a [u8],
+        aux: &'a [u8],
+    ) -> Result<ProofRequest<'a>> {
+        let target = self
+            .extractor
+            .extract(payload)
+            .map_err(|_| Error::PolicyViolation)?;
+        match NonMembershipWitness::from_target(&self.blocklist, &target) {
+            Ok(witness) => Ok(ProofRequest {
+                policy,
+                payload,
+                aux,
+                non_membership: Some(witness),
+            }),
+            Err(err) if self.fail_open => {
+                let _ = err;
+                Ok(ProofRequest {
+                    policy,
+                    payload,
+                    aux,
+                    non_membership: None,
+                })
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn blocklist(&self) -> &Blocklist {
+        &self.blocklist
+    }
+
+    pub fn extractor(&self) -> &E {
+        &self.extractor
+    }
+}
+
 fn entry_from_target(target: &TargetValue) -> Result<BlocklistEntry> {
     match target {
         TargetValue::Domain(bytes) => {
@@ -119,6 +185,20 @@ impl HttpProofService {
             agent,
         }
     }
+
+    pub fn obtain_with_preprocessor<E>(
+        &self,
+        preprocessor: &ProofPreprocessor<E>,
+        policy: &PolicyMetadata,
+        payload: &[u8],
+        aux: &[u8],
+    ) -> Result<PolicyCapsule>
+    where
+        E: Extractor,
+    {
+        let request = preprocessor.prepare(policy, payload, aux)?;
+        self.obtain_proof(&request)
+    }
 }
 
 impl ProofService for HttpProofService {
@@ -147,7 +227,10 @@ struct ProofServiceRequest {
 
 impl ProofServiceRequest {
     fn from_request(req: &ProofRequest<'_>) -> Self {
-        let non_membership = req.non_membership.map(NonMembershipRequest::from_witness);
+        let non_membership = req
+            .non_membership
+            .as_ref()
+            .map(NonMembershipRequest::from_witness);
         Self {
             policy_id: hex::encode(&req.policy.policy_id),
             payload_hex: hex::encode(req.payload),
@@ -385,12 +468,32 @@ mod tests {
             policy: &meta,
             payload: b"payload",
             aux: b"",
-            non_membership: Some(&witness),
+            non_membership: Some(witness),
         };
         let body = ProofServiceRequest::from_request(&req);
         assert!(body.non_membership.is_some());
         let json = serde_json::to_string(&body).expect("json");
         assert!(json.contains("non_membership"));
+    }
+
+    #[test]
+    fn preprocessor_attaches_witness() {
+        use crate::policy::extract::HttpHostExtractor;
+
+        let meta = PolicyMetadata {
+            policy_id: [0x12; 32],
+            version: 1,
+            expiry: 0,
+            flags: 0,
+            verifier_blob: vec![],
+        };
+        let blocklist = Blocklist::from_canonical_bytes(vec![b"blocked.example".to_vec()]);
+        let preprocessor = ProofPreprocessor::new(HttpHostExtractor::default(), blocklist);
+        let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
+        let request = preprocessor.prepare(&meta, payload, b"").expect("prepared");
+        let witness = request.non_membership.as_ref().expect("witness present");
+        assert_eq!(witness.blocklist_root.len(), 32);
+        assert_eq!(witness.target_leaf[0], 0x01); // tagged exact entry
     }
 
     #[test]
