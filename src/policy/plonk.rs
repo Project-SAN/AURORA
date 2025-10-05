@@ -4,10 +4,12 @@ use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
 use crate::types::{Error, Result};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use dusk_bytes::Serializable;
 use dusk_plonk::prelude::{
-    BlsScalar, Circuit, Compiler, Composer, Error as PlonkError, Prover, PublicParameters,
+    BlsScalar, Circuit, Compiler, Composer, Constraint, Error as PlonkError, Prover,
+    PublicParameters,
 };
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -15,27 +17,40 @@ use sha2::{Digest, Sha256, Sha512};
 use spin::Mutex;
 
 #[derive(Clone, Default)]
-struct EqualityCircuit {
-    witness: BlsScalar,
-    commitment: BlsScalar,
+struct BlocklistCircuit {
+    target: BlsScalar,
+    inverses: Vec<BlsScalar>,
+    block_hashes: Vec<BlsScalar>,
 }
 
-impl EqualityCircuit {
-    fn new(witness: BlsScalar, commitment: BlsScalar) -> Self {
+impl BlocklistCircuit {
+    fn new(target: BlsScalar, inverses: Vec<BlsScalar>, block_hashes: Vec<BlsScalar>) -> Self {
         Self {
-            witness,
-            commitment,
+            target,
+            inverses,
+            block_hashes,
         }
     }
 }
 
-impl Circuit for EqualityCircuit {
+impl Circuit for BlocklistCircuit {
     fn circuit<C>(&self, composer: &mut C) -> core::result::Result<(), PlonkError>
     where
         C: Composer,
     {
-        let witness = composer.append_witness(self.witness);
-        composer.assert_equal_constant(witness, BlsScalar::zero(), Some(self.commitment));
+        let witness_target = composer.append_witness(self.target);
+        for (blocked, inverse) in self.block_hashes.iter().zip(self.inverses.iter()) {
+            let inverse_witness = composer.append_witness(*inverse);
+            let diff = composer.gate_add(
+                Constraint::new()
+                    .left(1)
+                    .a(witness_target)
+                    .constant(-*blocked),
+            );
+            let product = composer.gate_mul(Constraint::new().mult(1).a(diff).b(inverse_witness));
+            composer.assert_equal_constant(product, BlsScalar::one(), None);
+        }
+        composer.assert_equal_constant(witness_target, BlsScalar::zero(), Some(self.target));
         Ok(())
     }
 }
@@ -45,14 +60,22 @@ pub struct PlonkPolicy {
     prover: Prover,
     verifier_bytes: Vec<u8>,
     policy_id: PolicyId,
+    block_hashes: Vec<BlsScalar>,
 }
 
 impl PlonkPolicy {
     pub fn new(label: &[u8]) -> Result<Self> {
+        Self::new_with_blocklist(label, &[])
+    }
+
+    pub fn new_with_blocklist(label: &[u8], blocklist: &[Vec<u8>]) -> Result<Self> {
         let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
         let capacity = 1 << 8;
         let pp = PublicParameters::setup(capacity, &mut rng).map_err(|_| Error::Crypto)?;
-        let circuit = EqualityCircuit::default();
+        let block_hashes: Vec<BlsScalar> = blocklist.iter().map(|e| hash_to_scalar(e)).collect();
+        let dummy_inverses = vec![BlsScalar::one(); block_hashes.len()];
+        let circuit =
+            BlocklistCircuit::new(BlsScalar::zero(), dummy_inverses, block_hashes.clone());
         let (prover, verifier) =
             Compiler::compile_with_circuit(&pp, label, &circuit).map_err(|_| Error::Crypto)?;
         let verifier_bytes = verifier.to_bytes();
@@ -62,6 +85,7 @@ impl PlonkPolicy {
             prover,
             verifier_bytes,
             policy_id,
+            block_hashes,
         })
     }
 
@@ -81,12 +105,21 @@ impl PlonkPolicy {
 
     pub fn prove_payload(&self, payload: &[u8]) -> Result<PolicyCapsule> {
         let (payload_scalar, commitment_bytes) = payload_commitment(payload);
-        let circuit = EqualityCircuit::new(payload_scalar, payload_scalar);
+        let mut inverses = Vec::with_capacity(self.block_hashes.len());
+        for blocked in &self.block_hashes {
+            let diff = payload_scalar - blocked;
+            let inv = diff.invert().ok_or(Error::PolicyViolation)?;
+            inverses.push(inv);
+        }
+        let circuit = BlocklistCircuit::new(payload_scalar, inverses, self.block_hashes.clone());
         let mut rng = ChaCha20Rng::from_seed(hash_to_seed(payload));
-        let (proof, _public_inputs) = self
+        let (proof, public_inputs) = self
             .prover
             .prove(&mut rng, &circuit)
             .map_err(|_| Error::Crypto)?;
+        if public_inputs.len() != 1 || public_inputs[0] != payload_scalar {
+            return Err(Error::Crypto);
+        }
         let proof_bytes = proof.to_bytes().to_vec();
         Ok(PolicyCapsule {
             policy_id: self.policy_id,
@@ -99,14 +132,18 @@ impl PlonkPolicy {
 }
 
 fn payload_commitment(payload: &[u8]) -> (BlsScalar, Vec<u8>) {
+    let scalar = hash_to_scalar(payload);
+    let bytes = scalar.to_bytes().to_vec();
+    (scalar, bytes)
+}
+
+fn hash_to_scalar(data: &[u8]) -> BlsScalar {
     let mut hasher = Sha512::new();
-    hasher.update(payload);
+    hasher.update(data);
     let wide = hasher.finalize();
     let mut bytes = [0u8; 64];
     bytes.copy_from_slice(&wide);
-    let scalar = BlsScalar::from_bytes_wide(&bytes);
-    let bytes = scalar.to_bytes().to_vec();
-    (scalar, bytes)
+    BlsScalar::from_bytes_wide(&bytes)
 }
 
 fn compute_policy_id(bytes: &[u8]) -> PolicyId {
@@ -164,19 +201,29 @@ pub fn prove_for_payload(policy_id: &PolicyId, payload: &[u8]) -> Result<PolicyC
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn proof_roundtrip() {
-        let policy = Arc::new(PlonkPolicy::new(b"test-policy").expect("policy"));
+        let blocklist = vec![b"blocked.example".to_vec()];
+        let policy =
+            Arc::new(PlonkPolicy::new_with_blocklist(b"test-policy", &blocklist).expect("policy"));
         register_policy(policy.clone());
         let metadata = policy.metadata(42, 0);
         let mut registry = PolicyRegistry::new();
         ensure_registry(&mut registry, &metadata).expect("registry");
-        let capsule = policy.prove_payload(b"payload").expect("prove payload");
-        assert_eq!(capsule.policy_id, metadata.policy_id);
 
+        let capsule = policy
+            .prove_payload(b"safe.example")
+            .expect("prove payload");
+        assert_eq!(capsule.policy_id, metadata.policy_id);
         let mut buffer = capsule.encode();
-        buffer.extend_from_slice(b"payload");
+        buffer.extend_from_slice(b"safe.example");
         registry.enforce(&mut buffer).expect("enforce");
+
+        assert!(matches!(
+            policy.prove_payload(b"blocked.example"),
+            Err(Error::PolicyViolation)
+        ));
     }
 }

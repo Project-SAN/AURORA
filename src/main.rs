@@ -51,8 +51,10 @@ fn run_demo() -> Result<(), AnyError> {
 
     #[cfg(feature = "policy-plonk")]
     let policy_metadata = {
+        let blocklist = vec![b"blocked.example".to_vec()];
         let policy = Arc::new(
-            hornet::policy::plonk::PlonkPolicy::new(b"demo-policy").expect("plonk policy"),
+            hornet::policy::plonk::PlonkPolicy::new_with_blocklist(b"demo-policy", &blocklist)
+                .expect("plonk policy"),
         );
         hornet::policy::plonk::register_policy(policy.clone());
         Some(policy.metadata(exp.0, 0))

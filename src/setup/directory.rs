@@ -1,4 +1,4 @@
-use crate::policy::{decode_metadata_tlv, encode_metadata_tlv, PolicyMetadata};
+use crate::policy::{PolicyMetadata, decode_metadata_tlv, encode_metadata_tlv};
 use crate::types::Result;
 use alloc::{vec, vec::Vec};
 
