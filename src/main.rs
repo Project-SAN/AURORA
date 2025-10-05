@@ -1,4 +1,4 @@
-#[cfg(feature = "policy-plonk")]
+#[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
 use hornet::policy::Extractor;
 #[cfg(feature = "policy-client")]
 use hornet::policy::blocklist::Blocklist;
@@ -440,7 +440,12 @@ fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<
     request_policy_capsule_http(meta, payload)
 }
 
-#[cfg(not(feature = "policy-client"))]
+#[cfg(all(not(feature = "policy-client"), feature = "policy-plonk"))]
+fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    hornet::policy::plonk::prove_for_payload(&meta.policy_id, payload).ok()
+}
+
+#[cfg(all(not(feature = "policy-client"), not(feature = "policy-plonk")))]
 fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCapsule> {
     None
 }
