@@ -1,10 +1,22 @@
-#[cfg(all(feature = "policy-plonk", feature = "policy-client"))]
-use hornet::policy::{Extractor, extract::HttpHostExtractor};
+#[cfg(feature = "policy-plonk")]
+use hornet::policy::Extractor;
+#[cfg(feature = "policy-client")]
+use hornet::policy::blocklist::Blocklist;
+#[cfg(feature = "policy-client")]
+use hornet::policy::client::{HttpProofService, ProofPreprocessor, ProofRequest, ProofService};
+#[cfg(feature = "policy-client")]
+use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use hornet::setup::directory::{self, DirectoryAnnouncement};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
+#[cfg(feature = "policy-client")]
+use std::fs;
+#[cfg(feature = "policy-client")]
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+#[cfg(feature = "policy-client")]
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,6 +33,9 @@ fn main() {
 
 fn run_demo() -> Result<(), AnyError> {
     println!("=== HORNET UDP  ===");
+
+    #[cfg(feature = "policy-client")]
+    ensure_demo_blocklist();
 
     // setting up two nodes for a 2-hop route
     let node1_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 41001);
@@ -421,9 +436,18 @@ fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCap
 
 #[cfg(feature = "policy-client")]
 fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
-    use hornet::policy::client::{HttpProofService, ProofRequest, ProofService};
     let endpoint = std::env::var("POLICY_PROOF_URL").ok()?;
     let service = HttpProofService::new(endpoint);
+    if let Some(blocklist) = policy_blocklist() {
+        let preprocessor =
+            ProofPreprocessor::with_shared_blocklist(HttpHostExtractor::default(), blocklist);
+        match service.obtain_with_preprocessor(&preprocessor, meta, payload, &[]) {
+            Ok(capsule) => return Some(capsule),
+            Err(err) => {
+                eprintln!("policy preprocessor failed: {err:?}");
+            }
+        }
+    }
     let request = ProofRequest {
         policy: meta,
         payload,
@@ -431,4 +455,41 @@ fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<
         non_membership: None,
     };
     service.obtain_proof(&request).ok()
+}
+
+#[cfg(feature = "policy-client")]
+fn policy_blocklist() -> Option<Arc<Blocklist>> {
+    static CACHE: OnceLock<Option<Arc<Blocklist>>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = std::env::var("POLICY_BLOCKLIST_JSON").ok()?;
+            let contents = fs::read_to_string(path).ok()?;
+            let parsed = Blocklist::from_json(&contents).ok()?;
+            Some(Arc::new(parsed))
+        })
+        .clone()
+}
+
+#[cfg(feature = "policy-client")]
+fn ensure_demo_blocklist() {
+    if std::env::var("POLICY_BLOCKLIST_JSON").is_ok() {
+        return;
+    }
+    if let Err(err) = install_demo_blocklist_file() {
+        eprintln!("warning: failed to install demo blocklist: {err}");
+    }
+}
+
+#[cfg(feature = "policy-client")]
+fn install_demo_blocklist_file() -> io::Result<()> {
+    let mut path = std::env::temp_dir();
+    path.push("hornet-demo-blocklist.json");
+    if !path.exists() {
+        let json = r#"{"entries":[{"type":"exact","value":"blocked.example"}]}"#;
+        fs::write(&path, json)?;
+    }
+    unsafe {
+        std::env::set_var("POLICY_BLOCKLIST_JSON", &path);
+    }
+    Ok(())
 }
