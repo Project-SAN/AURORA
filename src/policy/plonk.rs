@@ -69,10 +69,15 @@ impl PlonkPolicy {
     }
 
     pub fn new_with_blocklist(label: &[u8], blocklist: &[Vec<u8>]) -> Result<Self> {
+        let blocklist = crate::policy::Blocklist::from_canonical_bytes(blocklist.to_vec());
+        Self::new_from_blocklist(label, &blocklist)
+    }
+
+    pub fn new_from_blocklist(label: &[u8], blocklist: &crate::policy::Blocklist) -> Result<Self> {
         let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
         let capacity = 1 << 8;
         let pp = PublicParameters::setup(capacity, &mut rng).map_err(|_| Error::Crypto)?;
-        let block_hashes: Vec<BlsScalar> = blocklist.iter().map(|e| hash_to_scalar(e)).collect();
+        let block_hashes = blocklist.hashes_as_scalars();
         let dummy_inverses = vec![BlsScalar::one(); block_hashes.len()];
         let circuit =
             BlocklistCircuit::new(BlsScalar::zero(), dummy_inverses, block_hashes.clone());

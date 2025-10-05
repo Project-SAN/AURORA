@@ -1,3 +1,4 @@
+pub mod blocklist;
 pub mod capsule;
 #[cfg(feature = "policy-client")]
 pub mod client;
@@ -7,6 +8,7 @@ pub mod metadata;
 pub mod plonk;
 pub mod registry;
 
+pub use blocklist::Blocklist;
 pub use capsule::PolicyCapsule;
 pub use extract::{ExtractionError, Extractor, TargetValue};
 pub use metadata::{PolicyId, PolicyMetadata};

@@ -9,6 +9,8 @@ use super::{PolicyCapsule, PolicyId, PolicyMetadata};
 use dusk_bytes::Serializable;
 #[cfg(feature = "policy-plonk")]
 use dusk_plonk::{composer::Verifier as PlonkVerifier, prelude::BlsScalar, proof_system::Proof};
+#[cfg(feature = "policy-plonk")]
+use sha2::{Digest, Sha256};
 
 pub struct PolicyEntry {
     pub metadata: PolicyMetadata,
@@ -47,13 +49,22 @@ impl PolicyEntry {
         }
         let mut commit_bytes = [0u8; BlsScalar::SIZE];
         commit_bytes.copy_from_slice(&capsule.commitment);
-        let public_input =
+        let target_hash =
             BlsScalar::from_bytes(&commit_bytes).map_err(|_| Error::PolicyViolation)?;
 
+        let _ = hash_blocklist(&self.metadata.verifier_blob);
+
         self.verifier
-            .verify(&proof, core::slice::from_ref(&public_input))
+            .verify(&proof, core::slice::from_ref(&target_hash))
             .map_err(|_| Error::PolicyViolation)
     }
+}
+
+#[cfg(feature = "policy-plonk")]
+fn hash_blocklist(bytes: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().to_vec()
 }
 
 pub struct PolicyRegistry {

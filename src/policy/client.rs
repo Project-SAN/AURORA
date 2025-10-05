@@ -1,16 +1,104 @@
 #![cfg(feature = "policy-client")]
 
-use crate::policy::{PolicyCapsule, PolicyMetadata};
+use crate::policy::blocklist::{Blocklist, BlocklistEntry, MerkleProof};
+use crate::policy::{PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+#[cfg(feature = "policy-plonk")]
+use crate::policy::Extractor;
+#[cfg(feature = "policy-plonk")]
+use crate::policy::plonk::{self, PlonkPolicy};
+#[cfg(feature = "policy-plonk")]
+use alloc::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct ProofRequest<'a> {
     pub policy: &'a PolicyMetadata,
     pub payload: &'a [u8],
     pub aux: &'a [u8],
+    pub non_membership: Option<&'a NonMembershipWitness>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NonMembershipWitness {
+    pub target_leaf: Vec<u8>,
+    pub target_hash: [u8; 32],
+    pub blocklist_root: [u8; 32],
+    pub gap_index: usize,
+    pub left: Option<MerkleProof>,
+    pub right: Option<MerkleProof>,
+}
+
+impl NonMembershipWitness {
+    pub fn from_canonical_leaf(blocklist: &Blocklist, leaf: Vec<u8>) -> Result<Self> {
+        let leaves = blocklist.canonical_leaves();
+        match leaves.binary_search(&leaf) {
+            Ok(_) => Err(Error::PolicyViolation),
+            Err(index) => {
+                let blocklist_root = blocklist.merkle_root();
+                let left = if index > 0 {
+                    blocklist.merkle_proof(index - 1)
+                } else {
+                    None
+                };
+                let right = if index < blocklist.len() {
+                    blocklist.merkle_proof(index)
+                } else {
+                    None
+                };
+                let mut hasher = Sha256::new();
+                hasher.update(&leaf);
+                let digest = hasher.finalize();
+                let mut target_hash = [0u8; 32];
+                target_hash.copy_from_slice(&digest);
+                Ok(Self {
+                    target_leaf: leaf,
+                    target_hash,
+                    blocklist_root,
+                    gap_index: index,
+                    left,
+                    right,
+                })
+            }
+        }
+    }
+
+    pub fn from_entry(blocklist: &Blocklist, entry: &BlocklistEntry) -> Result<Self> {
+        Self::from_canonical_leaf(blocklist, entry.leaf_bytes())
+    }
+
+    pub fn from_target(blocklist: &Blocklist, target: &TargetValue) -> Result<Self> {
+        let entry = entry_from_target(target)?;
+        Self::from_entry(blocklist, &entry)
+    }
+}
+
+fn entry_from_target(target: &TargetValue) -> Result<BlocklistEntry> {
+    match target {
+        TargetValue::Domain(bytes) => {
+            let value = core::str::from_utf8(bytes).map_err(|_| Error::Crypto)?;
+            Ok(BlocklistEntry::Exact(value.to_owned()))
+        }
+        TargetValue::Ipv4(addr) => {
+            let bytes = addr.to_vec();
+            Ok(BlocklistEntry::Range {
+                start: bytes.clone(),
+                end: bytes,
+            })
+        }
+        TargetValue::Ipv6(addr) => {
+            let bytes = addr.to_vec();
+            Ok(BlocklistEntry::Range {
+                start: bytes.clone(),
+                end: bytes,
+            })
+        }
+    }
 }
 
 pub trait ProofService {
@@ -53,14 +141,60 @@ struct ProofServiceRequest {
     policy_id: String,
     payload_hex: String,
     aux_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    non_membership: Option<NonMembershipRequest>,
 }
 
 impl ProofServiceRequest {
     fn from_request(req: &ProofRequest<'_>) -> Self {
+        let non_membership = req.non_membership.map(NonMembershipRequest::from_witness);
         Self {
             policy_id: hex::encode(&req.policy.policy_id),
             payload_hex: hex::encode(req.payload),
             aux_hex: hex::encode(req.aux),
+            non_membership,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct NonMembershipRequest {
+    target_leaf_hex: String,
+    target_hash_hex: String,
+    root_hex: String,
+    gap_index: u64,
+    left: Option<MerkleProofRequest>,
+    right: Option<MerkleProofRequest>,
+}
+
+impl NonMembershipRequest {
+    fn from_witness(witness: &NonMembershipWitness) -> Self {
+        Self {
+            target_leaf_hex: hex::encode(&witness.target_leaf),
+            target_hash_hex: hex::encode(&witness.target_hash),
+            root_hex: hex::encode(&witness.blocklist_root),
+            gap_index: witness.gap_index as u64,
+            left: witness.left.as_ref().map(MerkleProofRequest::from_proof),
+            right: witness.right.as_ref().map(MerkleProofRequest::from_proof),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MerkleProofRequest {
+    index: u64,
+    leaf_hex: String,
+    leaf_hash_hex: String,
+    siblings_hex: Vec<String>,
+}
+
+impl MerkleProofRequest {
+    fn from_proof(proof: &MerkleProof) -> Self {
+        Self {
+            index: proof.index as u64,
+            leaf_hex: hex::encode(&proof.leaf_bytes),
+            leaf_hash_hex: hex::encode(&proof.leaf_hash),
+            siblings_hex: proof.siblings.iter().map(|sib| hex::encode(sib)).collect(),
         }
     }
 }
@@ -117,6 +251,39 @@ where
 {
     fn obtain_proof(&self, request: &ProofRequest<'_>) -> Result<PolicyCapsule> {
         (self.handler)(request)
+    }
+}
+
+#[cfg(feature = "policy-plonk")]
+pub struct PlonkProofService<E: Extractor + Send + Sync + 'static> {
+    extractor: E,
+    policy: Arc<PlonkPolicy>,
+}
+
+#[cfg(feature = "policy-plonk")]
+impl<E: Extractor + Send + Sync + 'static> PlonkProofService<E> {
+    pub fn new(label: &[u8], blocklist: Vec<Vec<u8>>, extractor: E) -> Result<Self> {
+        let policy = Arc::new(
+            PlonkPolicy::new_with_blocklist(label, &blocklist).map_err(|_| Error::Crypto)?,
+        );
+        plonk::register_policy(policy.clone());
+        Ok(Self { extractor, policy })
+    }
+
+    pub fn policy_metadata(&self, expiry: u32, flags: u16) -> PolicyMetadata {
+        self.policy.metadata(expiry, flags)
+    }
+}
+
+#[cfg(feature = "policy-plonk")]
+impl<E: Extractor + Send + Sync + 'static> ProofService for PlonkProofService<E> {
+    fn obtain_proof(&self, request: &ProofRequest<'_>) -> Result<PolicyCapsule> {
+        let target = self
+            .extractor
+            .extract(request.payload)
+            .map_err(|_| Error::PolicyViolation)?;
+        let bytes = target.as_bytes();
+        self.policy.prove_payload(&bytes)
     }
 }
 
@@ -194,10 +361,36 @@ mod tests {
             policy: &meta,
             payload: b"hello",
             aux: b"",
+            non_membership: None,
         };
         let body = ProofServiceRequest::from_request(&req);
         assert_eq!(body.policy_id.len(), 64);
         assert_eq!(body.payload_hex, "68656c6c6f");
+        assert!(body.non_membership.is_none());
+    }
+
+    #[test]
+    fn non_membership_witness_serialises() {
+        let meta = PolicyMetadata {
+            policy_id: [0x77; 32],
+            version: 1,
+            expiry: 100,
+            flags: 0,
+            verifier_blob: vec![],
+        };
+        let blocklist = Blocklist::from_canonical_bytes(vec![b"aaa".to_vec(), b"ccc".to_vec()]);
+        let witness = NonMembershipWitness::from_canonical_leaf(&blocklist, b"bbb".to_vec())
+            .expect("witness");
+        let req = ProofRequest {
+            policy: &meta,
+            payload: b"payload",
+            aux: b"",
+            non_membership: Some(&witness),
+        };
+        let body = ProofServiceRequest::from_request(&req);
+        assert!(body.non_membership.is_some());
+        let json = serde_json::to_string(&body).expect("json");
+        assert!(json.contains("non_membership"));
     }
 
     #[test]
@@ -227,6 +420,7 @@ mod tests {
             policy: &meta,
             payload: b"data",
             aux: b"aux",
+            non_membership: None,
         };
         let service = MockProofService::new(|_| {
             Ok(PolicyCapsule {
@@ -239,5 +433,24 @@ mod tests {
         });
         let capsule = service.obtain_proof(&req).expect("capsule");
         assert_eq!(capsule.proof, vec![1, 2, 3]);
+    }
+
+    #[cfg(feature = "policy-plonk")]
+    #[test]
+    fn plonk_service_generates_proof() {
+        use crate::policy::extract::HttpHostExtractor;
+        let blocklist = vec![b"blocked.example".to_vec()];
+        let service = PlonkProofService::new(b"test", blocklist, HttpHostExtractor::default())
+            .expect("plonk service");
+        let metadata = service.policy_metadata(42, 0);
+        let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
+        let request = ProofRequest {
+            policy: &metadata,
+            payload,
+            aux: &[],
+            non_membership: None,
+        };
+        let capsule = service.obtain_proof(&request).expect("capsule");
+        assert_eq!(capsule.policy_id, metadata.policy_id);
     }
 }

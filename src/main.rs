@@ -1,3 +1,5 @@
+#[cfg(all(feature = "policy-plonk", feature = "policy-client"))]
+use hornet::policy::{Extractor, extract::HttpHostExtractor};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use hornet::setup::directory::{self, DirectoryAnnouncement};
 use rand::rngs::SmallRng;
@@ -396,8 +398,13 @@ fn request_policy_capsule(meta: &PolicyMetadata, payload: &[u8]) -> Option<Polic
 
 #[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
 fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
-    if let Ok(capsule) = hornet::policy::plonk::prove_for_payload(&meta.policy_id, payload) {
-        return Some(capsule);
+    let extractor = HttpHostExtractor::default();
+    if let Ok(target) = extractor.extract(payload) {
+        if let Ok(capsule) =
+            hornet::policy::plonk::prove_for_payload(&meta.policy_id, &target.as_bytes())
+        {
+            return Some(capsule);
+        }
     }
     request_policy_capsule_http(meta, payload)
 }
@@ -421,6 +428,7 @@ fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<
         policy: meta,
         payload,
         aux: &[],
+        non_membership: None,
     };
     service.obtain_proof(&request).ok()
 }
