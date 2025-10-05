@@ -16,6 +16,8 @@ use std::fs;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 #[cfg(feature = "policy-client")]
+use std::path::PathBuf;
+#[cfg(feature = "policy-client")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -481,15 +483,63 @@ fn ensure_demo_blocklist() {
 }
 
 #[cfg(feature = "policy-client")]
-fn install_demo_blocklist_file() -> io::Result<()> {
+fn install_demo_blocklist_file() -> io::Result<PathBuf> {
     let mut path = std::env::temp_dir();
     path.push("hornet-demo-blocklist.json");
-    if !path.exists() {
-        let json = r#"{"entries":[{"type":"exact","value":"blocked.example"}]}"#;
-        fs::write(&path, json)?;
-    }
+    let json = r#"{
+        "entries": [
+            {"type": "exact", "value": "blocked.example"},
+            {"type": "prefix", "value": "admin."},
+            {"type": "cidr", "value": "10.0.0.0/8"},
+            {"type": "range", "start": "1000", "end": "1fff"}
+        ]
+    }"#;
+    fs::write(&path, json)?;
     unsafe {
         std::env::set_var("POLICY_BLOCKLIST_JSON", &path);
     }
-    Ok(())
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "policy-client")]
+    use super::{
+        Arc, Blocklist, HttpHostExtractor, PolicyMetadata, ProofPreprocessor,
+        ensure_demo_blocklist, fs, install_demo_blocklist_file,
+    };
+
+    #[cfg(feature = "policy-client")]
+    #[test]
+    fn demo_blocklist_drives_preprocessor() {
+        unsafe {
+            std::env::remove_var("POLICY_BLOCKLIST_JSON");
+        }
+        let path = install_demo_blocklist_file().expect("install");
+        assert!(path.as_path().exists());
+        ensure_demo_blocklist();
+
+        let contents = fs::read_to_string(&path).expect("read blocklist");
+        let blocklist = Blocklist::from_json(&contents).expect("parse blocklist");
+        assert!(blocklist.len() >= 4, "len={}", blocklist.len());
+
+        let preprocessor = ProofPreprocessor::with_shared_blocklist(
+            HttpHostExtractor::default(),
+            Arc::new(blocklist),
+        );
+        let meta = PolicyMetadata {
+            policy_id: [0xAA; 32],
+            version: 1,
+            expiry: 0,
+            flags: 0,
+            verifier_blob: Vec::new(),
+        };
+        let payload = b"GET / HTTP/1.1\r\nHost: demo.example\r\n\r\n";
+        let request = preprocessor.prepare(&meta, payload, &[]).expect("request");
+        assert!(request.non_membership.is_some());
+
+        unsafe {
+            std::env::remove_var("POLICY_BLOCKLIST_JSON");
+        }
+    }
 }

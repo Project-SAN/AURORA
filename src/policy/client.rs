@@ -493,7 +493,24 @@ mod tests {
         let request = preprocessor.prepare(&meta, payload, b"").expect("prepared");
         let witness = request.non_membership.as_ref().expect("witness present");
         assert_eq!(witness.blocklist_root.len(), 32);
-        assert_eq!(witness.target_leaf[0], 0x01); // tagged exact entry
+        assert_eq!(witness.target_leaf[0], 0x01); // TAG_EXACT from blocklist encoding
+    }
+
+    #[test]
+    fn witness_from_ipv4_target() {
+        let blocklist = Blocklist::new(vec![
+            BlocklistEntry::Range {
+                start: vec![0, 0, 0, 0],
+                end: vec![10, 0, 0, 0],
+            },
+            BlocklistEntry::Range {
+                start: vec![192, 168, 0, 0],
+                end: vec![192, 168, 255, 255],
+            },
+        ]);
+        let target = TargetValue::Ipv4([11, 0, 0, 1]);
+        let witness = NonMembershipWitness::from_target(&blocklist, &target).expect("ipv4 witness");
+        assert_eq!(witness.target_leaf[0], 0x04); // TAG_RANGE from blocklist encoding
     }
 
     #[test]
