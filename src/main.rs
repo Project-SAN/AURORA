@@ -164,8 +164,7 @@ fn run_demo() -> Result<(), AnyError> {
 
     // prepare the sending payload
     let plaintext = b"HORNET over UDP demo";
-    let mut payload = plaintext.to_vec();
-    if let Some(meta) = policy_metadata.as_ref() {
+    let capsule_bytes = policy_metadata.as_ref().map(|meta| {
         let capsule = request_policy_capsule(meta, plaintext).unwrap_or_else(|| PolicyCapsule {
             policy_id: meta.policy_id,
             version: meta.version as u8,
@@ -173,16 +172,23 @@ fn run_demo() -> Result<(), AnyError> {
             commitment: vec![0u8; 32],
             aux: Vec::new(),
         });
-        capsule.prepend_to(&mut payload);
-    }
+        capsule.encode()
+    });
+    let mut body = plaintext.to_vec();
     let mut iv0_bytes = [0u8; 16];
     rng.fill_bytes(&mut iv0_bytes);
     let mut iv0 = hornet::types::Nonce(iv0_bytes);
     let mut chdr = hornet::packet::chdr::data_header(keys_f.len() as u8, iv0);
 
     // build a data packet（adapt onion encryption）
-    hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut payload)
+    hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut body)
         .map_err(|e| format!("build_data_packet: {e:?}"))?;
+    let payload = if let Some(mut capsule) = capsule_bytes {
+        capsule.extend_from_slice(&body);
+        capsule
+    } else {
+        body
+    };
     let wire_bytes = hornet::wire::encode(&chdr, &ahdr, &payload);
 
     println!(
@@ -332,6 +338,9 @@ impl hornet::forward::Forward for UdpForward {
                 Ok(())
             }
             RouteTarget::Deliver => {
+                if let Ok((_, consumed)) = PolicyCapsule::decode(payload.as_slice()) {
+                    payload.drain(0..consumed);
+                }
                 let trimmed = if payload.len() >= hornet::sphinx::KAPPA_BYTES
                     && payload[..hornet::sphinx::KAPPA_BYTES]
                         .iter()

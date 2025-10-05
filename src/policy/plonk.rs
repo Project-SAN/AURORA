@@ -224,7 +224,8 @@ mod tests {
         assert_eq!(capsule.policy_id, metadata.policy_id);
         let mut buffer = capsule.encode();
         buffer.extend_from_slice(b"safe.example");
-        registry.enforce(&mut buffer).expect("enforce");
+        let (_capsule, consumed) = registry.enforce(&mut buffer).expect("enforce");
+        assert_eq!(consumed, capsule.encode().len());
 
         assert!(matches!(
             policy.prove_payload(b"blocked.example"),

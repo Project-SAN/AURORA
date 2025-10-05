@@ -88,8 +88,8 @@ impl PolicyRegistry {
         self.entries.get(policy_id)
     }
 
-    pub fn enforce(&self, payload: &mut Vec<u8>) -> Result<PolicyCapsule> {
-        let capsule = PolicyCapsule::peel_from(payload)?;
+    pub fn enforce(&self, payload: &mut Vec<u8>) -> Result<(PolicyCapsule, usize)> {
+        let (capsule, consumed) = PolicyCapsule::decode(payload.as_slice())?;
         let entry = self
             .entries
             .get(&capsule.policy_id)
@@ -101,7 +101,7 @@ impl PolicyRegistry {
         #[cfg(not(feature = "policy-plonk"))]
         let _ = entry;
 
-        Ok(capsule)
+        Ok((capsule, consumed))
     }
 
     pub fn is_empty(&self) -> bool {
