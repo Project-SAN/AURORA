@@ -1,9 +1,28 @@
+#[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
+use hornet::policy::Extractor;
+#[cfg(feature = "policy-client")]
+use hornet::policy::blocklist::Blocklist;
+#[cfg(feature = "policy-client")]
+use hornet::policy::client::{HttpProofService, ProofPreprocessor, ProofRequest, ProofService};
+#[cfg(feature = "policy-client")]
+use hornet::policy::extract::HttpHostExtractor;
+use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
+use hornet::setup::directory::{self, DirectoryAnnouncement};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
+#[cfg(feature = "policy-client")]
+use std::fs;
+#[cfg(feature = "policy-client")]
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
-use std::sync::mpsc;
+#[cfg(feature = "policy-client")]
+use std::path::PathBuf;
+#[cfg(feature = "policy-client")]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use x25519_dalek::{X25519_BASEPOINT_BYTES, x25519};
 
 type AnyError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -16,6 +35,9 @@ fn main() {
 
 fn run_demo() -> Result<(), AnyError> {
     println!("=== HORNET UDP  ===");
+
+    #[cfg(feature = "policy-client")]
+    ensure_demo_blocklist();
 
     // setting up two nodes for a 2-hop route
     let node1_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 41001);
@@ -46,6 +68,74 @@ fn run_demo() -> Result<(), AnyError> {
         .as_secs() as u32;
     let exp = hornet::types::Exp(now_secs.saturating_add(60));
 
+    #[cfg(feature = "policy-plonk")]
+    let policy_metadata = {
+        let blocklist = vec![b"blocked.example".to_vec()];
+        let policy = Arc::new(
+            hornet::policy::plonk::PlonkPolicy::new_with_blocklist(b"demo-policy", &blocklist)
+                .expect("plonk policy"),
+        );
+        hornet::policy::plonk::register_policy(policy.clone());
+        Some(policy.metadata(exp.0, 0))
+    };
+
+    #[cfg(not(feature = "policy-plonk"))]
+    let policy_metadata = Some(PolicyMetadata {
+        policy_id: [0xAB; 32],
+        version: 1,
+        expiry: exp.0,
+        flags: 0,
+        verifier_blob: Vec::new(),
+    });
+
+    let registry_node1 = Arc::new(Mutex::new(PolicyRegistry::new()));
+    let registry_node2 = Arc::new(Mutex::new(PolicyRegistry::new()));
+
+    if let Some(meta) = policy_metadata.as_ref() {
+        let mut setup_rng = SmallRng::seed_from_u64(0xDEAD_BEEF_CAFE_BABE);
+        let mut x_s = [0u8; 32];
+        setup_rng.fill_bytes(&mut x_s);
+        x_s[0] &= 248;
+        x_s[31] &= 127;
+        x_s[31] |= 64;
+
+        let mut node_privs = Vec::with_capacity(keys_f.len());
+        let mut node_pubs = Vec::with_capacity(keys_f.len());
+        for _ in 0..keys_f.len() {
+            let mut sk = [0u8; 32];
+            setup_rng.fill_bytes(&mut sk);
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+            let pk = x25519(sk, X25519_BASEPOINT_BYTES);
+            node_privs.push(sk);
+            node_pubs.push(pk);
+        }
+
+        let mut setup_state =
+            hornet::setup::source_init(&x_s, &node_pubs, keys_f.len(), exp, &mut setup_rng);
+        let announcement = DirectoryAnnouncement::with_policy(meta.clone());
+        directory::apply_to_source_state(&mut setup_state, &announcement);
+
+        for (idx, secret) in node_privs.iter().enumerate() {
+            let mut registry_guard = if idx == 0 {
+                registry_node1.lock().expect("registry lock node1")
+            } else {
+                registry_node2.lock().expect("registry lock node2")
+            };
+            let sv_ref = if idx == 0 { &sv1 } else { &sv2 };
+            let rseg_ref = if idx == 0 { &rseg_node1 } else { &rseg_node2 };
+            let _ = hornet::setup::node_process_with_policy(
+                &mut setup_state.packet,
+                secret,
+                sv_ref,
+                rseg_ref,
+                Some(&mut *registry_guard),
+            )
+            .map_err(|e| format!("setup hop {idx}: {e:?}"))?;
+        }
+    }
+
     // generate FS for each hop
     let fs1 = hornet::packet::fs_core::create(&sv1, &keys_f[0], &rseg_node1, exp)
         .map_err(|e| format!("fs create node1: {e:?}"))?;
@@ -60,22 +150,45 @@ fn run_demo() -> Result<(), AnyError> {
 
     // start node threads
     let (delivery_tx, delivery_rx) = mpsc::channel::<Vec<u8>>();
-    let handle_node1 = spawn_node("node1", socket_node1, sv1, None);
-    let handle_node2 = spawn_node("node2", socket_node2, sv2, Some(delivery_tx));
+    let handle_node1 = spawn_node("node1", socket_node1, sv1, None, registry_node1.clone());
+    let handle_node2 = spawn_node(
+        "node2",
+        socket_node2,
+        sv2,
+        Some(delivery_tx),
+        registry_node2.clone(),
+    );
 
     // give nodes a moment to start up
     thread::sleep(Duration::from_millis(200));
 
     // prepare the sending payload
-    let mut payload = b"HORNET over UDP demo".to_vec();
+    let plaintext = b"HORNET over UDP demo";
+    let capsule_bytes = policy_metadata.as_ref().map(|meta| {
+        let capsule = request_policy_capsule(meta, plaintext).unwrap_or_else(|| PolicyCapsule {
+            policy_id: meta.policy_id,
+            version: meta.version as u8,
+            proof: Vec::new(),
+            commitment: vec![0u8; 32],
+            aux: Vec::new(),
+        });
+        capsule.encode()
+    });
+    let mut body = plaintext.to_vec();
     let mut iv0_bytes = [0u8; 16];
     rng.fill_bytes(&mut iv0_bytes);
     let mut iv0 = hornet::types::Nonce(iv0_bytes);
     let mut chdr = hornet::packet::chdr::data_header(keys_f.len() as u8, iv0);
 
     // build a data packet（adapt onion encryption）
-    hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut payload)
+    hornet::source::build_data_packet(&mut chdr, &ahdr, &keys_f, &mut iv0, &mut body)
         .map_err(|e| format!("build_data_packet: {e:?}"))?;
+    let payload = if let Some(mut capsule) = capsule_bytes {
+        capsule.extend_from_slice(&body);
+        capsule
+    } else {
+        body
+    };
     let wire_bytes = hornet::wire::encode(&chdr, &ahdr, &payload);
 
     println!(
@@ -135,9 +248,10 @@ fn spawn_node(
     socket: UdpSocket,
     sv: hornet::types::Sv,
     delivery: Option<mpsc::Sender<Vec<u8>>>,
+    policy: Arc<Mutex<PolicyRegistry>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        if let Err(e) = run_node(name, socket, sv, delivery) {
+        if let Err(e) = run_node(name, socket, sv, delivery, policy) {
             eprintln!("[{name}] Error: {e}");
         }
     })
@@ -148,6 +262,7 @@ fn run_node(
     socket: UdpSocket,
     sv: hornet::types::Sv,
     delivery: Option<mpsc::Sender<Vec<u8>>>,
+    policy_registry: Arc<Mutex<PolicyRegistry>>,
 ) -> Result<(), AnyError> {
     let mut buf = vec![0u8; 2048];
     let (len, src) = socket.recv_from(&mut buf)?;
@@ -159,12 +274,21 @@ fn run_node(
 
     let mut forward = UdpForward::new(name, socket, delivery);
     let mut replay = hornet::node::ReplayCache::new();
+    let mut registry_guard = policy_registry
+        .lock()
+        .map_err(|_| "policy registry poisoned")?;
+    let policy_ref: Option<&mut PolicyRegistry> = if registry_guard.is_empty() {
+        None
+    } else {
+        Some(&mut *registry_guard)
+    };
     let time = SystemTimeProvider;
     let mut ctx = hornet::node::NodeCtx {
         sv,
         now: &time,
         forward: &mut forward,
         replay: &mut replay,
+        policy: policy_ref,
     };
 
     hornet::node::process_data_forward(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
@@ -196,11 +320,11 @@ impl hornet::forward::Forward for UdpForward {
         rseg: &hornet::types::RoutingSegment,
         chdr: &hornet::types::Chdr,
         ahdr: &hornet::types::Ahdr,
-        payload: &mut [u8],
+        payload: &mut Vec<u8>,
     ) -> hornet::types::Result<()> {
         match decode_route(rseg)? {
             RouteTarget::Udp(addr) => {
-                let bytes = hornet::wire::encode(chdr, ahdr, payload);
+                let bytes = hornet::wire::encode(chdr, ahdr, payload.as_slice());
                 self.socket
                     .send_to(&bytes, addr)
                     .map(|_| ())
@@ -214,6 +338,9 @@ impl hornet::forward::Forward for UdpForward {
                 Ok(())
             }
             RouteTarget::Deliver => {
+                if let Ok((_, consumed)) = PolicyCapsule::decode(payload.as_slice()) {
+                    payload.drain(0..consumed);
+                }
                 let trimmed = if payload.len() >= hornet::sphinx::KAPPA_BYTES
                     && payload[..hornet::sphinx::KAPPA_BYTES]
                         .iter()
@@ -221,7 +348,7 @@ impl hornet::forward::Forward for UdpForward {
                 {
                     &payload[hornet::sphinx::KAPPA_BYTES..]
                 } else {
-                    payload
+                    payload.as_slice()
                 };
                 println!(
                     "[{}] Reached final destination. App payload: {}",
@@ -289,4 +416,144 @@ fn hex(buf: &[u8]) -> String {
         out.push(HEX[(b & 0x0F) as usize]);
     }
     String::from_utf8(out).unwrap()
+}
+
+fn request_policy_capsule(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    request_policy_capsule_impl(meta, payload)
+}
+
+#[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
+fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    let extractor = HttpHostExtractor::default();
+    if let Ok(target) = extractor.extract(payload) {
+        if let Ok(capsule) =
+            hornet::policy::plonk::prove_for_payload(&meta.policy_id, &target.as_bytes())
+        {
+            return Some(capsule);
+        }
+    }
+    request_policy_capsule_http(meta, payload)
+}
+
+#[cfg(all(feature = "policy-client", not(feature = "policy-plonk")))]
+fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    request_policy_capsule_http(meta, payload)
+}
+
+#[cfg(all(not(feature = "policy-client"), feature = "policy-plonk"))]
+fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    hornet::policy::plonk::prove_for_payload(&meta.policy_id, payload).ok()
+}
+
+#[cfg(all(not(feature = "policy-client"), not(feature = "policy-plonk")))]
+fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCapsule> {
+    None
+}
+
+#[cfg(feature = "policy-client")]
+fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
+    let endpoint = std::env::var("POLICY_PROOF_URL").ok()?;
+    let service = HttpProofService::new(endpoint);
+    if let Some(blocklist) = policy_blocklist() {
+        let preprocessor =
+            ProofPreprocessor::with_shared_blocklist(HttpHostExtractor::default(), blocklist);
+        match service.obtain_with_preprocessor(&preprocessor, meta, payload, &[]) {
+            Ok(capsule) => return Some(capsule),
+            Err(err) => {
+                eprintln!("policy preprocessor failed: {err:?}");
+            }
+        }
+    }
+    let request = ProofRequest {
+        policy: meta,
+        payload,
+        aux: &[],
+        non_membership: None,
+    };
+    service.obtain_proof(&request).ok()
+}
+
+#[cfg(feature = "policy-client")]
+fn policy_blocklist() -> Option<Arc<Blocklist>> {
+    static CACHE: OnceLock<Option<Arc<Blocklist>>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = std::env::var("POLICY_BLOCKLIST_JSON").ok()?;
+            let contents = fs::read_to_string(path).ok()?;
+            let parsed = Blocklist::from_json(&contents).ok()?;
+            Some(Arc::new(parsed))
+        })
+        .clone()
+}
+
+#[cfg(feature = "policy-client")]
+fn ensure_demo_blocklist() {
+    if std::env::var("POLICY_BLOCKLIST_JSON").is_ok() {
+        return;
+    }
+    if let Err(err) = install_demo_blocklist_file() {
+        eprintln!("warning: failed to install demo blocklist: {err}");
+    }
+}
+
+#[cfg(feature = "policy-client")]
+fn install_demo_blocklist_file() -> io::Result<PathBuf> {
+    let mut path = std::env::temp_dir();
+    path.push("hornet-demo-blocklist.json");
+    let json = r#"{
+        "entries": [
+            {"type": "exact", "value": "blocked.example"},
+            {"type": "prefix", "value": "admin."},
+            {"type": "cidr", "value": "10.0.0.0/8"},
+            {"type": "range", "start": "1000", "end": "1fff"}
+        ]
+    }"#;
+    fs::write(&path, json)?;
+    unsafe {
+        std::env::set_var("POLICY_BLOCKLIST_JSON", &path);
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "policy-client")]
+    use super::{
+        Arc, Blocklist, HttpHostExtractor, PolicyMetadata, ProofPreprocessor,
+        ensure_demo_blocklist, fs, install_demo_blocklist_file,
+    };
+
+    #[cfg(feature = "policy-client")]
+    #[test]
+    fn demo_blocklist_drives_preprocessor() {
+        unsafe {
+            std::env::remove_var("POLICY_BLOCKLIST_JSON");
+        }
+        let path = install_demo_blocklist_file().expect("install");
+        assert!(path.as_path().exists());
+        ensure_demo_blocklist();
+
+        let contents = fs::read_to_string(&path).expect("read blocklist");
+        let blocklist = Blocklist::from_json(&contents).expect("parse blocklist");
+        assert!(blocklist.len() >= 4, "len={}", blocklist.len());
+
+        let preprocessor = ProofPreprocessor::with_shared_blocklist(
+            HttpHostExtractor::default(),
+            Arc::new(blocklist),
+        );
+        let meta = PolicyMetadata {
+            policy_id: [0xAA; 32],
+            version: 1,
+            expiry: 0,
+            flags: 0,
+            verifier_blob: Vec::new(),
+        };
+        let payload = b"GET / HTTP/1.1\r\nHost: demo.example\r\n\r\n";
+        let request = preprocessor.prepare(&meta, payload, &[]).expect("request");
+        assert!(request.non_membership.is_some());
+
+        unsafe {
+            std::env::remove_var("POLICY_BLOCKLIST_JSON");
+        }
+    }
 }
