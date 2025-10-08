@@ -1,0 +1,30 @@
+[package]
+name = "plonk"
+version = "0.1.0"
+edition = "2021"
+description = "PLONK proof system components extracted for hornet"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["alloc", "curve-bls12-381"]
+alloc = []
+std = ["alloc", "ark-std/std", "rand_core/std"]
+curve-bls12-381 = ["alloc", "dep:ark-bls12-381"]
+
+[dependencies]
+ark-std = { version = "0.5", default-features = false }
+ark-ff = { version = "0.5", default-features = false }
+ark-ec = { version = "0.5", default-features = false }
+ark-poly = { version = "0.5", default-features = false }
+ark-serialize = { version = "0.5", default-features = false }
+ark-bls12-381 = { version = "0.5", default-features = false, optional = true, features = ["curve"] }
+rand_core = { version = "0.6", default-features = false }
+subtle = { version = "2.5", default-features = false }
+zeroize = { version = "1.7", default-features = false, features = ["zeroize_derive"] }
+
+[package.metadata.docs.rs]
+all-features = true
+no-default-features = false
+
+[dev-dependencies]
