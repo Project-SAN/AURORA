@@ -1,18 +1,10 @@
+use crate::types::Error;
 use alloc::string::String;
 use alloc::vec::Vec;
-use sha2::{Digest, Sha256};
-
-#[cfg(feature = "policy-plonk")]
-use dusk_plonk::prelude::BlsScalar;
-
-#[cfg(feature = "policy-client")]
-use serde::Deserialize;
-
-#[cfg(feature = "policy-client")]
-use crate::types::Error;
-
-#[cfg(feature = "policy-client")]
 use core::mem;
+use dusk_plonk::prelude::BlsScalar;
+use serde::Deserialize;
+use sha2::{Digest, Sha256, Sha512};
 
 const TAG_EXACT: u8 = 0x01;
 const TAG_PREFIX: u8 = 0x02;
@@ -268,19 +260,13 @@ impl Blocklist {
         leaves[0]
     }
 
-    #[cfg(feature = "policy-plonk")]
     pub fn hashes_as_scalars(&self) -> Vec<BlsScalar> {
-        self.leaf_hashes()
-            .into_iter()
-            .map(|leaf| {
-                let mut wide = [0u8; 64];
-                wide[..32].copy_from_slice(&leaf);
-                BlsScalar::from_bytes_wide(&wide)
-            })
+        self.entries
+            .iter()
+            .map(|entry| scalar_from_leaf(entry.leaf_bytes()))
             .collect()
     }
 
-    #[cfg(feature = "policy-client")]
     pub fn from_json(json: &str) -> crate::types::Result<Self> {
         let parsed: BlocklistJson = serde_json::from_str(json).map_err(|_| Error::Crypto)?;
         let mut entries = Vec::with_capacity(parsed.entries.len());
@@ -348,7 +334,13 @@ fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     out
 }
 
-#[cfg(feature = "policy-client")]
+fn scalar_from_leaf(leaf: Vec<u8>) -> BlsScalar {
+    let digest = Sha512::digest(&leaf);
+    let mut wide = [0u8; 64];
+    wide.copy_from_slice(&digest);
+    BlsScalar::from_bytes_wide(&wide)
+}
+
 fn normalize_ascii(input: &str) -> crate::types::Result<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -357,7 +349,6 @@ fn normalize_ascii(input: &str) -> crate::types::Result<String> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
-#[cfg(feature = "policy-client")]
 fn ensure_range_order(mut start: Vec<u8>, mut end: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
     if start > end {
         mem::swap(&mut start, &mut end);
@@ -365,14 +356,12 @@ fn ensure_range_order(mut start: Vec<u8>, mut end: Vec<u8>) -> (Vec<u8>, Vec<u8>
     (start, end)
 }
 
-#[cfg(feature = "policy-client")]
 #[derive(Deserialize)]
 struct BlocklistJson {
     #[serde(default)]
     entries: Vec<BlocklistJsonRule>,
 }
 
-#[cfg(feature = "policy-client")]
 #[derive(Deserialize)]
 struct BlocklistJsonRule {
     #[serde(rename = "type")]
@@ -385,7 +374,6 @@ struct BlocklistJsonRule {
     end: Option<String>,
 }
 
-#[cfg(feature = "policy-client")]
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum BlocklistJsonKind {
@@ -395,7 +383,6 @@ enum BlocklistJsonKind {
     Range,
 }
 
-#[cfg(feature = "policy-client")]
 fn parse_cidr(value: &str) -> crate::types::Result<CidrBlock> {
     let (addr_part, prefix_part) = value.split_once('/').ok_or(Error::Crypto)?;
     let prefix_len: u8 = prefix_part.parse().map_err(|_| Error::Crypto)?;
@@ -440,7 +427,6 @@ fn parse_cidr(value: &str) -> crate::types::Result<CidrBlock> {
     }
 }
 
-#[cfg(feature = "policy-client")]
 fn parse_ipv4(addr: &str) -> Option<[u8; 4]> {
     let mut bytes = [0u8; 4];
     let mut parts = addr.split('.');
@@ -458,7 +444,6 @@ fn parse_ipv4(addr: &str) -> Option<[u8; 4]> {
     Some(bytes)
 }
 
-#[cfg(feature = "policy-client")]
 fn parse_ipv6(addr: &str) -> Option<[u8; 16]> {
     if addr.is_empty() {
         return None;
@@ -528,7 +513,6 @@ fn parse_ipv6(addr: &str) -> Option<[u8; 16]> {
     }
 }
 
-#[cfg(feature = "policy-client")]
 fn parse_hextet(part: &str) -> Option<u16> {
     if part.len() > 4 || part.is_empty() {
         return None;
@@ -595,7 +579,6 @@ mod tests {
         assert_eq!(right.unwrap().compute_root(), root);
     }
 
-    #[cfg(feature = "policy-client")]
     #[test]
     fn parse_from_json() {
         let json = r#"{
@@ -639,7 +622,6 @@ mod tests {
         assert!(range.0 <= range.1);
     }
 
-    #[cfg(feature = "policy-client")]
     #[test]
     fn cidr_ipv6_normalization() {
         let block = parse_cidr("2001:0db8:0:0:0:0:0:1/64").expect("parse");

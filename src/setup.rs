@@ -90,14 +90,7 @@ pub fn install_policy_metadata(pkt: &SetupPacket, registry: &mut PolicyRegistry)
     for tlv in &pkt.tlvs {
         if tlv.first().copied() == Some(crate::policy::POLICY_METADATA_TLV) {
             let meta = crate::policy::decode_metadata_tlv(tlv)?;
-            #[cfg(feature = "policy-plonk")]
-            {
-                crate::policy::plonk::ensure_registry(registry, &meta)?;
-            }
-            #[cfg(not(feature = "policy-plonk"))]
-            {
-                registry.register(meta)?;
-            }
+            crate::policy::plonk::ensure_registry(registry, &meta)?;
         }
     }
     Ok(())
@@ -196,7 +189,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(feature = "policy-plonk", ignore)]
     #[test]
     fn policy_metadata_registers_during_setup() {
         use crate::policy::{PolicyMetadata, PolicyRegistry};

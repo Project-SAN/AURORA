@@ -1,23 +1,16 @@
-#[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
 use hornet::policy::Extractor;
-#[cfg(feature = "policy-client")]
 use hornet::policy::blocklist::Blocklist;
-#[cfg(feature = "policy-client")]
 use hornet::policy::client::{HttpProofService, ProofPreprocessor, ProofRequest, ProofService};
-#[cfg(feature = "policy-client")]
 use hornet::policy::extract::HttpHostExtractor;
+use hornet::policy::plonk;
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use hornet::setup::directory::{self, DirectoryAnnouncement};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
-#[cfg(feature = "policy-client")]
 use std::fs;
-#[cfg(feature = "policy-client")]
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
-#[cfg(feature = "policy-client")]
 use std::path::PathBuf;
-#[cfg(feature = "policy-client")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -36,7 +29,6 @@ fn main() {
 fn run_demo() -> Result<(), AnyError> {
     println!("=== HORNET UDP  ===");
 
-    #[cfg(feature = "policy-client")]
     ensure_demo_blocklist();
 
     // setting up two nodes for a 2-hop route
@@ -68,25 +60,15 @@ fn run_demo() -> Result<(), AnyError> {
         .as_secs() as u32;
     let exp = hornet::types::Exp(now_secs.saturating_add(60));
 
-    #[cfg(feature = "policy-plonk")]
     let policy_metadata = {
         let blocklist = vec![b"blocked.example".to_vec()];
         let policy = Arc::new(
-            hornet::policy::plonk::PlonkPolicy::new_with_blocklist(b"demo-policy", &blocklist)
+            plonk::PlonkPolicy::new_with_blocklist(b"demo-policy", &blocklist)
                 .expect("plonk policy"),
         );
-        hornet::policy::plonk::register_policy(policy.clone());
+        plonk::register_policy(policy.clone());
         Some(policy.metadata(exp.0, 0))
     };
-
-    #[cfg(not(feature = "policy-plonk"))]
-    let policy_metadata = Some(PolicyMetadata {
-        policy_id: [0xAB; 32],
-        version: 1,
-        expiry: exp.0,
-        flags: 0,
-        verifier_blob: Vec::new(),
-    });
 
     let registry_node1 = Arc::new(Mutex::new(PolicyRegistry::new()));
     let registry_node2 = Arc::new(Mutex::new(PolicyRegistry::new()));
@@ -419,38 +401,23 @@ fn hex(buf: &[u8]) -> String {
 }
 
 fn request_policy_capsule(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
-    request_policy_capsule_impl(meta, payload)
-}
-
-#[cfg(all(feature = "policy-client", feature = "policy-plonk"))]
-fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
     let extractor = HttpHostExtractor::default();
-    if let Ok(target) = extractor.extract(payload) {
-        if let Ok(capsule) =
-            hornet::policy::plonk::prove_for_payload(&meta.policy_id, &target.as_bytes())
-        {
-            return Some(capsule);
+    match extractor.extract(payload) {
+        Ok(target) => {
+            let target_bytes = target.as_bytes();
+            if let Ok(capsule) = plonk::prove_for_payload(&meta.policy_id, &target_bytes) {
+                return Some(capsule);
+            }
+        }
+        Err(_) => {
+            if let Ok(capsule) = plonk::prove_for_payload(&meta.policy_id, payload) {
+                return Some(capsule);
+            }
         }
     }
     request_policy_capsule_http(meta, payload)
 }
 
-#[cfg(all(feature = "policy-client", not(feature = "policy-plonk")))]
-fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
-    request_policy_capsule_http(meta, payload)
-}
-
-#[cfg(all(not(feature = "policy-client"), feature = "policy-plonk"))]
-fn request_policy_capsule_impl(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
-    hornet::policy::plonk::prove_for_payload(&meta.policy_id, payload).ok()
-}
-
-#[cfg(all(not(feature = "policy-client"), not(feature = "policy-plonk")))]
-fn request_policy_capsule_impl(_: &PolicyMetadata, _: &[u8]) -> Option<PolicyCapsule> {
-    None
-}
-
-#[cfg(feature = "policy-client")]
 fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<PolicyCapsule> {
     let endpoint = std::env::var("POLICY_PROOF_URL").ok()?;
     let service = HttpProofService::new(endpoint);
@@ -473,7 +440,6 @@ fn request_policy_capsule_http(meta: &PolicyMetadata, payload: &[u8]) -> Option<
     service.obtain_proof(&request).ok()
 }
 
-#[cfg(feature = "policy-client")]
 fn policy_blocklist() -> Option<Arc<Blocklist>> {
     static CACHE: OnceLock<Option<Arc<Blocklist>>> = OnceLock::new();
     CACHE
@@ -486,7 +452,6 @@ fn policy_blocklist() -> Option<Arc<Blocklist>> {
         .clone()
 }
 
-#[cfg(feature = "policy-client")]
 fn ensure_demo_blocklist() {
     if std::env::var("POLICY_BLOCKLIST_JSON").is_ok() {
         return;
@@ -496,7 +461,6 @@ fn ensure_demo_blocklist() {
     }
 }
 
-#[cfg(feature = "policy-client")]
 fn install_demo_blocklist_file() -> io::Result<PathBuf> {
     let mut path = std::env::temp_dir();
     path.push("hornet-demo-blocklist.json");
@@ -517,13 +481,11 @@ fn install_demo_blocklist_file() -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "policy-client")]
     use super::{
         Arc, Blocklist, HttpHostExtractor, PolicyMetadata, ProofPreprocessor,
         ensure_demo_blocklist, fs, install_demo_blocklist_file,
     };
 
-    #[cfg(feature = "policy-client")]
     #[test]
     fn demo_blocklist_drives_preprocessor() {
         unsafe {

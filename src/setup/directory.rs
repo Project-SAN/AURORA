@@ -1,20 +1,11 @@
 use crate::policy::{PolicyMetadata, decode_metadata_tlv, encode_metadata_tlv};
-use crate::types::Result;
-use alloc::{vec, vec::Vec};
-
-#[cfg(feature = "policy-client")]
-use crate::types::Error;
-#[cfg(feature = "policy-client")]
+use crate::types::{Error, Result};
 use alloc::string::String;
-
-#[cfg(feature = "policy-client")]
+use alloc::{vec, vec::Vec};
 use hmac::{Hmac, Mac};
-#[cfg(feature = "policy-client")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "policy-client")]
 use sha2::Sha256;
 
-#[cfg(feature = "policy-client")]
 type HmacSha256 = Hmac<Sha256>;
 
 pub struct DirectoryAnnouncement {
@@ -77,7 +68,6 @@ pub fn apply_to_source_state(
     }
 }
 
-#[cfg(feature = "policy-client")]
 #[derive(Serialize, Deserialize, Clone)]
 struct DirectoryMessage {
     version: u8,
@@ -86,7 +76,6 @@ struct DirectoryMessage {
     signature: String,
 }
 
-#[cfg(feature = "policy-client")]
 pub fn to_signed_json(
     announcement: &DirectoryAnnouncement,
     secret: &[u8],
@@ -107,7 +96,6 @@ pub fn to_signed_json(
     serde_json::to_string(&signed).map_err(|_| Error::Crypto)
 }
 
-#[cfg(feature = "policy-client")]
 pub fn from_signed_json(body: &str, secret: &[u8]) -> Result<DirectoryAnnouncement> {
     let signed: DirectoryMessage = serde_json::from_str(body).map_err(|_| Error::Crypto)?;
     let expected_sig = signed.signature.clone();
@@ -124,14 +112,12 @@ pub fn from_signed_json(body: &str, secret: &[u8]) -> Result<DirectoryAnnounceme
     })
 }
 
-#[cfg(feature = "policy-client")]
 fn compute_hmac(secret: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key");
     mac.update(data);
     mac.finalize().into_bytes().to_vec()
 }
 
-#[cfg(feature = "policy-client")]
 fn verify_hmac(secret: &[u8], data: &[u8], signature: &str) -> bool {
     if let Ok(expected) = hex_decode(signature) {
         if let Ok(mut mac) = HmacSha256::new_from_slice(secret) {
@@ -142,7 +128,6 @@ fn verify_hmac(secret: &[u8], data: &[u8], signature: &str) -> bool {
     false
 }
 
-#[cfg(feature = "policy-client")]
 fn hex_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -153,7 +138,6 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(feature = "policy-client")]
 fn hex_decode(input: &str) -> Result<Vec<u8>> {
     if input.len() % 2 != 0 {
         return Err(Error::Length);
@@ -169,7 +153,6 @@ fn hex_decode(input: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-#[cfg(feature = "policy-client")]
 fn decode_nibble(c: char) -> Result<u8> {
     match c {
         '0'..='9' => Ok((c as u8) - b'0'),
@@ -201,7 +184,6 @@ mod tests {
         assert_eq!(parsed.policies()[0], meta);
     }
 
-    #[cfg(feature = "policy-client")]
     #[test]
     fn announcement_signed_roundtrip() {
         let meta = PolicyMetadata {

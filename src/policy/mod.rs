@@ -1,10 +1,8 @@
 pub mod blocklist;
 pub mod capsule;
-#[cfg(feature = "policy-client")]
 pub mod client;
 pub mod extract;
 pub mod metadata;
-#[cfg(feature = "policy-plonk")]
 pub mod plonk;
 pub mod registry;
 

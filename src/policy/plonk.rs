@@ -1,5 +1,3 @@
-#![cfg(feature = "policy-plonk")]
-
 use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
 use crate::types::{Error, Result};
 use alloc::collections::BTreeMap;
