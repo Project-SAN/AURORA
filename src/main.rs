@@ -1,4 +1,4 @@
-use hornet::policy::Extractor;
+use hornet::policy::extract::Extractor;
 use hornet::policy::blocklist::Blocklist;
 use hornet::policy::client::{HttpProofService, ProofPreprocessor, ProofRequest, ProofService};
 use hornet::policy::extract::HttpHostExtractor;
