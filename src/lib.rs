@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod api;
 pub mod crypto;
 pub mod forward;
 pub mod fragment;
@@ -15,4 +16,3 @@ pub mod sphinx;
 pub mod time;
 pub mod types;
 pub mod wire;
-pub mod api;
