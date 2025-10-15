@@ -72,7 +72,7 @@ mod tests {
         });
 
         let request = test::TestRequest::post()
-            .uri("/plonk/prove")
+            .uri("/prove")
             .set_json(body)
             .to_request();
         let response = test::call_service(&app, request).await;
@@ -97,7 +97,7 @@ mod tests {
         });
 
         let request = test::TestRequest::post()
-            .uri("/plonk/prove")
+            .uri("/prove")
             .set_json(body)
             .to_request();
         let response = test::call_service(&app, request).await;
@@ -160,7 +160,7 @@ pub struct ProveResponse {
     pub version: u8,
 }
 
-#[post("/plonk/prove")]
+#[post("/prove")]
 pub async fn prove(
     state: web::Data<PolicyAuthorityState>,
     request: web::Json<ProveRequest>,
