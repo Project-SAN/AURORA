@@ -31,7 +31,7 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     if now.0 >= exp.0 {
         return Err(Error::Expired);
     }
-    
+
     // Verify MAC: gamma == MAC(hMAC(s); FS || beta)
     let mut mac_key = [0u8; 16];
     hop_key(&s.0, OpLabel::Mac, &mut mac_key);

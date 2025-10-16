@@ -10,7 +10,7 @@ pub mod directory;
 pub struct SetupPacket {
     pub chdr: Chdr,
     pub shdr: sphinx::Header,
-    pub payload: payload::FsPayload,
+    pub payload: payload::Payload,
     pub rmax: usize,
     pub tlvs: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
@@ -35,7 +35,7 @@ pub fn source_init(
     // Initialize FS payload with random seed
     let mut seed = [0u8; 16];
     rng.fill_bytes(&mut seed);
-    let payload = payload::FsPayload::new_with_seed(rmax, &seed);
+    let payload = payload::Payload::new_with_seed(rmax, &seed);
     let chdr = crate::packet::chdr::setup_header(node_pubs.len() as u8, exp);
     let packet = SetupPacket {
         chdr,
@@ -173,16 +173,17 @@ mod tests {
         for i in 0..lf {
             let si_i = crate::setup::node_process(&mut st.packet, &nodes[i].0, &nodes[i].2, &rs[i])
                 .expect("setup hop");
-            let fs_i = crate::packet::core::create_from_chdr(&nodes[i].2, &si_i, &rs[i], &st.packet.chdr)
-                .expect("fs local");
+            let fs_i =
+                crate::packet::core::create_from_chdr(&nodes[i].2, &si_i, &rs[i], &st.packet.chdr)
+                    .expect("fs local");
             fses_created.push(fs_i);
         }
-        let pf_recv = crate::packet::payload::FsPayload {
+        let pf_recv = crate::packet::payload::Payload {
             bytes: st.packet.payload.bytes.clone(),
             rmax,
         };
-        let fses =
-            crate::packet::payload::retrieve_fses(&st.keys_f, &st.seed, &pf_recv).expect("retrieve fses");
+        let fses = crate::packet::payload::retrieve_fses(&st.keys_f, &st.seed, &pf_recv)
+            .expect("retrieve fses");
         assert_eq!(fses.len(), fses_created.len());
         for (a, b) in fses.iter().zip(fses_created.iter()) {
             assert_eq!(a.0, b.0);
@@ -320,7 +321,8 @@ mod tests {
         let mut rng2 = XorShift64(0xaaaa_bbbb_cccc_dddd);
         let fses_b: alloc::vec::Vec<Fs> = (0..lb)
             .map(|i| {
-                crate::packet::core::create(&svs_b_rev[i], &keys_b_rev[i], &rs_b_rev[i], exp_b).unwrap()
+                crate::packet::core::create(&svs_b_rev[i], &keys_b_rev[i], &rs_b_rev[i], exp_b)
+                    .unwrap()
             })
             .collect();
         let ahdr_b =
