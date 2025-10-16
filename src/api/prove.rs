@@ -12,7 +12,7 @@ use crate::policy::extract::{ExtractionError, Extractor};
 use crate::policy::plonk::PlonkPolicy;
 use crate::policy::{PolicyCapsule, PolicyId};
 use crate::types::Error as HornetError;
-use crate::utils::{decode_hex, encode_hex, HexError};
+use crate::utils::{HexError, decode_hex, encode_hex};
 
 pub struct PolicyAuthorityState {
     policies: BTreeMap<PolicyId, PolicyAuthorityEntry>,

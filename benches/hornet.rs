@@ -168,7 +168,7 @@ impl HornetFixture {
 
         let fses = (0..hops)
             .map(|i| {
-                hornet::packet::fs_core::create(&svs[i], &keys[i], &routing[i], exp)
+                hornet::packet::core::create(&svs[i], &keys[i], &routing[i], exp)
                     .expect("fs create")
             })
             .collect::<Vec<_>>();

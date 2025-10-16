@@ -1,4 +1,4 @@
-use crate::packet::{fs_core, fs_payload};
+use crate::packet::{core, payload};
 use crate::policy::{PolicyMetadata, PolicyRegistry};
 use crate::sphinx;
 use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
@@ -10,7 +10,7 @@ pub mod directory;
 pub struct SetupPacket {
     pub chdr: Chdr,
     pub shdr: sphinx::Header,
-    pub payload: fs_payload::FsPayload,
+    pub payload: payload::FsPayload,
     pub rmax: usize,
     pub tlvs: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
@@ -35,7 +35,7 @@ pub fn source_init(
     // Initialize FS payload with random seed
     let mut seed = [0u8; 16];
     rng.fill_bytes(&mut seed);
-    let payload = fs_payload::FsPayload::new_with_seed(rmax, &seed);
+    let payload = payload::FsPayload::new_with_seed(rmax, &seed);
     let chdr = crate::packet::chdr::setup_header(node_pubs.len() as u8, exp);
     let packet = SetupPacket {
         chdr,
@@ -78,8 +78,8 @@ pub fn node_process_with_policy(
     policy: Option<&mut PolicyRegistry>,
 ) -> Result<Si> {
     let si = sphinx::node_process_forward(&mut pkt.shdr, node_secret)?;
-    let fs = fs_core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
-    let _alpha = fs_payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
+    let fs = core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
+    let _alpha = payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
     if let Some(reg) = policy {
         install_policy_metadata(pkt, reg)?;
     }

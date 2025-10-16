@@ -33,9 +33,7 @@ pub fn decode_hex(input: &str) -> Result<Vec<u8>, HexError> {
     let mut out = Vec::with_capacity(input.len() / 2);
     let mut chars = input.chars();
     while let Some(high) = chars.next() {
-        let low = chars
-            .next()
-            .ok_or(HexError::OddLength)?;
+        let low = chars.next().ok_or(HexError::OddLength)?;
         let hi = nibble(high)?;
         let lo = nibble(low)?;
         out.push((hi << 4) | lo);

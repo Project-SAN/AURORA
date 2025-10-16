@@ -2,7 +2,7 @@ use crate::crypto::{
     kdf::{OpLabel, hop_key},
     mac, prg,
 };
-use crate::packet::fs_core as fs;
+use crate::packet::core as fs;
 use crate::types::{Ahdr, C_BLOCK, Error, Exp, FS_LEN, Fs, Result, RoutingSegment, Si, Sv};
 use alloc::vec;
 use alloc::vec::Vec;
