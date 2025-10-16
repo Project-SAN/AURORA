@@ -4,7 +4,6 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -13,6 +12,7 @@ use crate::policy::extract::{ExtractionError, Extractor};
 use crate::policy::plonk::PlonkPolicy;
 use crate::policy::{PolicyCapsule, PolicyId};
 use crate::types::Error as HornetError;
+use crate::utils::{decode_hex, encode_hex, HexError};
 
 pub struct PolicyAuthorityState {
     policies: BTreeMap<PolicyId, PolicyAuthorityEntry>,
@@ -202,42 +202,6 @@ fn decode_policy_id(hex: &str) -> Result<PolicyId, ApiError> {
     Ok(id)
 }
 
-fn decode_hex(input: &str) -> Result<Vec<u8>, ApiError> {
-    if input.len() % 2 != 0 {
-        return Err(ApiError::InvalidHex("odd length".into()));
-    }
-    let mut out = Vec::with_capacity(input.len() / 2);
-    let mut chars = input.chars();
-    while let Some(high) = chars.next() {
-        let low = chars
-            .next()
-            .ok_or_else(|| ApiError::InvalidHex("odd length".into()))?;
-        let hi = nibble(high).map_err(ApiError::InvalidHex)?;
-        let lo = nibble(low).map_err(ApiError::InvalidHex)?;
-        out.push((hi << 4) | lo);
-    }
-    Ok(out)
-}
-
-fn nibble(c: char) -> Result<u8, String> {
-    match c {
-        '0'..='9' => Ok((c as u8) - b'0'),
-        'a'..='f' => Ok((c as u8) - b'a' + 10),
-        'A'..='F' => Ok((c as u8) - b'A' + 10),
-        _ => Err(format!("invalid hex char '{c}'")),
-    }
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(TABLE[(b >> 4) as usize] as char);
-        out.push(TABLE[(b & 0x0F) as usize] as char);
-    }
-    out
-}
-
 #[derive(Debug)]
 pub enum ApiError {
     InvalidHex(String),
@@ -268,6 +232,15 @@ impl ApiError {
             ApiError::PayloadExtraction(msg) => format!("unable to extract payload target: {msg}"),
             ApiError::PolicyViolation => "requested payload violates policy".into(),
             ApiError::ProofFailure => "failed to produce zero-knowledge proof".into(),
+        }
+    }
+}
+
+impl From<HexError> for ApiError {
+    fn from(err: HexError) -> Self {
+        match err {
+            HexError::OddLength => ApiError::InvalidHex("odd length".into()),
+            HexError::InvalidChar(c) => ApiError::InvalidHex(format!("invalid hex char '{c}'")),
         }
     }
 }
