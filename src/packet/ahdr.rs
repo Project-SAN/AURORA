@@ -2,7 +2,7 @@ use crate::crypto::{
     kdf::{OpLabel, hop_key},
     mac, prg,
 };
-use crate::packet::core as fs;
+use crate::packet::core::open;
 use crate::types::{Ahdr, C_BLOCK, Error, Exp, FS_LEN, Fs, Result, RoutingSegment, Si, Sv};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -27,10 +27,11 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let gamma = &head[FS_LEN..C_BLOCK];
     let beta = &ahdr.bytes[C_BLOCK..];
     let fs = Fs(<[u8; FS_LEN]>::try_from(fs_bytes).map_err(|_| Error::Length)?);
-    let (s, rseg, exp) = fs::open(sv, &fs)?;
+    let (s, rseg, exp) = open(sv, &fs)?;
     if now.0 >= exp.0 {
         return Err(Error::Expired);
     }
+    
     // Verify MAC: gamma == MAC(hMAC(s); FS || beta)
     let mut mac_key = [0u8; 16];
     hop_key(&s.0, OpLabel::Mac, &mut mac_key);
@@ -278,7 +279,7 @@ mod tests {
         let si = Si(key);
         let rseg = RoutingSegment(alloc::vec![0u8; 8]);
         let exp = Exp(1_234_567);
-        let fs = crate::packet::create(&sv, &si, &rseg, exp).expect("fs");
+        let fs = crate::packet::core::create(&sv, &si, &rseg, exp).expect("fs");
         let mut rng2 = XorShift64(0x0102_0304_0506_0708);
         let ahdr = create_ahdr(&[si], &[fs], rmax, &mut rng2).expect("ahdr");
         let _pr = proc_ahdr(&sv, &ahdr, Exp(exp.0 - 1)).expect("proc ok before exp");
