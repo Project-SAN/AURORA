@@ -333,7 +333,7 @@ mod tests {
         let mut payload = alloc::vec![0u8; sp_len.max(ahdr_b.bytes.len())];
         let need = rmax * C_BLOCK;
         payload[0..need].copy_from_slice(&ahdr_b.bytes[0..need]);
-        crate::source::build_data_packet(
+        crate::source::build(
             &mut chdr,
             &Ahdr {
                 bytes: alloc::vec::Vec::new(),

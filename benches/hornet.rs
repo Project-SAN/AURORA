@@ -44,14 +44,8 @@ fn bench_build_data_packet(c: &mut Criterion) {
                         (chdr, iv, payload)
                     },
                     |(mut chdr, mut iv, mut payload)| {
-                        hornet::source::build_data_packet(
-                            &mut chdr,
-                            &ahdr,
-                            &keys,
-                            &mut iv,
-                            &mut payload,
-                        )
-                        .expect("build data packet");
+                        hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut payload)
+                            .expect("build data packet");
                         black_box((chdr, payload));
                     },
                     BatchSize::SmallInput,
@@ -93,7 +87,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                             replay: &mut replay,
                             policy: None,
                         };
-                        hornet::node::process_data_forward(
+                        hornet::node::forward::process_data(
                             &mut ctx,
                             &mut chdr,
                             &mut ahdr,
@@ -201,7 +195,7 @@ impl HornetFixture {
         let mut chdr = hornet::packet::chdr::data_header(self.hops as u8, self.iv0);
         let mut payload = self.payload_template.clone();
         let mut iv = self.iv0;
-        hornet::source::build_data_packet(&mut chdr, &self.ahdr, &self.keys, &mut iv, &mut payload)
+        hornet::source::build(&mut chdr, &self.ahdr, &self.keys, &mut iv, &mut payload)
             .expect("fixture build data packet");
         ForwardPacket {
             chdr,
