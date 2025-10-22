@@ -1,8 +1,6 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-
-#[cfg(feature = "policy-plonk")]
 use dusk_plonk::prelude::BlsScalar;
 
 /// Result type for extraction routines.
@@ -49,7 +47,6 @@ impl TargetValue {
         Ok(out)
     }
 
-    #[cfg(feature = "policy-plonk")]
     pub fn to_field_elements(&self, limb: usize) -> Result<Vec<BlsScalar>> {
         let data = self.as_bytes();
         if limb == 0 {
@@ -165,7 +162,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "policy-plonk")]
     #[test]
     fn witness_to_scalar() {
         let value = TargetValue::Domain(b"abc".to_vec());

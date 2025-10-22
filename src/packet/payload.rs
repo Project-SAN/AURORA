@@ -8,12 +8,12 @@ use alloc::vec::Vec;
 
 // Placeholders for Algorithm 1 and 2 from the paper.
 
-pub struct FsPayload {
+pub struct Payload {
     pub bytes: Vec<u8>, // fixed length: r * c
     pub rmax: usize,
 }
 
-impl FsPayload {
+impl Payload {
     pub fn new_with_seed(rmax: usize, seed: &[u8; 16]) -> Self {
         let mut bytes = vec![0u8; rmax * C_BLOCK];
         // Initial payload P = PRG1(hPRG1(seed))
@@ -23,7 +23,7 @@ impl FsPayload {
 }
 
 // Alg.1: Add FS into FS payload
-pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut FsPayload) -> Result<Mac> {
+pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut Payload) -> Result<Mac> {
     let rc = payload.bytes.len();
     // Ptmp = FS || Pin[0 .. (r-1)c] XOR PRG0(hPRG0(s))[k .. end]
     let ptmp_len = rc - crate::types::K_MAC; // |FS| + (r-1)c
@@ -49,18 +49,21 @@ pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut FsPayload) -> Result<M
 }
 
 // Alg.2: Retrieve FSes from FS payload
-pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> Result<Vec<Fs>> {
+pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &Payload) -> Result<Vec<Fs>> {
     let rc = payload.bytes.len();
     let l = keys.len();
     if l == 0 {
         return Ok(Vec::new());
     }
+
     // Pinit = PRG1(hPRG1(seed))
     let mut pinit = vec![0u8; rc];
     prg::prg1(init_seed, &mut pinit);
+
     // ψ construction per Alg.2 line 3
     let psi_len = l * C_BLOCK;
     let mut psi = pinit[(payload.rmax - l) * C_BLOCK..rc].to_vec(); // length l*c
+
     // XOR with terms for t = 0..l-2
     for (t, key) in keys.iter().enumerate().take(l.saturating_sub(1)) {
         let start = (payload.rmax - l + 1 + t) * C_BLOCK;
@@ -75,6 +78,7 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &FsPayload) -> 
             *a ^= *b;
         }
     }
+
     // Pfull = P || ψ (full length l*c)
     let mut pfull = Vec::with_capacity(rc + psi_len);
     pfull.extend_from_slice(&payload.bytes);

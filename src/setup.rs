@@ -1,4 +1,4 @@
-use crate::packet::{fs_core, fs_payload};
+use crate::packet::{core, payload};
 use crate::policy::{PolicyMetadata, PolicyRegistry};
 use crate::sphinx;
 use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
@@ -10,7 +10,7 @@ pub mod directory;
 pub struct SetupPacket {
     pub chdr: Chdr,
     pub shdr: sphinx::Header,
-    pub payload: fs_payload::FsPayload,
+    pub payload: payload::Payload,
     pub rmax: usize,
     pub tlvs: alloc::vec::Vec<alloc::vec::Vec<u8>>,
 }
@@ -35,7 +35,7 @@ pub fn source_init(
     // Initialize FS payload with random seed
     let mut seed = [0u8; 16];
     rng.fill_bytes(&mut seed);
-    let payload = fs_payload::FsPayload::new_with_seed(rmax, &seed);
+    let payload = payload::Payload::new_with_seed(rmax, &seed);
     let chdr = crate::packet::chdr::setup_header(node_pubs.len() as u8, exp);
     let packet = SetupPacket {
         chdr,
@@ -78,8 +78,8 @@ pub fn node_process_with_policy(
     policy: Option<&mut PolicyRegistry>,
 ) -> Result<Si> {
     let si = sphinx::node_process_forward(&mut pkt.shdr, node_secret)?;
-    let fs = fs_core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
-    let _alpha = fs_payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
+    let fs = core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
+    let _alpha = payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
     if let Some(reg) = policy {
         install_policy_metadata(pkt, reg)?;
     }
@@ -90,14 +90,7 @@ pub fn install_policy_metadata(pkt: &SetupPacket, registry: &mut PolicyRegistry)
     for tlv in &pkt.tlvs {
         if tlv.first().copied() == Some(crate::policy::POLICY_METADATA_TLV) {
             let meta = crate::policy::decode_metadata_tlv(tlv)?;
-            #[cfg(feature = "policy-plonk")]
-            {
-                crate::policy::plonk::ensure_registry(registry, &meta)?;
-            }
-            #[cfg(not(feature = "policy-plonk"))]
-            {
-                registry.register(meta)?;
-            }
+            crate::policy::plonk::ensure_registry(registry, &meta)?;
         }
     }
     Ok(())
@@ -180,23 +173,23 @@ mod tests {
         for i in 0..lf {
             let si_i = crate::setup::node_process(&mut st.packet, &nodes[i].0, &nodes[i].2, &rs[i])
                 .expect("setup hop");
-            let fs_i = crate::packet::create_from_chdr(&nodes[i].2, &si_i, &rs[i], &st.packet.chdr)
-                .expect("fs local");
+            let fs_i =
+                crate::packet::core::create_from_chdr(&nodes[i].2, &si_i, &rs[i], &st.packet.chdr)
+                    .expect("fs local");
             fses_created.push(fs_i);
         }
-        let pf_recv = crate::packet::FsPayload {
+        let pf_recv = crate::packet::payload::Payload {
             bytes: st.packet.payload.bytes.clone(),
             rmax,
         };
-        let fses =
-            crate::packet::retrieve_fses(&st.keys_f, &st.seed, &pf_recv).expect("retrieve fses");
+        let fses = crate::packet::payload::retrieve_fses(&st.keys_f, &st.seed, &pf_recv)
+            .expect("retrieve fses");
         assert_eq!(fses.len(), fses_created.len());
         for (a, b) in fses.iter().zip(fses_created.iter()) {
             assert_eq!(a.0, b.0);
         }
     }
 
-    #[cfg_attr(feature = "policy-plonk", ignore)]
     #[test]
     fn policy_metadata_registers_during_setup() {
         use crate::policy::{PolicyMetadata, PolicyRegistry};
@@ -328,7 +321,8 @@ mod tests {
         let mut rng2 = XorShift64(0xaaaa_bbbb_cccc_dddd);
         let fses_b: alloc::vec::Vec<Fs> = (0..lb)
             .map(|i| {
-                crate::packet::create(&svs_b_rev[i], &keys_b_rev[i], &rs_b_rev[i], exp_b).unwrap()
+                crate::packet::core::create(&svs_b_rev[i], &keys_b_rev[i], &rs_b_rev[i], exp_b)
+                    .unwrap()
             })
             .collect();
         let ahdr_b =
@@ -339,7 +333,7 @@ mod tests {
         let mut payload = alloc::vec![0u8; sp_len.max(ahdr_b.bytes.len())];
         let need = rmax * C_BLOCK;
         payload[0..need].copy_from_slice(&ahdr_b.bytes[0..need]);
-        crate::source::build_data_packet(
+        crate::source::build(
             &mut chdr,
             &Ahdr {
                 bytes: alloc::vec::Vec::new(),

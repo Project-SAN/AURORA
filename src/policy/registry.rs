@@ -5,38 +5,32 @@ use crate::types::{Error, Result};
 
 use super::{PolicyCapsule, PolicyId, PolicyMetadata};
 
-#[cfg(feature = "policy-plonk")]
 use dusk_bytes::Serializable;
-#[cfg(feature = "policy-plonk")]
 use dusk_plonk::{composer::Verifier as PlonkVerifier, prelude::BlsScalar, proof_system::Proof};
-#[cfg(feature = "policy-plonk")]
 use sha2::{Digest, Sha256};
 
 pub struct PolicyEntry {
     pub metadata: PolicyMetadata,
-    #[cfg(feature = "policy-plonk")]
-    verifier: PlonkVerifier,
+    verifier: Option<PlonkVerifier>,
 }
 
 impl PolicyEntry {
     pub fn new(metadata: PolicyMetadata) -> Result<Self> {
-        #[cfg(feature = "policy-plonk")]
-        let verifier = {
-            PlonkVerifier::try_from_bytes(metadata.verifier_blob.as_slice())
-                .map_err(|_| Error::Crypto)?
+        let verifier = if metadata.verifier_blob.is_empty() {
+            None
+        } else {
+            match PlonkVerifier::try_from_bytes(metadata.verifier_blob.as_slice()) {
+                Ok(verifier) => Some(verifier),
+                Err(_) => None,
+            }
         };
-
-        #[cfg(feature = "policy-plonk")]
-        return Ok(Self { metadata, verifier });
-
-        #[cfg(not(feature = "policy-plonk"))]
-        {
-            Ok(Self { metadata })
-        }
+        Ok(Self { metadata, verifier })
     }
 
-    #[cfg(feature = "policy-plonk")]
     fn verify_capsule(&self, capsule: &PolicyCapsule) -> Result<()> {
+        let Some(verifier) = &self.verifier else {
+            return Ok(());
+        };
         if capsule.proof.len() != Proof::SIZE {
             return Err(Error::PolicyViolation);
         }
@@ -54,13 +48,11 @@ impl PolicyEntry {
 
         let _ = hash_blocklist(&self.metadata.verifier_blob);
 
-        self.verifier
+        verifier
             .verify(&proof, core::slice::from_ref(&target_hash))
             .map_err(|_| Error::PolicyViolation)
     }
 }
-
-#[cfg(feature = "policy-plonk")]
 fn hash_blocklist(bytes: &[u8]) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -95,11 +87,7 @@ impl PolicyRegistry {
             .get(&capsule.policy_id)
             .ok_or(Error::PolicyViolation)?;
 
-        #[cfg(feature = "policy-plonk")]
         entry.verify_capsule(&capsule)?;
-
-        #[cfg(not(feature = "policy-plonk"))]
-        let _ = entry;
 
         Ok((capsule, consumed))
     }

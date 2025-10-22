@@ -1,7 +1,4 @@
-#![cfg(feature = "policy-client")]
-
 use crate::policy::blocklist::{Blocklist, BlocklistEntry, MerkleProof};
-#[cfg(feature = "policy-plonk")]
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
@@ -337,13 +334,11 @@ where
     }
 }
 
-#[cfg(feature = "policy-plonk")]
 pub struct PlonkProofService<E: Extractor + Send + Sync + 'static> {
     extractor: E,
     policy: Arc<PlonkPolicy>,
 }
 
-#[cfg(feature = "policy-plonk")]
 impl<E: Extractor + Send + Sync + 'static> PlonkProofService<E> {
     pub fn new(label: &[u8], blocklist: Vec<Vec<u8>>, extractor: E) -> Result<Self> {
         let policy = Arc::new(
@@ -358,7 +353,6 @@ impl<E: Extractor + Send + Sync + 'static> PlonkProofService<E> {
     }
 }
 
-#[cfg(feature = "policy-plonk")]
 impl<E: Extractor + Send + Sync + 'static> ProofService for PlonkProofService<E> {
     fn obtain_proof(&self, request: &ProofRequest<'_>) -> Result<PolicyCapsule> {
         let target = self
@@ -555,7 +549,6 @@ mod tests {
         assert_eq!(capsule.proof, vec![1, 2, 3]);
     }
 
-    #[cfg(feature = "policy-plonk")]
     #[test]
     fn plonk_service_generates_proof() {
         use crate::policy::extract::HttpHostExtractor;
