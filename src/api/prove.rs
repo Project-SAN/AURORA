@@ -240,8 +240,14 @@ mod tests {
         let message_plain = payload.to_vec();
         let mut encrypted_tail = message_plain.clone();
         let mut iv_for_build = nonce;
-        crate::source::build(&mut chdr, &ahdr, &[si], &mut iv_for_build, &mut encrypted_tail)
-            .expect("build forward payload");
+        crate::source::build(
+            &mut chdr,
+            &ahdr,
+            &[si],
+            &mut iv_for_build,
+            &mut encrypted_tail,
+        )
+        .expect("build forward payload");
 
         let mut onwire_payload = encrypted_tail;
         capsule.prepend_to(&mut onwire_payload);

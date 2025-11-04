@@ -1,6 +1,7 @@
 use crate::crypto::kdf::{OpLabel, hop_key};
 use aes::Aes128;
-use ctr::cipher::{KeyIvInit, StreamCipher, generic_array::GenericArray};
+use ctr::cipher::{KeyIvInit, StreamCipher};
+use generic_array::GenericArray;
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 
