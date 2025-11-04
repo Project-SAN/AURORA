@@ -1,7 +1,7 @@
 [package]
 name = "hornet"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 [dependencies]
 # no_std-friendly cryptography building blocks
 aes = { version = "0.8", default-features = false }
@@ -10,7 +10,7 @@ hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 rand_core = { version = "0.6", default-features = false }
-generic-array = { version = "0.14", default-features = false }
+generic-array = { version = "1.0", default-features = false }
 subtle = { version = "2.5", default-features = false }
 zeroize = { version = "1.7", default-features = false, features = ["zeroize_derive"] }
 x25519-dalek = { version = "2", default-features = false }

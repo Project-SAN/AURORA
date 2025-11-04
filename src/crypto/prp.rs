@@ -1,7 +1,7 @@
 use crate::crypto::kdf::{OpLabel, hop_key};
 use crate::crypto::{mac, prg};
 use aes::Aes128;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use alloc::vec;
 
 extern crate alloc;
@@ -14,35 +14,31 @@ fn derive_prp_key(key_src: &[u8]) -> [u8; 16] {
 
 pub fn prp_enc(key_src: &[u8], block: &mut [u8; 16]) {
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new(GenericArray::from_slice(&k));
-    let block = GenericArray::from_mut_slice(&mut block[..]);
-    cipher.encrypt_block(block);
+    let cipher = Aes128::new((&k).into());
+    cipher.encrypt_block(block.into());
 }
 
 pub fn prp_dec(key_src: &[u8], block: &mut [u8; 16]) {
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new(GenericArray::from_slice(&k));
-    let block = GenericArray::from_mut_slice(&mut block[..]);
-    cipher.decrypt_block(block);
+    let cipher = Aes128::new((&k).into());
+    cipher.decrypt_block(block.into());
 }
 
 pub fn prp_enc_bytes(key_src: &[u8], data: &mut [u8]) {
-    assert!(data.len().is_multiple_of(16));
+    assert!(data.len() % 16 == 0);
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new(GenericArray::from_slice(&k));
+    let cipher = Aes128::new((&k).into());
     for chunk in data.chunks_mut(16) {
-        let block = GenericArray::from_mut_slice(chunk);
-        cipher.encrypt_block(block);
+        cipher.encrypt_block(chunk.into());
     }
 }
 
 pub fn prp_dec_bytes(key_src: &[u8], data: &mut [u8]) {
-    assert!(data.len().is_multiple_of(16));
+    assert!(data.len() % 16 == 0);
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new(GenericArray::from_slice(&k));
+    let cipher = Aes128::new((&k).into());
     for chunk in data.chunks_mut(16) {
-        let block = GenericArray::from_mut_slice(chunk);
-        cipher.decrypt_block(block);
+        cipher.decrypt_block(chunk.into());
     }
 }
 
