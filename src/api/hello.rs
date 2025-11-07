@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, get, post};
+use actix_web::{get, post, HttpResponse, Responder};
 use alloc::string::String;
 
 #[get("/")]

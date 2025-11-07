@@ -1,8 +1,8 @@
 use crate::crypto::{
-    kdf::{OpLabel, hop_key},
+    kdf::{hop_key, OpLabel},
     mac, prg,
 };
-use crate::types::{C_BLOCK, Error, Fs, Mac, Result, Si};
+use crate::types::{Error, Fs, Mac, Result, Si, C_BLOCK};
 use alloc::vec;
 use alloc::vec::Vec;
 

@@ -1,5 +1,5 @@
 use crate::crypto::prp;
-use crate::types::{Chdr, Error, Exp, FS_LEN, Fs, PacketType, Result, RoutingSegment, Si, Sv};
+use crate::types::{Chdr, Error, Exp, Fs, PacketType, Result, RoutingSegment, Si, Sv, FS_LEN};
 use alloc::vec::Vec;
 
 // Encode {s || EXP || R[0..12]} into 32 bytes, then PRP-enc with key from SV

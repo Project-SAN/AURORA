@@ -1,9 +1,9 @@
 use crate::crypto::{
-    kdf::{OpLabel, hop_key},
+    kdf::{hop_key, OpLabel},
     mac, prg,
 };
 use crate::packet::core::open;
-use crate::types::{Ahdr, C_BLOCK, Error, Exp, FS_LEN, Fs, Result, RoutingSegment, Si, Sv};
+use crate::types::{Ahdr, Error, Exp, Fs, Result, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN};
 use alloc::vec;
 use alloc::vec::Vec;
 use rand_core::RngCore;
@@ -17,7 +17,7 @@ pub struct ProcResult {
 // Algorithm 3: Process an AHDR at a hop
 pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let rc = ahdr.bytes.len();
-    if !rc.is_multiple_of(C_BLOCK) {
+    if rc % C_BLOCK != 0 {
         return Err(Error::Length);
     }
     // number of blocks r = rc / C_BLOCK (not needed explicitly)
@@ -76,7 +76,7 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
         let start = (rmax - 1 - i) * C_BLOCK;
         let end = rc;
         let slice = &mask[start..end]; // length (i+1)*c
-        // new_phi = (phi || 0^c) XOR slice
+                                       // new_phi = (phi || 0^c) XOR slice
         let mut new_phi = Vec::with_capacity(phi.len() + C_BLOCK);
         new_phi.extend_from_slice(&phi);
         new_phi.resize(phi.len() + C_BLOCK, 0);

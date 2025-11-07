@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, ResponseError, http::StatusCode, post, web};
+use actix_web::{http::StatusCode, post, web, HttpResponse, Responder, ResponseError};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::policy::extract::{ExtractionError, Extractor};
-use crate::policy::plonk::PlonkPolicy;
-use crate::policy::{PolicyCapsule, PolicyId};
+use crate::policy::plonk::{self, PlonkPolicy};
+use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
 use crate::types::Error as HornetError;
-use crate::utils::{HexError, decode_hex, encode_hex};
+use crate::utils::{decode_hex, encode_hex, HexError};
 
 pub struct PolicyAuthorityState {
     policies: BTreeMap<PolicyId, PolicyAuthorityEntry>,
@@ -38,22 +38,32 @@ impl PolicyAuthorityState {
     fn get(&self, policy_id: &PolicyId) -> Option<&PolicyAuthorityEntry> {
         self.policies.get(policy_id)
     }
+
+    fn metadata(&self, policy_id: &PolicyId, expiry: u32, flags: u16) -> Option<PolicyMetadata> {
+        self.policies
+            .get(policy_id)
+            .map(|entry| entry.metadata(expiry, flags))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::blocklist::BlocklistEntry;
     use crate::policy::extract::HttpHostExtractor;
-    use crate::policy::{PolicyCapsule, PolicyRegistry, plonk};
+    use crate::policy::{plonk, PolicyCapsule, PolicyRegistry};
     use crate::utils::decode_hex;
-    use actix_web::{App, http::StatusCode, test};
+    use actix_web::{http::StatusCode, test, App};
     use alloc::vec;
     use alloc::vec::Vec;
     use rand::rngs::SmallRng;
     use rand::{RngCore, SeedableRng};
 
     fn demo_authority_state() -> (PolicyAuthorityState, PolicyId) {
-        let blocklist = vec![b"blocked.example".to_vec(), b"malicious.test".to_vec()];
+        let blocklist = vec![
+            BlocklistEntry::Exact("blocked.example".into()).leaf_bytes(),
+            BlocklistEntry::Exact("malicious.test".into()).leaf_bytes(),
+        ];
         let policy =
             Arc::new(PlonkPolicy::new_with_blocklist(b"test-policy", &blocklist).expect("policy"));
         plonk::register_policy(policy.clone());
@@ -107,12 +117,10 @@ mod tests {
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let payload: serde_json::Value = test::read_body_json(response).await;
-        assert!(
-            payload
-                .get("error")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
+        assert!(payload
+            .get("error")
+            .and_then(|value| value.as_str())
+            .is_some());
     }
 
     #[actix_web::test]
@@ -352,14 +360,20 @@ impl PolicyAuthorityEntry {
         }
     }
 
+    fn metadata(&self, expiry: u32, flags: u16) -> PolicyMetadata {
+        self.policy.metadata(expiry, flags)
+    }
+
     fn prove(&self, payload: &[u8]) -> Result<PolicyCapsule, ApiError> {
         let target = self
             .extractor
             .extract(payload)
             .map_err(ApiError::from_extraction)?;
-        let target_bytes = target.as_bytes();
+        let entry = crate::policy::blocklist::entry_from_target(&target)
+            .map_err(ApiError::from_prover)?;
+        let canonical_bytes = entry.leaf_bytes();
         self.policy
-            .prove_payload(&target_bytes)
+            .prove_payload(&canonical_bytes)
             .map_err(ApiError::from_prover)
     }
 }
@@ -379,6 +393,23 @@ pub struct ProveResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aux_hex: Option<String>,
     pub version: u8,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyRequest {
+    pub policy_id: String,
+    pub capsule_hex: String,
+    pub payload_hex: String,
+    #[serde(default)]
+    pub expiry: Option<u32>,
+    #[serde(default)]
+    pub flags: Option<u16>,
+}
+
+#[derive(Serialize)]
+pub struct VerifyResponse {
+    pub valid: bool,
+    pub commitment_hex: String,
 }
 
 #[post("/prove")]
@@ -410,6 +441,47 @@ pub async fn prove(
         version: capsule.version,
     };
 
+    Ok(web::Json(response))
+}
+
+#[post("/verify")]
+pub async fn verify(
+    state: web::Data<PolicyAuthorityState>,
+    request: web::Json<VerifyRequest>,
+) -> Result<impl Responder, ApiError> {
+    let policy_id = decode_policy_id(request.policy_id.as_str())?;
+    let mut capsule_bytes = decode_hex(request.capsule_hex.as_str())?;
+    let payload = decode_hex(request.payload_hex.as_str())?;
+
+    let expiry = request.expiry.unwrap_or(600);
+    let flags = request.flags.unwrap_or(0);
+    let metadata = state
+        .metadata(&policy_id, expiry, flags)
+        .ok_or(ApiError::PolicyNotFound(request.policy_id.clone()))?;
+
+    let mut registry = PolicyRegistry::new();
+    registry.register(metadata).map_err(ApiError::from_prover)?;
+
+    let original_len = capsule_bytes.len();
+    let (capsule, consumed) = registry
+        .enforce(&mut capsule_bytes)
+        .map_err(ApiError::from_prover)?;
+    if consumed != original_len {
+        return Err(ApiError::ProofFailure);
+    }
+    if capsule.policy_id != policy_id {
+        return Err(ApiError::PolicyViolation);
+    }
+
+    let expected_commit = plonk::payload_commitment_bytes(&payload);
+    if expected_commit != capsule.commitment {
+        return Err(ApiError::PolicyViolation);
+    }
+
+    let response = VerifyResponse {
+        valid: true,
+        commitment_hex: encode_hex(&expected_commit),
+    };
     Ok(web::Json(response))
 }
 

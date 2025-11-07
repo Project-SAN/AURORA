@@ -1,5 +1,6 @@
 pub mod blocklist;
 pub mod capsule;
+#[cfg(feature = "http-client")]
 pub mod client;
 pub mod extract;
 pub mod metadata;

@@ -1,4 +1,4 @@
-use crate::crypto::kdf::{OpLabel, hop_key};
+use crate::crypto::kdf::{hop_key, OpLabel};
 use aes::Aes128;
 use ctr::cipher::{KeyIvInit, StreamCipher};
 

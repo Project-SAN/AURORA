@@ -1,4 +1,4 @@
-use crate::policy::{PolicyId, PolicyMetadata, decode_metadata_tlv, encode_metadata_tlv};
+use crate::policy::{decode_metadata_tlv, encode_metadata_tlv, PolicyId, PolicyMetadata};
 use crate::routing::{self, RouteElem};
 use crate::types::{Error, Result, RoutingSegment};
 use alloc::string::{String, ToString};

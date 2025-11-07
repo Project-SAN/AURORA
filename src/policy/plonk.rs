@@ -140,6 +140,12 @@ fn payload_commitment(payload: &[u8]) -> (BlsScalar, Vec<u8>) {
     (scalar, bytes)
 }
 
+/// Compute the commitment bytes associated with a payload.
+/// Routers or APIs can reuse this to validate that a capsule matches the payload they received.
+pub fn payload_commitment_bytes(payload: &[u8]) -> Vec<u8> {
+    payload_commitment(payload).1
+}
+
 fn hash_to_scalar(data: &[u8]) -> BlsScalar {
     let mut hasher = Sha512::new();
     hasher.update(data);
@@ -205,10 +211,12 @@ pub fn prove_for_payload(policy_id: &PolicyId, payload: &[u8]) -> Result<PolicyC
 mod tests {
     use super::*;
     use alloc::vec;
+    use crate::policy::blocklist::BlocklistEntry;
 
     #[test]
     fn proof_roundtrip() {
-        let blocklist = vec![b"blocked.example".to_vec()];
+        let blocked_leaf = BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
+        let blocklist = vec![blocked_leaf.clone()];
         let policy =
             Arc::new(PlonkPolicy::new_with_blocklist(b"test-policy", &blocklist).expect("policy"));
         register_policy(policy.clone());
@@ -216,9 +224,8 @@ mod tests {
         let mut registry = PolicyRegistry::new();
         ensure_registry(&mut registry, &metadata).expect("registry");
 
-        let capsule = policy
-            .prove_payload(b"safe.example")
-            .expect("prove payload");
+        let safe_leaf = BlocklistEntry::Exact("safe.example".into()).leaf_bytes();
+        let capsule = policy.prove_payload(&safe_leaf).expect("prove payload");
         assert_eq!(capsule.policy_id, metadata.policy_id);
         let mut buffer = capsule.encode();
         buffer.extend_from_slice(b"safe.example");
@@ -226,7 +233,7 @@ mod tests {
         assert_eq!(consumed, capsule.encode().len());
 
         assert!(matches!(
-            policy.prove_payload(b"blocked.example"),
+            policy.prove_payload(&blocked_leaf),
             Err(Error::PolicyViolation)
         ));
     }

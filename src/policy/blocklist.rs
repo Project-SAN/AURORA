@@ -1,10 +1,14 @@
 use crate::types::Error;
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem;
+use core::str;
 use dusk_plonk::prelude::BlsScalar;
 use serde::Deserialize;
 use sha2::{Digest, Sha256, Sha512};
+
+use super::extract::TargetValue;
 
 const TAG_EXACT: u8 = 0x01;
 const TAG_PREFIX: u8 = 0x02;
@@ -303,6 +307,30 @@ impl Blocklist {
             entries.push(entry);
         }
         Ok(Self::new(entries))
+    }
+}
+
+/// Build a canonical blocklist entry from a target value extracted from payloads.
+pub fn entry_from_target(target: &TargetValue) -> crate::types::Result<BlocklistEntry> {
+    match target {
+        TargetValue::Domain(bytes) => {
+            let value = str::from_utf8(bytes).map_err(|_| Error::Crypto)?;
+            Ok(BlocklistEntry::Exact(value.to_owned()))
+        }
+        TargetValue::Ipv4(addr) => {
+            let bytes = addr.to_vec();
+            Ok(BlocklistEntry::Range {
+                start: bytes.clone(),
+                end: bytes,
+            })
+        }
+        TargetValue::Ipv6(addr) => {
+            let bytes = addr.to_vec();
+            Ok(BlocklistEntry::Range {
+                start: bytes.clone(),
+                end: bytes,
+            })
+        }
     }
 }
 

@@ -1,7 +1,7 @@
-use crate::crypto::kdf::{OpLabel, hop_key};
+use crate::crypto::kdf::{hop_key, OpLabel};
 use crate::crypto::{mac, prg};
-use aes::Aes128;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::Aes128;
 use alloc::vec;
 
 extern crate alloc;

@@ -3,16 +3,14 @@ use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
-use actix_web::{App, HttpServer, web};
+use actix_web::{web, App, HttpServer};
 use hornet::api::hello::{hello, manual_hello};
-use hornet::api::prove::{PolicyAuthorityState, prove};
-use hornet::policy::Blocklist;
+use hornet::api::prove::{prove, verify, PolicyAuthorityState};
+use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::{self, PlonkPolicy};
+use hornet::policy::Blocklist;
 use hornet::utils::encode_hex;
-
-const BLOCKLIST_PATH: &str = "config/blocklist.json";
-const POLICY_LABEL: &[u8] = b"default-blocklist-policy";
 
 #[actix_web::main]
 async fn main() -> io::Result<()> {
@@ -22,6 +20,7 @@ async fn main() -> io::Result<()> {
             .app_data(authority_state.clone())
             .service(hello)
             .service(prove)
+            .service(verify)
             .route("/hey", web::get().to(manual_hello))
     })
     .bind(("127.0.0.1", 8080))?
@@ -31,7 +30,7 @@ async fn main() -> io::Result<()> {
 
 fn init_authority_state() -> io::Result<PolicyAuthorityState> {
     let mut state = PolicyAuthorityState::new();
-    let (policy, policy_id) = load_policy(BLOCKLIST_PATH)?;
+    let (policy, policy_id) = load_policy(DEFAULT_BLOCKLIST_PATH)?;
     plonk::register_policy(policy.clone());
     state.register_policy(policy, HttpHostExtractor::default());
 
@@ -48,7 +47,7 @@ fn load_policy(block_list_path: &str) -> io::Result<(Arc<PlonkPolicy>, hornet::p
         )
     })?;
     let policy = Arc::new(
-        PlonkPolicy::new_from_blocklist(POLICY_LABEL, &blocklist).map_err(|err| {
+        PlonkPolicy::new_from_blocklist(DEFAULT_POLICY_LABEL, &blocklist).map_err(|err| {
             io::Error::new(ErrorKind::Other, format!("failed to build policy: {err:?}"))
         })?,
     );

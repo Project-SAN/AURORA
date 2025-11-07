@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn setup_strict_end_to_end_fs_collection() {
-        use crate::types::{C_BLOCK, Exp, Fs, RoutingSegment, Sv};
+        use crate::types::{Exp, Fs, RoutingSegment, Sv, C_BLOCK};
         let mut rng = XorShift64(0x1111_aaaa_2222_bbbb);
         let lf = 3usize;
         let rmax = lf;
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn backward_setup_finish_first_data_carries_ahdrb() {
-        use crate::types::{Ahdr, C_BLOCK, Exp, Fs, Nonce, RoutingSegment, Sv};
+        use crate::types::{Ahdr, Exp, Fs, Nonce, RoutingSegment, Sv, C_BLOCK};
         let mut rng = XorShift64(0x2222_bbbb_3333_cccc);
         let lf = 3usize;
         let lb = 3usize;

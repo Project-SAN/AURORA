@@ -2,7 +2,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "api")]
 pub mod api;
+pub mod config;
 pub mod crypto;
 pub mod forward;
 pub mod fragment;

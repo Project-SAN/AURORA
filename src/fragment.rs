@@ -199,7 +199,7 @@ mod tests {
     fn reject_bad_header() {
         let msg = alloc::vec![1, 2, 3, 4, 5];
         assert!(split(&msg, HDR_LEN, 1).is_err()); // cap too small
-        // Build truncated fragment
+                                                   // Build truncated fragment
         let frags = split(&msg, HDR_LEN + 2, 7).unwrap();
         let mut bad = frags[0].clone();
         bad.truncate(HDR_LEN - 1);

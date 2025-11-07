@@ -1,5 +1,5 @@
 use rand_core::{CryptoRng, RngCore};
-use x25519_dalek::{X25519_BASEPOINT_BYTES, x25519};
+use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 
 pub type PublicKey = [u8; 32];
 pub type SecretKey = [u8; 32];
@@ -30,7 +30,7 @@ impl KeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{SeedableRng, rngs::SmallRng};
+    use rand::{rngs::SmallRng, SeedableRng};
 
     struct TestRng(SmallRng);
 

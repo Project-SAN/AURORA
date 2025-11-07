@@ -1,4 +1,4 @@
-use crate::crypto::kdf::{OpLabel, hop_key};
+use crate::crypto::kdf::{hop_key, OpLabel};
 use crate::crypto::{prg, prp};
 use crate::types::{Error, Si};
 use rand_core::RngCore;

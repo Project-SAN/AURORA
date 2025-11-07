@@ -1,8 +1,7 @@
-use crate::policy::blocklist::{Blocklist, BlocklistEntry, MerkleProof};
+use crate::policy::blocklist::{self, Blocklist, BlocklistEntry, MerkleProof};
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
-use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -66,7 +65,7 @@ impl NonMembershipWitness {
     }
 
     pub fn from_target(blocklist: &Blocklist, target: &TargetValue) -> Result<Self> {
-        let entry = entry_from_target(target)?;
+        let entry = blocklist::entry_from_target(target)?;
         Self::from_entry(blocklist, &entry)
     }
 }
@@ -138,29 +137,6 @@ where
 
     pub fn extractor(&self) -> &E {
         &self.extractor
-    }
-}
-
-fn entry_from_target(target: &TargetValue) -> Result<BlocklistEntry> {
-    match target {
-        TargetValue::Domain(bytes) => {
-            let value = core::str::from_utf8(bytes).map_err(|_| Error::Crypto)?;
-            Ok(BlocklistEntry::Exact(value.to_owned()))
-        }
-        TargetValue::Ipv4(addr) => {
-            let bytes = addr.to_vec();
-            Ok(BlocklistEntry::Range {
-                start: bytes.clone(),
-                end: bytes,
-            })
-        }
-        TargetValue::Ipv6(addr) => {
-            let bytes = addr.to_vec();
-            Ok(BlocklistEntry::Range {
-                start: bytes.clone(),
-                end: bytes,
-            })
-        }
     }
 }
 
@@ -359,7 +335,8 @@ impl<E: Extractor + Send + Sync + 'static> ProofService for PlonkProofService<E>
             .extractor
             .extract(request.payload)
             .map_err(|_| Error::PolicyViolation)?;
-        let bytes = target.as_bytes();
+        let entry = blocklist::entry_from_target(&target)?;
+        let bytes = entry.leaf_bytes();
         self.policy.prove_payload(&bytes)
     }
 }
@@ -481,7 +458,9 @@ mod tests {
             flags: 0,
             verifier_blob: vec![],
         };
-        let blocklist = Blocklist::from_canonical_bytes(vec![b"blocked.example".to_vec()]);
+        let blocked_leaf = crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into())
+            .leaf_bytes();
+        let blocklist = Blocklist::from_canonical_bytes(vec![blocked_leaf]);
         let preprocessor = ProofPreprocessor::new(HttpHostExtractor::default(), blocklist);
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
         let request = preprocessor.prepare(&meta, payload, b"").expect("prepared");
@@ -552,7 +531,9 @@ mod tests {
     #[test]
     fn plonk_service_generates_proof() {
         use crate::policy::extract::HttpHostExtractor;
-        let blocklist = vec![b"blocked.example".to_vec()];
+        let blocked_leaf = crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into())
+            .leaf_bytes();
+        let blocklist = vec![blocked_leaf];
         let service = PlonkProofService::new(b"test", blocklist, HttpHostExtractor::default())
             .expect("plonk service");
         let metadata = service.policy_metadata(42, 0);

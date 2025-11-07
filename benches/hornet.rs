@@ -1,4 +1,4 @@
-use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 

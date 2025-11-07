@@ -1,6 +1,6 @@
 use crate::types::{Error, Mac, Result};
-use hmac::Hmac;
 use hmac::digest::KeyInit;
+use hmac::Hmac;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

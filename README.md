@@ -42,6 +42,21 @@ cargo run --features policy-client
 3. Run the demo with `policy-client` enabled – the preprocessor extracts the target (e.g., HTTP Host), computes Merkle neighbour paths from the blocklist, and submits everything to the PA.
 4. Forwarding nodes verify the capsule using the metadata propagated during setup.
 
+## クライアント主導の証明送信デモ
+
+最新の PoC ではクライアントがローカルでゼロ知識証明を生成し、`/verify` エンドポイントへ送信してポリシー適合性を確認できます。
+
+1. 別ターミナルで PA を起動:
+   ```bash
+   cargo run
+   ```
+2. クライアントから証明を生成して送信（例では `safe.example` へのアクセスを想定）:
+   ```bash
+   cargo run --bin zkmb_client -- safe.example
+   ```
+
+`POLICY_BLOCKLIST_JSON` で使用するブロックリスト JSON を指定できます。PA の URL を変更したい場合は `POLICY_AUTHORITY_URL` をエクスポートしてください（デフォルトは `http://127.0.0.1:8080`）。ブロックリストに含まれるホストを指定すると、クライアント側で証明生成が失敗しポリシー違反として扱われます。
+
 ## Further Reading
 
 - `docs/zkmb-hornet-protocol.md` – end-to-end overview of ZKMB-HORNET, including TLV formats, API schema, and roadmap items.
