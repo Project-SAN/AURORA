@@ -31,4 +31,23 @@ impl RouterConfig {
         }
         Ok(())
     }
+
+    #[cfg(feature = "std")]
+    pub fn from_env() -> Result<Self> {
+        use std::env;
+        let url =
+            env::var("HORNET_DIR_URL").unwrap_or_else(|_| "https://example.com/directory".into());
+        let secret = env::var("HORNET_DIR_SECRET").unwrap_or_else(|_| "shared-secret".into());
+        let poll = env::var("HORNET_DIR_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+        let storage =
+            env::var("HORNET_STORAGE_PATH").unwrap_or_else(|_| "router_state.json".into());
+        let mut cfg = Self::new(url, secret);
+        cfg.directory_poll_interval = Duration::from_secs(poll);
+        cfg.storage_path = storage;
+        cfg.validate()?;
+        Ok(cfg)
+    }
 }

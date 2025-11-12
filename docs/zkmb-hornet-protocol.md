@@ -227,3 +227,22 @@ TEE-based attestation and Verifiable Oblivious PRF (VOPRF) are combined so that 
 3. Extend the Plonk circuit for commitment consistency + non-inclusion proofs.
 4. Extend `PolicyCapsule` and verifier formats with the new public inputs.
 5. Update clients/browser extensions to follow the new flow while keeping a backward-compatible mode.
+
+### Outstanding Engineering Tasks
+The current Rust prototype ships an experimental router runtime (directory sync + TCP forwarding + persistence). To reach a production-ready HORNET router, the following work remains:
+
+1. **Setup Packet Handling & Key Management**
+   - Implement full `setup::node_process_with_policy` integration inside the router so setup packets update `Si/Fs/CHDR` state, and persist those secrets (not just `Sv`) via `router::storage`.
+   - Restore the complete setup state (policy registry + node keys) on restart.
+2. **Secure Networking**
+   - Replace the current plaintext TCP frame with an authenticated/ encrypted transport (e.g., TLS or Noise) and support multiple concurrent connections with backpressure.
+   - Add node-to-node handshake/identity verification to prevent spoofing or replay.
+3. **Observability & Control Plane**
+   - Scheduled directory sync with exponential backoff, structured logging, and metrics (policy violations, replay drops, forward success rates).
+   - CLI/configuration for network bindings, storage paths, and security parameters.
+4. **Routing Integration**
+   - Use real routing descriptors (multiple `RouteElem`s per segment), maintain per-hop position, and update routing tables dynamically rather than assuming a single next-hop segment.
+5. **Testing**
+   - End-to-end integration tests covering setup→data flow across multiple nodes, persistence across restarts, and error conditions (expired metadata, invalid proofs, replay attacks).
+
+These tasks are tracked in the Rust repo and should be completed before treating the router as production-ready.

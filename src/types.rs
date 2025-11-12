@@ -29,7 +29,7 @@ pub struct Sv(pub [u8; 16]);
 #[derive(Clone, Copy)]
 pub struct Si(pub [u8; 16]);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PacketType {
     Setup = 0x01,
     Data = 0x02,

@@ -67,6 +67,10 @@ impl TcpPacketListener {
         listener.set_nonblocking(false)?;
         Ok(Self { listener, sv })
     }
+
+    pub fn update_sv(&mut self, sv: Sv) {
+        self.sv = sv;
+    }
 }
 
 impl PacketListener for TcpPacketListener {

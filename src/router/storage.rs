@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub struct StoredState {
     policies: Vec<PolicyMetadata>,
     sv: [u8; 16],
+    #[serde(default)]
+    si: Option<[u8; 16]>,
 }
 
 pub trait RouterStorage {
@@ -41,8 +43,12 @@ impl RouterStorage for FileRouterStorage {
 }
 
 impl StoredState {
-    pub fn new(policies: Vec<PolicyMetadata>, sv: Sv) -> Self {
-        Self { policies, sv: sv.0 }
+    pub fn new(policies: Vec<PolicyMetadata>, sv: Sv, si: Option<[u8; 16]>) -> Self {
+        Self {
+            policies,
+            sv: sv.0,
+            si,
+        }
     }
 
     pub fn policies(&self) -> &[PolicyMetadata] {
@@ -53,7 +59,11 @@ impl StoredState {
         Sv(self.sv)
     }
 
-    pub fn into_parts(self) -> (Vec<PolicyMetadata>, Sv) {
-        (self.policies, Sv(self.sv))
+    pub fn si(&self) -> Option<[u8; 16]> {
+        self.si
+    }
+
+    pub fn into_parts(self) -> (Vec<PolicyMetadata>, Sv, Option<[u8; 16]>) {
+        (self.policies, Sv(self.sv), self.si)
     }
 }
