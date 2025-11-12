@@ -1,10 +1,14 @@
 use crate::types::Result;
 use alloc::string::String;
+#[cfg(feature = "std")]
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct RouterConfig {
     pub directory_url: String,
     pub directory_secret: String,
+    #[cfg(feature = "std")]
+    pub directory_poll_interval: Duration,
 }
 
 impl RouterConfig {
@@ -12,6 +16,8 @@ impl RouterConfig {
         Self {
             directory_url: directory_url.into(),
             directory_secret: directory_secret.into(),
+            #[cfg(feature = "std")]
+            directory_poll_interval: Duration::from_secs(60),
         }
     }
 

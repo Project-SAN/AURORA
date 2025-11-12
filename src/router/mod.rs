@@ -8,6 +8,8 @@ use crate::types::{Ahdr, Chdr, Result};
 use alloc::vec::Vec;
 
 pub mod config;
+#[cfg(feature = "std")]
+pub mod io;
 pub mod runtime;
 pub mod sync;
 

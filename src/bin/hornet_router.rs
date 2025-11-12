@@ -1,7 +1,8 @@
 use hornet::node::NoReplay;
 use hornet::router::config::RouterConfig;
-use hornet::router::runtime::forward::LoopbackForward;
-use hornet::router::runtime::{PacketDirection, RouterRuntime};
+use hornet::router::io::{PacketListener, TcpForward, TcpPacketListener};
+use hornet::router::runtime::RouterRuntime;
+use hornet::router::sync::client::{sync_once, DirectoryClient};
 use hornet::router::Router;
 use hornet::time::SystemTimeProvider;
 
@@ -12,26 +13,53 @@ fn main() {
         std::process::exit(1);
     }
 
-    let router = Router::new();
+    let mut router = Router::new();
+    let file_client = LocalFileClient::new("directory.json");
+    if let Err(err) = sync_once(&mut router, &config, &file_client) {
+        eprintln!("directory sync failed: {:?}", err);
+    }
     let time = SystemTimeProvider;
     let mut runtime = RouterRuntime::new(
         &router,
         &time,
-        || Box::new(LoopbackForward::new()),
+        || Box::new(TcpForward::new()),
         || Box::new(NoReplay),
     );
-    let mut payload = Vec::new();
-    let mut chdr = hornet::types::Chdr {
-        typ: hornet::types::PacketType::Data,
-        hops: 0,
-        specific: [0u8; 16],
-    };
-    let mut ahdr = hornet::types::Ahdr { bytes: Vec::new() };
-    let _ = runtime.process(
-        PacketDirection::Forward,
-        hornet::types::Sv([0u8; 16]),
-        &mut chdr,
-        &mut ahdr,
-        &mut payload,
-    );
+    let sv = hornet::types::Sv([0xAA; 16]);
+    let mut listener = TcpPacketListener::bind("127.0.0.1:7000", sv).expect("bind listener");
+    loop {
+        match listener.next() {
+            Ok(mut packet) => {
+                if let Err(err) = runtime.process(
+                    packet.direction,
+                    packet.sv,
+                    &mut packet.chdr,
+                    &mut packet.ahdr,
+                    &mut packet.payload,
+                ) {
+                    eprintln!("packet processing failed: {:?}", err);
+                }
+            }
+            Err(err) => {
+                eprintln!("listener error: {err:?}");
+                break;
+            }
+        }
+    }
+}
+
+struct LocalFileClient<'a> {
+    path: &'a str,
+}
+
+impl<'a> LocalFileClient<'a> {
+    fn new(path: &'a str) -> Self {
+        Self { path }
+    }
+}
+
+impl<'a> DirectoryClient for LocalFileClient<'a> {
+    fn fetch_signed(&self) -> hornet::types::Result<String> {
+        std::fs::read_to_string(self.path).map_err(|_| hornet::types::Error::Crypto)
+    }
 }

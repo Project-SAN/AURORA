@@ -13,3 +13,48 @@ pub fn apply_signed_announcement(router: &mut Router, body: &str, secret: &[u8])
     let announcement = directory::from_signed_json(body, secret)?;
     apply_announcement(router, &announcement)
 }
+
+#[cfg(feature = "std")]
+pub mod client {
+    use super::apply_signed_announcement;
+    use crate::router::{config::RouterConfig, Router};
+    use crate::types::Result;
+
+    pub trait DirectoryClient {
+        fn fetch_signed(&self) -> Result<String>;
+    }
+
+    #[cfg(feature = "http-client")]
+    pub struct HttpDirectoryClient<'a> {
+        config: &'a RouterConfig,
+    }
+
+    #[cfg(feature = "http-client")]
+    impl<'a> HttpDirectoryClient<'a> {
+        pub fn new(config: &'a RouterConfig) -> Self {
+            Self { config }
+        }
+    }
+
+    #[cfg(feature = "http-client")]
+    impl<'a> DirectoryClient for HttpDirectoryClient<'a> {
+        fn fetch_signed(&self) -> Result<String> {
+            let response = ureq::get(&self.config.directory_url)
+                .call()
+                .map_err(|_| crate::types::Error::Crypto)?;
+            let body = response
+                .into_string()
+                .map_err(|_| crate::types::Error::Crypto)?;
+            Ok(body)
+        }
+    }
+
+    pub fn sync_once(
+        router: &mut Router,
+        config: &RouterConfig,
+        client: &dyn DirectoryClient,
+    ) -> Result<()> {
+        let body = client.fetch_signed()?;
+        apply_signed_announcement(router, &body, config.directory_secret.as_bytes())
+    }
+}
