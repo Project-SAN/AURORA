@@ -119,8 +119,8 @@ pub mod forward {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forward::NoopForward;
     use crate::node::NoReplay;
+    use crate::router::runtime::forward::LoopbackForward;
     use crate::router::Router;
     use crate::time::TimeProvider;
 
@@ -138,7 +138,7 @@ mod tests {
         let _runtime = RouterRuntime::new(
             &router,
             &time,
-            || Box::new(NoopForward),
+            || Box::new(LoopbackForward::new()),
             || Box::new(NoReplay),
         );
     }
