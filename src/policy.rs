@@ -3,7 +3,9 @@ pub mod blocklist;
 pub mod client;
 pub mod extract;
 pub mod plonk;
-pub mod registry;
+pub mod registry {
+    pub use crate::core::policy::registry::*;
+}
 
 pub mod capsule {
     pub use crate::core::policy::capsule::*;
@@ -19,4 +21,6 @@ pub use extract::{ExtractionError, Extractor, TargetValue};
 pub use metadata::{PolicyId, PolicyMetadata};
 pub use registry::PolicyRegistry;
 
-pub use crate::core::policy::{decode_metadata_tlv, encode_metadata_tlv, POLICY_METADATA_TLV};
+pub use crate::core::policy::{
+    decode_metadata_tlv, encode_metadata_tlv, CapsuleValidator, POLICY_METADATA_TLV,
+};

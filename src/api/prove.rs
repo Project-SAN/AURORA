@@ -4,10 +4,13 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::adapters::plonk::validator::PlonkCapsuleValidator;
+use crate::application::prove::{ProofError, ProofPipeline as DomainProofPipeline, ProveInput};
 use crate::policy::extract::{ExtractionError, Extractor};
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
@@ -43,6 +46,15 @@ impl PolicyAuthorityState {
         self.policies
             .get(policy_id)
             .map(|entry| entry.metadata(expiry, flags))
+    }
+}
+
+impl DomainProofPipeline for PolicyAuthorityState {
+    fn prove(&self, request: ProveInput<'_>) -> Result<PolicyCapsule, ProofError> {
+        let entry = self
+            .get(&request.policy_id)
+            .ok_or(ProofError::PolicyNotFound)?;
+        entry.prove(request.payload)
     }
 }
 
@@ -130,6 +142,7 @@ mod tests {
         let metadata = policy.metadata(600, 0);
         let mut registry = PolicyRegistry::new();
         registry.register(metadata).expect("register metadata");
+        let validator = PlonkCapsuleValidator::new();
 
         let data = web::Data::new(state);
         let app = test::init_service(App::new().app_data(data.clone()).service(prove)).await;
@@ -169,7 +182,7 @@ mod tests {
         forward_payload.extend_from_slice(payload);
 
         let (verified_capsule, consumed) = registry
-            .enforce(&mut forward_payload)
+            .enforce(&mut forward_payload, &validator)
             .expect("registry enforce");
         assert_eq!(consumed, capsule_len);
         assert_eq!(verified_capsule, capsule);
@@ -186,6 +199,7 @@ mod tests {
 
         let mut registry = PolicyRegistry::new();
         registry.register(metadata).expect("register metadata");
+        let validator = PlonkCapsuleValidator::new();
 
         let data = web::Data::new(state);
         let app = test::init_service(App::new().app_data(data.clone()).service(prove)).await;
@@ -273,7 +287,8 @@ mod tests {
             now: &time,
             forward: &mut forward,
             replay: &mut replay,
-            policy: Some(&mut registry),
+            policy: Some(&registry),
+            capsule_validator: Some(&validator),
         };
 
         crate::node::forward::process_data(
@@ -364,17 +379,17 @@ impl PolicyAuthorityEntry {
         self.policy.metadata(expiry, flags)
     }
 
-    fn prove(&self, payload: &[u8]) -> Result<PolicyCapsule, ApiError> {
+    fn prove(&self, payload: &[u8]) -> Result<PolicyCapsule, ProofError> {
         let target = self
             .extractor
             .extract(payload)
-            .map_err(ApiError::from_extraction)?;
+            .map_err(ProofError::Extraction)?;
         let entry =
-            crate::policy::blocklist::entry_from_target(&target).map_err(ApiError::from_prover)?;
+            crate::policy::blocklist::entry_from_target(&target).map_err(ProofError::Prover)?;
         let canonical_bytes = entry.leaf_bytes();
         self.policy
             .prove_payload(&canonical_bytes)
-            .map_err(ApiError::from_prover)
+            .map_err(ProofError::Prover)
     }
 }
 
@@ -419,11 +434,19 @@ pub async fn prove(
 ) -> Result<impl Responder, ApiError> {
     let policy_id = decode_policy_id(request.policy_id.as_str())?;
     let payload = decode_hex(request.payload_hex.as_str())?;
-
-    let entry = state
-        .get(&policy_id)
-        .ok_or(ApiError::PolicyNotFound(request.policy_id.clone()))?;
-    let capsule = entry.prove(&payload)?;
+    let aux_bytes = if request.aux_hex.is_empty() {
+        Vec::new()
+    } else {
+        decode_hex(request.aux_hex.as_str())?
+    };
+    let input = ProveInput {
+        policy_id,
+        payload: payload.as_slice(),
+        aux: aux_bytes.as_slice(),
+    };
+    let capsule = state
+        .prove(input)
+        .map_err(|err| ApiError::from_proof(err, request.policy_id.as_str()))?;
 
     // Optional aux passthrough: if caller supplied aux data, echo it back when proof is empty.
     let aux = if !capsule.aux.is_empty() {
@@ -461,10 +484,11 @@ pub async fn verify(
 
     let mut registry = PolicyRegistry::new();
     registry.register(metadata).map_err(ApiError::from_prover)?;
+    let validator = PlonkCapsuleValidator::new();
 
     let original_len = capsule_bytes.len();
     let (capsule, consumed) = registry
-        .enforce(&mut capsule_bytes)
+        .enforce(&mut capsule_bytes, &validator)
         .map_err(ApiError::from_prover)?;
     if consumed != original_len {
         return Err(ApiError::ProofFailure);
@@ -514,6 +538,14 @@ impl ApiError {
         match err {
             HornetError::PolicyViolation => ApiError::PolicyViolation,
             _ => ApiError::ProofFailure,
+        }
+    }
+
+    fn from_proof(err: ProofError, policy_ref: &str) -> Self {
+        match err {
+            ProofError::PolicyNotFound => ApiError::PolicyNotFound(policy_ref.to_string()),
+            ProofError::Extraction(inner) => ApiError::from_extraction(inner),
+            ProofError::Prover(inner) => ApiError::from_prover(inner),
         }
     }
 

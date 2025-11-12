@@ -1,9 +1,8 @@
-//! Setup flow placeholder; will host directory registration pipeline.
+//! Setup flow interfaces.
 
-pub struct SetupPipeline;
+use crate::core::policy::PolicyMetadata;
+use crate::types::Result;
 
-impl SetupPipeline {
-    pub fn new() -> Self {
-        Self
-    }
+pub trait SetupPipeline {
+    fn install(&mut self, metadata: PolicyMetadata) -> Result<()>;
 }

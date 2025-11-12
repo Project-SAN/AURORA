@@ -1,3 +1,4 @@
+use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
 use hornet::policy::blocklist::BlocklistEntry;
 use hornet::policy::plonk::{self, PlonkPolicy};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
@@ -71,10 +72,11 @@ fn verify_capsule(
 ) -> Result<()> {
     let mut registry = PolicyRegistry::new();
     registry.register(metadata.clone())?;
+    let validator = PlonkCapsuleValidator::new();
 
     // In the API, the PA receives raw capsule bytes; mimic that flow here.
     let mut capsule_bytes = capsule.encode();
-    let (decoded, consumed) = registry.enforce(&mut capsule_bytes)?;
+    let (decoded, consumed) = registry.enforce(&mut capsule_bytes, &validator)?;
     if consumed != capsule_bytes.len() {
         return Err(Error::PolicyViolation);
     }

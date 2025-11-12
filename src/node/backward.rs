@@ -21,8 +21,8 @@ pub fn process_data(
     if !ctx.replay.insert(tau) {
         return Err(crate::types::Error::Replay);
     }
-    let capsule_len = if let Some(reg) = ctx.policy.as_mut() {
-        let (_capsule, consumed) = reg.enforce(payload)?;
+    let capsule_len = if let (Some(reg), Some(validator)) = (ctx.policy, ctx.capsule_validator) {
+        let (_capsule, consumed) = reg.enforce(payload, validator)?;
         Some(consumed)
     } else {
         None

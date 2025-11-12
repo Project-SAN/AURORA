@@ -48,7 +48,8 @@ pub struct NodeCtx<'a> {
     // Forwarding abstraction: implementor sends to next hop
     pub forward: &'a mut dyn crate::forward::Forward,
     pub replay: &'a mut dyn ReplayFilter,
-    pub policy: Option<&'a mut crate::policy::PolicyRegistry>,
+    pub policy: Option<&'a crate::policy::PolicyRegistry>,
+    pub capsule_validator: Option<&'a dyn crate::policy::CapsuleValidator>,
 }
 
 // Optional helpers for setup path (per paper 4.3.4):
