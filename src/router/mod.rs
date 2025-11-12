@@ -4,7 +4,7 @@ use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
 use crate::policy::PolicyRegistry;
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement};
-use crate::types::Result;
+use crate::types::{Ahdr, Chdr, Result};
 use alloc::vec::Vec;
 
 /// High-level router facade that owns policy state and validation pipelines.
@@ -55,6 +55,10 @@ impl Router {
 
     pub fn registry(&self) -> &PolicyRegistry {
         &self.registry
+    }
+
+    pub fn registry_mut(&mut self) -> &mut PolicyRegistry {
+        &mut self.registry
     }
 
     pub fn process_forward_packet(
