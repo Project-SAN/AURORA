@@ -5,6 +5,7 @@ use crate::node::PolicyRuntime;
 use crate::policy::PolicyRegistry;
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement};
 use crate::types::Result;
+use alloc::vec::Vec;
 
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {
@@ -54,6 +55,50 @@ impl Router {
 
     pub fn registry(&self) -> &PolicyRegistry {
         &self.registry
+    }
+
+    pub fn process_forward_packet(
+        &self,
+        sv: crate::types::Sv,
+        now: &dyn crate::time::TimeProvider,
+        forward: &mut dyn crate::forward::Forward,
+        replay: &mut dyn crate::node::ReplayFilter,
+        chdr: &mut Chdr,
+        ahdr: &mut Ahdr,
+        payload: &mut Vec<u8>,
+    ) -> Result<()> {
+        use crate::node;
+        let policy = self.policy_runtime();
+        let mut ctx = node::NodeCtx {
+            sv,
+            now,
+            forward,
+            replay,
+            policy,
+        };
+        node::forward::process_data(&mut ctx, chdr, ahdr, payload)
+    }
+
+    pub fn process_backward_packet(
+        &self,
+        sv: crate::types::Sv,
+        now: &dyn crate::time::TimeProvider,
+        forward: &mut dyn crate::forward::Forward,
+        replay: &mut dyn crate::node::ReplayFilter,
+        chdr: &mut Chdr,
+        ahdr: &mut Ahdr,
+        payload: &mut Vec<u8>,
+    ) -> Result<()> {
+        use crate::node;
+        let policy = self.policy_runtime();
+        let mut ctx = node::NodeCtx {
+            sv,
+            now,
+            forward,
+            replay,
+            policy,
+        };
+        node::backward::process_data(&mut ctx, chdr, ahdr, payload)
     }
 }
 
