@@ -1,6 +1,7 @@
 use crate::router::Router;
 use crate::types::{Ahdr, Chdr, Result};
 use crate::{forward::Forward, node::ReplayFilter, time::TimeProvider};
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,22 +14,26 @@ pub enum PacketDirection {
 pub struct RouterRuntime<'a> {
     router: &'a Router,
     time: &'a dyn TimeProvider,
-    forward: &'a mut dyn Forward,
-    replay: &'a mut dyn ReplayFilter,
+    forward_factory: Box<dyn Fn() -> Box<dyn Forward + 'a> + 'a>,
+    replay_factory: Box<dyn Fn() -> Box<dyn ReplayFilter + 'a> + 'a>,
 }
 
 impl<'a> RouterRuntime<'a> {
-    pub fn new(
+    pub fn new<FwdFactory, RepFactory>(
         router: &'a Router,
         time: &'a dyn TimeProvider,
-        forward: &'a mut dyn Forward,
-        replay: &'a mut dyn ReplayFilter,
-    ) -> Self {
+        forward_factory: FwdFactory,
+        replay_factory: RepFactory,
+    ) -> Self
+    where
+        FwdFactory: Fn() -> Box<dyn Forward + 'a> + 'a,
+        RepFactory: Fn() -> Box<dyn ReplayFilter + 'a> + 'a,
+    {
         Self {
             router,
             time,
-            forward,
-            replay,
+            forward_factory: Box::new(forward_factory),
+            replay_factory: Box::new(replay_factory),
         }
     }
 
@@ -40,12 +45,14 @@ impl<'a> RouterRuntime<'a> {
         mut ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
     ) -> Result<()> {
+        let mut forward = (self.forward_factory)();
+        let mut replay = (self.replay_factory)();
         match direction {
             PacketDirection::Forward => self.router.process_forward_packet(
                 sv,
                 self.time,
-                self.forward,
-                self.replay,
+                forward.as_mut(),
+                replay.as_mut(),
                 &mut chdr,
                 &mut ahdr,
                 payload,
@@ -53,8 +60,8 @@ impl<'a> RouterRuntime<'a> {
             PacketDirection::Backward => self.router.process_backward_packet(
                 sv,
                 self.time,
-                self.forward,
-                self.replay,
+                forward.as_mut(),
+                replay.as_mut(),
                 &mut chdr,
                 &mut ahdr,
                 payload,
@@ -82,8 +89,11 @@ mod tests {
     fn runtime_constructs() {
         let router = Router::new();
         let time = FixedTime(0);
-        let mut forward = NoopForward;
-        let mut replay = NoReplay;
-        let _runtime = RouterRuntime::new(&router, &time, &mut forward, &mut replay);
+        let _runtime = RouterRuntime::new(
+            &router,
+            &time,
+            || Box::new(NoopForward),
+            || Box::new(NoReplay),
+        );
     }
 }
