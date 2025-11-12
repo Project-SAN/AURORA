@@ -369,8 +369,8 @@ impl PolicyAuthorityEntry {
             .extractor
             .extract(payload)
             .map_err(ApiError::from_extraction)?;
-        let entry = crate::policy::blocklist::entry_from_target(&target)
-            .map_err(ApiError::from_prover)?;
+        let entry =
+            crate::policy::blocklist::entry_from_target(&target).map_err(ApiError::from_prover)?;
         let canonical_bytes = entry.leaf_bytes();
         self.policy
             .prove_payload(&canonical_bytes)

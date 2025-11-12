@@ -210,8 +210,8 @@ pub fn prove_for_payload(policy_id: &PolicyId, payload: &[u8]) -> Result<PolicyC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::policy::blocklist::BlocklistEntry;
+    use alloc::vec;
 
     #[test]
     fn proof_roundtrip() {

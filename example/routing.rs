@@ -1,6 +1,4 @@
-use hornet::routing::{
-    elems_from_segment, segment_from_elems, IpAddr, RouteElem,
-};
+use hornet::routing::{elems_from_segment, segment_from_elems, IpAddr, RouteElem};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 fn main() {
@@ -11,9 +9,7 @@ fn main() {
             port: 7000,
         },
         RouteElem::NextHop {
-            addr: IpAddr::V6([
-                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-            ]),
+            addr: IpAddr::V6([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
             port: 7100,
         },
         RouteElem::ExitTcp {
