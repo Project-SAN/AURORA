@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 pub mod config;
 pub mod runtime;
+pub mod sync;
 
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {

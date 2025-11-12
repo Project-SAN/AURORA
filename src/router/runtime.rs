@@ -71,6 +71,12 @@ impl<'a> RouterRuntime<'a> {
     }
 }
 
+#[cfg(feature = "std")]
+pub fn fetch_directory(url: &str) -> Result<String> {
+    let body = std::fs::read_to_string(url).map_err(|_| crate::types::Error::Crypto)?;
+    Ok(body)
+}
+
 pub mod forward {
     use super::Forward;
     use crate::types::{Ahdr, Chdr, Result, RoutingSegment};
