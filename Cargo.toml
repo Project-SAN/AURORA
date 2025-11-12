@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["api", "http-client"]
+default = ["api", "http-client", "std"]
 api = ["dep:actix-web"]
 http-client = ["dep:ureq"]
+std = []
 
 [dependencies]
 # no_std-friendly cryptography building blocks
@@ -50,3 +51,8 @@ path = "example/pa.rs"
 name = "hornet"
 path = "src/main.rs"
 required-features = ["api"]
+
+[[bin]]
+name = "hornet_router"
+path = "src/bin/hornet_router.rs"
+required-features = ["std"]
