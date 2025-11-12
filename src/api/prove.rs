@@ -84,11 +84,29 @@ mod tests {
         (state, policy_id)
     }
 
+    fn wrap_state_data(
+        state: PolicyAuthorityState,
+    ) -> (
+        web::Data<PolicyAuthorityState>,
+        web::Data<ProofPipelineHandle>,
+    ) {
+        let directory = web::Data::new(state);
+        let pipeline_arc: Arc<ProofPipelineHandle> = directory.clone().into_inner();
+        let pipeline_data = web::Data::from(pipeline_arc);
+        (directory, pipeline_data)
+    }
+
     #[actix_web::test]
     async fn prove_endpoint_returns_capsule() {
         let (state, policy_id) = demo_authority_state();
-        let data = web::Data::new(state);
-        let app = test::init_service(App::new().app_data(data.clone()).service(prove)).await;
+        let (directory, pipeline_data) = wrap_state_data(state);
+        let app = test::init_service(
+            App::new()
+                .app_data(directory.clone())
+                .app_data(pipeline_data.clone())
+                .service(prove),
+        )
+        .await;
 
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
         let body = json!({
@@ -112,8 +130,14 @@ mod tests {
     #[actix_web::test]
     async fn prove_endpoint_rejects_blocklisted_target() {
         let (state, policy_id) = demo_authority_state();
-        let data = web::Data::new(state);
-        let app = test::init_service(App::new().app_data(data.clone()).service(prove)).await;
+        let (directory, pipeline_data) = wrap_state_data(state);
+        let app = test::init_service(
+            App::new()
+                .app_data(directory.clone())
+                .app_data(pipeline_data.clone())
+                .service(prove),
+        )
+        .await;
 
         let payload = b"GET / HTTP/1.1\r\nHost: blocked.example\r\n\r\n";
         let body = json!({
@@ -143,9 +167,17 @@ mod tests {
         let mut registry = PolicyRegistry::new();
         registry.register(metadata).expect("register metadata");
         let validator = PlonkCapsuleValidator::new();
+        let forward_pipeline = crate::application::forward::RegistryForwardPipeline::new();
+        let forward_pipeline = crate::application::forward::RegistryForwardPipeline::new();
 
-        let data = web::Data::new(state);
-        let app = test::init_service(App::new().app_data(data.clone()).service(prove)).await;
+        let (directory, pipeline_data) = wrap_state_data(state);
+        let app = test::init_service(
+            App::new()
+                .app_data(directory.clone())
+                .app_data(pipeline_data.clone())
+                .service(prove),
+        )
+        .await;
 
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
         let body = json!({
@@ -200,9 +232,14 @@ mod tests {
         let mut registry = PolicyRegistry::new();
         registry.register(metadata).expect("register metadata");
         let validator = PlonkCapsuleValidator::new();
-
-        let data = web::Data::new(state);
-        let app = test::init_service(App::new().app_data(data.clone()).service(prove)).await;
+        let (directory, pipeline_data) = wrap_state_data(state);
+        let app = test::init_service(
+            App::new()
+                .app_data(directory.clone())
+                .app_data(pipeline_data.clone())
+                .service(prove),
+        )
+        .await;
 
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
         let body = json!({
@@ -287,8 +324,11 @@ mod tests {
             now: &time,
             forward: &mut forward,
             replay: &mut replay,
-            policy: Some(&registry),
-            capsule_validator: Some(&validator),
+            policy: Some(crate::node::PolicyRuntime {
+                registry: &registry,
+                validator: &validator,
+                forward: &forward_pipeline,
+            }),
         };
 
         crate::node::forward::process_data(
@@ -429,7 +469,7 @@ pub struct VerifyResponse {
 
 #[post("/prove")]
 pub async fn prove(
-    state: web::Data<PolicyAuthorityState>,
+    pipeline: web::Data<ProofPipelineHandle>,
     request: web::Json<ProveRequest>,
 ) -> Result<impl Responder, ApiError> {
     let policy_id = decode_policy_id(request.policy_id.as_str())?;
@@ -444,7 +484,7 @@ pub async fn prove(
         payload: payload.as_slice(),
         aux: aux_bytes.as_slice(),
     };
-    let capsule = state
+    let capsule = pipeline
         .prove(input)
         .map_err(|err| ApiError::from_proof(err, request.policy_id.as_str()))?;
 
@@ -593,3 +633,4 @@ impl ResponseError for ApiError {
         HttpResponse::build(self.status_code()).json(body)
     }
 }
+pub type ProofPipelineHandle = dyn DomainProofPipeline + Send + Sync + 'static;

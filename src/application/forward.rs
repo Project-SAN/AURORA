@@ -7,14 +7,15 @@ use crate::policy::CapsuleValidator;
 use crate::types::{Error, Result};
 
 pub trait ForwardPipeline {
-    fn enforce<V: CapsuleValidator + ?Sized>(
+    fn enforce(
         &self,
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
-        validator: &V,
+        validator: &dyn CapsuleValidator,
     ) -> Result<Option<(PolicyCapsule, usize)>>;
 }
 
+#[derive(Clone, Copy, Default)]
 pub struct RegistryForwardPipeline;
 
 impl RegistryForwardPipeline {
@@ -24,11 +25,11 @@ impl RegistryForwardPipeline {
 }
 
 impl ForwardPipeline for RegistryForwardPipeline {
-    fn enforce<V: CapsuleValidator + ?Sized>(
+    fn enforce(
         &self,
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
-        validator: &V,
+        validator: &dyn CapsuleValidator,
     ) -> Result<Option<(PolicyCapsule, usize)>> {
         if registry.is_empty() {
             return Ok(None);
