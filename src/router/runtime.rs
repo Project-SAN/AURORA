@@ -2,6 +2,7 @@ use crate::router::Router;
 use crate::types::{Ahdr, Chdr, Result};
 use crate::{forward::Forward, node::ReplayFilter, time::TimeProvider};
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,8 +15,8 @@ pub enum PacketDirection {
 pub struct RouterRuntime<'a> {
     router: &'a Router,
     time: &'a dyn TimeProvider,
-    forward_factory: Box<dyn Fn() -> Box<dyn Forward + 'a> + 'a>,
-    replay_factory: Box<dyn Fn() -> Box<dyn ReplayFilter + 'a> + 'a>,
+    forward_factory: Rc<dyn Fn() -> Box<dyn Forward + 'a> + 'a>,
+    replay_factory: Rc<dyn Fn() -> Box<dyn ReplayFilter + 'a> + 'a>,
 }
 
 impl<'a> RouterRuntime<'a> {
@@ -32,8 +33,8 @@ impl<'a> RouterRuntime<'a> {
         Self {
             router,
             time,
-            forward_factory: Box::new(forward_factory),
-            replay_factory: Box::new(replay_factory),
+            forward_factory: Rc::new(forward_factory),
+            replay_factory: Rc::new(replay_factory),
         }
     }
 
