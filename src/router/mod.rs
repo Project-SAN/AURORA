@@ -3,7 +3,7 @@ use crate::application::forward::RegistryForwardPipeline;
 use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
 use crate::policy::PolicyRegistry;
-use crate::setup::directory::DirectoryAnnouncement;
+use crate::setup::directory::{from_signed_json, DirectoryAnnouncement};
 use crate::types::Result;
 
 /// High-level router facade that owns policy state and validation pipelines.
@@ -30,6 +30,13 @@ impl Router {
             pipeline.install(policy.clone())?;
         }
         Ok(())
+    }
+
+    /// Verifies a signed directory announcement (HMAC/HKDF per spec) and installs
+    /// all contained policy metadata entries on success.
+    pub fn install_signed_directory(&mut self, body: &str, secret: &[u8]) -> Result<()> {
+        let directory = from_signed_json(body, secret)?;
+        self.install_directory(&directory)
     }
 
     /// Returns the current policy runtime (registry + validator + enforcement pipeline)
@@ -60,6 +67,7 @@ impl Default for Router {
 mod tests {
     use super::*;
     use crate::policy::PolicyMetadata;
+    use crate::setup::directory::to_signed_json;
 
     fn sample_metadata() -> PolicyMetadata {
         PolicyMetadata {
@@ -83,6 +91,21 @@ mod tests {
             .install_directory(&directory)
             .expect("install directory");
         assert!(router.policy_runtime().is_some());
+        assert!(router.registry().get(&policy.policy_id).is_some());
+    }
+
+    #[test]
+    fn install_signed_directory_validates_and_installs() {
+        let policy = sample_metadata();
+        let mut directory = DirectoryAnnouncement::new();
+        directory.push_policy(policy.clone());
+        let secret = b"shared-secret";
+        let signed = to_signed_json(&directory, secret, 1_700_000_000).expect("sign");
+
+        let mut router = Router::new();
+        router
+            .install_signed_directory(&signed, secret)
+            .expect("install signed directory");
         assert!(router.registry().get(&policy.policy_id).is_some());
     }
 }
