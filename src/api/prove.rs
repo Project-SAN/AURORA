@@ -88,11 +88,11 @@ mod tests {
         state: PolicyAuthorityState,
     ) -> (
         web::Data<PolicyAuthorityState>,
-        web::Data<ProofPipelineHandle>,
+        web::Data<Arc<ProofPipelineHandle>>,
     ) {
         let directory = web::Data::new(state);
         let pipeline_arc: Arc<ProofPipelineHandle> = directory.clone().into_inner();
-        let pipeline_data = web::Data::from(pipeline_arc);
+        let pipeline_data = web::Data::new(pipeline_arc);
         (directory, pipeline_data)
     }
 
@@ -167,8 +167,6 @@ mod tests {
         let mut registry = PolicyRegistry::new();
         registry.register(metadata).expect("register metadata");
         let validator = PlonkCapsuleValidator::new();
-        let forward_pipeline = crate::application::forward::RegistryForwardPipeline::new();
-        let forward_pipeline = crate::application::forward::RegistryForwardPipeline::new();
 
         let (directory, pipeline_data) = wrap_state_data(state);
         let app = test::init_service(
@@ -232,6 +230,7 @@ mod tests {
         let mut registry = PolicyRegistry::new();
         registry.register(metadata).expect("register metadata");
         let validator = PlonkCapsuleValidator::new();
+        let forward_pipeline = crate::application::forward::RegistryForwardPipeline::new();
         let (directory, pipeline_data) = wrap_state_data(state);
         let app = test::init_service(
             App::new()
@@ -469,7 +468,7 @@ pub struct VerifyResponse {
 
 #[post("/prove")]
 pub async fn prove(
-    pipeline: web::Data<ProofPipelineHandle>,
+    pipeline: web::Data<Arc<ProofPipelineHandle>>,
     request: web::Json<ProveRequest>,
 ) -> Result<impl Responder, ApiError> {
     let policy_id = decode_policy_id(request.policy_id.as_str())?;

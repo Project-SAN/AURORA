@@ -14,9 +14,10 @@ use hornet::utils::encode_hex;
 
 #[actix_web::main]
 async fn main() -> io::Result<()> {
-    let directory_data = web::Data::new(init_authority_state()?);
-    let pipeline_arc: Arc<ProofPipelineHandle> = directory_data.clone().into_inner();
-    let pipeline_data: web::Data<ProofPipelineHandle> = web::Data::from(pipeline_arc);
+    let authority_state = Arc::new(init_authority_state()?);
+    let directory_data: web::Data<PolicyAuthorityState> = web::Data::from(authority_state.clone());
+    let pipeline_arc: Arc<ProofPipelineHandle> = authority_state.clone();
+    let pipeline_data: web::Data<Arc<ProofPipelineHandle>> = web::Data::new(pipeline_arc);
     HttpServer::new(move || {
         App::new()
             .app_data(directory_data.clone())
