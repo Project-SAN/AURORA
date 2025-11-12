@@ -72,8 +72,8 @@ impl<'a> RouterRuntime<'a> {
 }
 
 #[cfg(feature = "std")]
-pub fn fetch_directory(url: &str) -> Result<String> {
-    let body = std::fs::read_to_string(url).map_err(|_| crate::types::Error::Crypto)?;
+pub fn fetch_directory(path: &str) -> Result<String> {
+    let body = std::fs::read_to_string(path).map_err(|_| crate::types::Error::Crypto)?;
     Ok(body)
 }
 
@@ -117,7 +117,7 @@ pub mod forward {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::node::NoReplay;
     use crate::router::runtime::forward::LoopbackForward;
