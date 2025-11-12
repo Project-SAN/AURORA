@@ -7,6 +7,9 @@ use crate::setup::directory::{from_signed_json, DirectoryAnnouncement};
 use crate::types::{Ahdr, Chdr, Result};
 use alloc::vec::Vec;
 
+pub mod config;
+pub mod runtime;
+
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {
     registry: PolicyRegistry,
