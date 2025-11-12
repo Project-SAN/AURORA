@@ -38,6 +38,14 @@ criterion = { version = "0.5", default-features = false, features = ["html_repor
 name = "hornet"
 harness = false
 
+[[example]]
+name = "routing"
+path = "example/routing.rs"
+
+[[example]]
+name = "pa"
+path = "example/pa.rs"
+
 [[bin]]
 name = "hornet"
 path = "src/main.rs"
