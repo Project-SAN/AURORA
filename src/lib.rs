@@ -14,6 +14,7 @@ pub mod fragment;
 pub mod node;
 pub mod packet;
 pub mod policy;
+pub mod router;
 pub mod routing;
 pub mod setup;
 pub mod source;
