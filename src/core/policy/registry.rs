@@ -47,6 +47,10 @@ impl PolicyRegistry {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    pub fn policies(&self) -> Vec<PolicyMetadata> {
+        self.entries.values().cloned().collect()
+    }
 }
 
 impl Default for PolicyRegistry {

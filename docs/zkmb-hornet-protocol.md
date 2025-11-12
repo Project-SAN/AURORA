@@ -147,6 +147,11 @@ The Rust implementation follows a functional domain modeling style and is split 
 - `NodeCtx` carries an optional `PolicyRuntime { registry, validator, forward }`; both forward/backward paths call `ForwardPipeline::enforce()` and fall back to `PolicyCapsule::decode()` when no registry is configured.
 - `setup::install_policy_metadata()` parses TLVs and pushes them through `SetupPipeline`, keeping the TLV format reusable even if the verifier backend changes.
 - Validators only need to implement `CapsuleValidator`, making them pluggable across setup/proof/forward flows.
+- Experimental router runtime (`src/router`) now includes:
+  - `router::runtime::RouterRuntime`: wires policy state + time provider + replay/forward factories into packet processing loops.
+  - `router::io::TcpPacketListener` / `TcpForward`: reference TCP transport that consumes/produces fixed-length frames and resolves next hops from `routing::RouteElem` TLVs.
+  - `router::storage::FileRouterStorage`: persists `PolicyMetadata` and node secrets (`Sv`) as JSON so routers can restore policy state on restart.
+  - `router::sync::client`: pluggable directory client (`ureq` HTTP or local file) that fetches signed announcements and applies them to the `Router`.
 
 ### Testing and mocks
 - Shared mocks live under `tests/suppert/`. `tests/pipeline.rs` uses them to exercise setup/install and forward enforcement flows independently of Actix/Plonk internals.

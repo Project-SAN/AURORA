@@ -11,6 +11,8 @@ pub mod config;
 #[cfg(feature = "std")]
 pub mod io;
 pub mod runtime;
+#[cfg(feature = "std")]
+pub mod storage;
 pub mod sync;
 
 /// High-level router facade that owns policy state and validation pipelines.
@@ -32,7 +34,11 @@ impl Router {
     /// Install all policy metadata entries contained in a directory announcement.
     /// This is typically called after verifying the announcement signature.
     pub fn install_directory(&mut self, directory: &DirectoryAnnouncement) -> Result<()> {
-        for policy in directory.policies() {
+        self.install_policies(directory.policies())
+    }
+
+    pub fn install_policies(&mut self, policies: &[crate::policy::PolicyMetadata]) -> Result<()> {
+        for policy in policies {
             let mut pipeline = RegistrySetupPipeline::new(&mut self.registry);
             pipeline.install(policy.clone())?;
         }
@@ -65,6 +71,10 @@ impl Router {
 
     pub fn registry_mut(&mut self) -> &mut PolicyRegistry {
         &mut self.registry
+    }
+
+    pub fn policies(&self) -> Vec<crate::policy::PolicyMetadata> {
+        self.registry.policies()
     }
 
     pub fn process_forward_packet(

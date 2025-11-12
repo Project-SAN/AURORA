@@ -9,6 +9,8 @@ pub struct RouterConfig {
     pub directory_secret: String,
     #[cfg(feature = "std")]
     pub directory_poll_interval: Duration,
+    #[cfg(feature = "std")]
+    pub storage_path: String,
 }
 
 impl RouterConfig {
@@ -18,6 +20,8 @@ impl RouterConfig {
             directory_secret: directory_secret.into(),
             #[cfg(feature = "std")]
             directory_poll_interval: Duration::from_secs(60),
+            #[cfg(feature = "std")]
+            storage_path: "router_state.json".into(),
         }
     }
 

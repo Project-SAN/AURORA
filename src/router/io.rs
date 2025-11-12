@@ -1,8 +1,10 @@
 use crate::forward::Forward;
 use crate::router::runtime::PacketDirection;
+use crate::routing::{self, IpAddr, RouteElem};
 use crate::types::{Ahdr, Chdr, Error, PacketType, Result, RoutingSegment, Sv};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::Write as FmtWrite;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -113,13 +115,13 @@ impl TcpForward {
         Self
     }
 
-    fn parse_addr(segment: &RoutingSegment) -> Result<String> {
-        use core::str::from_utf8;
-        let s = from_utf8(&segment.0).map_err(|_| Error::Length)?;
-        if s.is_empty() {
-            return Err(Error::Length);
+    fn resolve_next_hop(segment: &RoutingSegment) -> Result<String> {
+        let elems = routing::elems_from_segment(segment).map_err(|_| Error::Length)?;
+        let hop = elems.first().ok_or(Error::Length)?;
+        match hop {
+            RouteElem::NextHop { addr, port } => Ok(format_ip(addr, *port)),
+            RouteElem::ExitTcp { addr, port, .. } => Ok(format_ip(addr, *port)),
         }
-        Ok(s.to_owned())
     }
 }
 
@@ -131,7 +133,7 @@ impl Forward for TcpForward {
         ahdr: &Ahdr,
         payload: &mut Vec<u8>,
     ) -> Result<()> {
-        let addr = Self::parse_addr(rseg)?;
+        let addr = Self::resolve_next_hop(rseg)?;
         let mut stream = TcpStream::connect(addr).map_err(|_| Error::Crypto)?;
         let mut frame = Vec::new();
         frame.push(direction_to_u8(PacketDirection::Forward));
@@ -144,5 +146,28 @@ impl Forward for TcpForward {
         frame.extend_from_slice(&ahdr.bytes);
         frame.extend_from_slice(payload);
         stream.write_all(&frame).map_err(|_| Error::Crypto)
+    }
+}
+
+fn format_ip(addr: &IpAddr, port: u16) -> String {
+    match addr {
+        IpAddr::V4(octets) => format!(
+            "{}.{}.{}.{}:{}",
+            octets[0], octets[1], octets[2], octets[3], port
+        ),
+        IpAddr::V6(bytes) => {
+            let mut buf = String::new();
+            buf.push('[');
+            for (i, chunk) in bytes.chunks(2).enumerate() {
+                if i > 0 {
+                    buf.push(':');
+                }
+                let value = u16::from_be_bytes([chunk[0], chunk[1]]);
+                let _ = FmtWrite::write_fmt(&mut buf, format_args!("{:x}", value));
+            }
+            buf.push(']');
+            let _ = FmtWrite::write_fmt(&mut buf, format_args!(":{}", port));
+            buf
+        }
     }
 }
