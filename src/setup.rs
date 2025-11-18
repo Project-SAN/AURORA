@@ -6,6 +6,7 @@ use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
 
 pub mod directory;
+pub mod wire;
 
 // Sphinx-based setup packet carrying FS payload per HORNET setup.
 pub struct SetupPacket {

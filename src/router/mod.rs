@@ -3,8 +3,9 @@ use crate::application::forward::RegistryForwardPipeline;
 use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
 use crate::policy::PolicyRegistry;
-use crate::setup::directory::{from_signed_json, DirectoryAnnouncement};
+use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::types::{Ahdr, Chdr, Result};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 pub mod config;
@@ -20,6 +21,7 @@ pub struct Router {
     registry: PolicyRegistry,
     validator: PlonkCapsuleValidator,
     forward_pipeline: RegistryForwardPipeline,
+    routes: BTreeMap<[u8; 32], RouteAnnouncement>,
 }
 
 impl Router {
@@ -28,19 +30,28 @@ impl Router {
             registry: PolicyRegistry::new(),
             validator: PlonkCapsuleValidator::new(),
             forward_pipeline: RegistryForwardPipeline::new(),
+            routes: BTreeMap::new(),
         }
     }
 
     /// Install all policy metadata entries contained in a directory announcement.
     /// This is typically called after verifying the announcement signature.
     pub fn install_directory(&mut self, directory: &DirectoryAnnouncement) -> Result<()> {
-        self.install_policies(directory.policies())
+        self.install_policies(directory.policies())?;
+        self.install_routes(directory.routes())
     }
 
     pub fn install_policies(&mut self, policies: &[crate::policy::PolicyMetadata]) -> Result<()> {
         for policy in policies {
             let mut pipeline = RegistrySetupPipeline::new(&mut self.registry);
             pipeline.install(policy.clone())?;
+        }
+        Ok(())
+    }
+
+    pub fn install_routes(&mut self, routes: &[RouteAnnouncement]) -> Result<()> {
+        for route in routes {
+            self.routes.insert(route.policy_id, route.clone());
         }
         Ok(())
     }
@@ -75,6 +86,14 @@ impl Router {
 
     pub fn policies(&self) -> Vec<crate::policy::PolicyMetadata> {
         self.registry.policies()
+    }
+
+    pub fn routes(&self) -> Vec<RouteAnnouncement> {
+        self.routes.values().cloned().collect()
+    }
+
+    pub fn route_for_policy(&self, policy: &[u8; 32]) -> Option<&RouteAnnouncement> {
+        self.routes.get(policy)
     }
 
     pub fn process_forward_packet(

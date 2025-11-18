@@ -374,6 +374,71 @@ pub fn decrypt_reply(
     Ok(body[KAPPA_BYTES..].to_vec())
 }
 
+/// Encode a `Header` into bytes for transport over the setup channel.
+pub fn encode_header(header: &Header) -> Result<Vec<u8>, Error> {
+    if header.rmax > u8::MAX as usize || header.hops > u8::MAX as usize {
+        return Err(Error::Length);
+    }
+    if header.stage > u8::MAX as usize {
+        return Err(Error::Length);
+    }
+    let expected_beta = (2 * header.rmax + 1) * KAPPA_BYTES;
+    if header.beta.len() != expected_beta {
+        return Err(Error::Length);
+    }
+    let mut encoded = Vec::with_capacity(
+        GROUP_LEN + MU_LEN + 4 + core::mem::size_of::<u32>() + header.beta.len(),
+    );
+    encoded.extend_from_slice(&header.alpha);
+    encoded.extend_from_slice(&header.gamma);
+    encoded.push(header.rmax as u8);
+    encoded.push(header.hops as u8);
+    encoded.push(header.stage as u8);
+    encoded.push(0); // reserved for future use / alignment
+    encoded.extend_from_slice(&(header.beta.len() as u32).to_le_bytes());
+    encoded.extend_from_slice(&header.beta);
+    Ok(encoded)
+}
+
+/// Decode a transport-level header back into the in-memory representation.
+pub fn decode_header(bytes: &[u8]) -> Result<Header, Error> {
+    const FIXED_PREFIX: usize = GROUP_LEN + MU_LEN + 4;
+    if bytes.len() < FIXED_PREFIX + core::mem::size_of::<u32>() {
+        return Err(Error::Length);
+    }
+    let mut alpha = [0u8; GROUP_LEN];
+    alpha.copy_from_slice(&bytes[..GROUP_LEN]);
+    let mut gamma = [0u8; MU_LEN];
+    gamma.copy_from_slice(&bytes[GROUP_LEN..GROUP_LEN + MU_LEN]);
+    let meta_start = GROUP_LEN + MU_LEN;
+    let rmax = bytes[meta_start] as usize;
+    let hops = bytes[meta_start + 1] as usize;
+    let stage = bytes[meta_start + 2] as usize;
+    let beta_len_offset = meta_start + 4;
+    let beta_len = u32::from_le_bytes(
+        bytes[beta_len_offset..beta_len_offset + 4]
+            .try_into()
+            .map_err(|_| Error::Length)?,
+    ) as usize;
+    let expected_beta = (2 * rmax + 1) * KAPPA_BYTES;
+    if beta_len != expected_beta {
+        return Err(Error::Length);
+    }
+    let total = beta_len_offset + 4 + beta_len;
+    if bytes.len() != total {
+        return Err(Error::Length);
+    }
+    let beta = bytes[beta_len_offset + 4..].to_vec();
+    Ok(Header {
+        alpha,
+        beta,
+        gamma,
+        rmax,
+        hops,
+        stage,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -429,6 +494,49 @@ mod tests {
             nodes.push((sk, pk));
         }
         nodes
+    }
+
+    #[test]
+    fn header_roundtrip_serialization() {
+        let rmax = 3usize;
+        let beta_len = (2 * rmax + 1) * KAPPA_BYTES;
+        let header = Header {
+            alpha: [0x11; GROUP_LEN],
+            beta: vec![0x22; beta_len],
+            gamma: [0x33; MU_LEN],
+            rmax,
+            hops: 2,
+            stage: 1,
+        };
+        let encoded = encode_header(&header).expect("encode");
+        let decoded = decode_header(&encoded).expect("decode");
+        assert_eq!(decoded.alpha, header.alpha);
+        assert_eq!(decoded.beta, header.beta);
+        assert_eq!(decoded.gamma, header.gamma);
+        assert_eq!(decoded.rmax, header.rmax);
+        assert_eq!(decoded.hops, header.hops);
+        assert_eq!(decoded.stage, header.stage);
+    }
+
+    #[test]
+    fn header_decode_rejects_bad_lengths() {
+        let mut header = Header {
+            alpha: [0u8; GROUP_LEN],
+            beta: vec![0u8; (2 * 1 + 1) * KAPPA_BYTES],
+            gamma: [0u8; MU_LEN],
+            rmax: 1,
+            hops: 1,
+            stage: 0,
+        };
+        // remove a byte to trigger encode error
+        header.beta.pop();
+        assert!(matches!(encode_header(&header), Err(Error::Length)));
+        header.beta.push(0);
+        let mut encoded = encode_header(&header).expect("encode");
+        // tamper with beta length field
+        let beta_len_offset = GROUP_LEN + MU_LEN + 4;
+        encoded[beta_len_offset] = 0xFF;
+        assert!(matches!(decode_header(&encoded), Err(Error::Length)));
     }
 
     #[test]
