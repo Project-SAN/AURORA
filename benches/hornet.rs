@@ -1,6 +1,14 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use hornet::router::runtime::PacketDirection;
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
+use std::cell::RefCell;
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 
 const HOP_CASES: &[usize] = &[2, 3, 5, 7];
 const PAYLOAD_CASES: &[usize] = &[256, 1024, 4096, 16 * 1024];
@@ -104,11 +112,91 @@ fn bench_process_data_forward(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_end_to_end_user_to_router(c: &mut Criterion) {
+    let mut group = c.benchmark_group("end_to_end/user_to_last_router");
+    for &hops in HOP_CASES {
+        for &payload_len in PAYLOAD_CASES {
+            let fixture = HornetFixture::new(hops, payload_len);
+            let router = hornet::router::Router::new();
+            let time = FixedTimeProvider { now: fixture.now };
+            let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
+            group.bench_function(id, move |b| {
+                b.iter_batched(
+                    || {
+                        let chdr =
+                            hornet::packet::chdr::data_header(fixture.hops as u8, fixture.iv0);
+                        let ahdr = clone_ahdr(&fixture.ahdr);
+                        let payload = fixture.payload_template.clone();
+                        (chdr, ahdr, payload, fixture.iv0)
+                    },
+                    |(mut chdr, mut ahdr, mut payload, mut iv)| {
+                        hornet::source::build(
+                            &mut chdr,
+                            &ahdr,
+                            &fixture.keys,
+                            &mut iv,
+                            &mut payload,
+                        )
+                        .expect("build data packet");
+                        let capture_slot: Rc<RefCell<Option<hornet::types::Ahdr>>> =
+                            Rc::new(RefCell::new(None));
+                        let factory_slot = capture_slot.clone();
+                        let mut runtime = hornet::router::runtime::RouterRuntime::new(
+                            &router,
+                            &time,
+                            move || Box::new(CaptureForward::new(factory_slot.clone())),
+                            || Box::new(hornet::node::NoReplay),
+                        );
+                        for &sv in &fixture.svs {
+                            capture_slot.borrow_mut().take();
+                            runtime
+                                .process(
+                                    hornet::router::runtime::PacketDirection::Forward,
+                                    sv,
+                                    &mut chdr,
+                                    &mut ahdr,
+                                    &mut payload,
+                                )
+                                .expect("forward hop");
+                            if let Some(next) = capture_slot.borrow_mut().take() {
+                                ahdr = next;
+                            } else {
+                                panic!("forwarder did not capture next AHDR");
+                            }
+                        }
+                        black_box((chdr.hops, payload.len()));
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
+fn bench_end_to_end_user_to_router_network(c: &mut Criterion) {
+    let mut group = c.benchmark_group("end_to_end_network/user_to_exit");
+    for &hops in HOP_CASES {
+        for &payload_len in PAYLOAD_CASES {
+            let mut harness = NetworkHarness::new(hops, payload_len).expect("network harness init");
+            let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
+            group.bench_function(id, |b| {
+                b.iter(|| {
+                    harness.run_once();
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_create_ahdr,
     bench_build_data_packet,
-    bench_process_data_forward
+    bench_process_data_forward,
+    bench_end_to_end_user_to_router,
+    bench_end_to_end_user_to_router_network
 );
 criterion_main!(benches);
 
@@ -135,6 +223,20 @@ struct HornetFixture {
 
 impl HornetFixture {
     fn new(hops: usize, payload_len: usize) -> Self {
+        Self::with_routing(hops, payload_len, |hop, total| {
+            if hop + 1 == total {
+                deliver_route()
+            } else {
+                let port = 41000 + hop as u16;
+                udp_route(port)
+            }
+        })
+    }
+
+    fn with_routing<F>(hops: usize, payload_len: usize, mut route_fn: F) -> Self
+    where
+        F: FnMut(usize, usize) -> hornet::types::RoutingSegment,
+    {
         assert!(hops > 0 && hops <= hornet::types::R_MAX);
         let mut rng = SmallRng::seed_from_u64(0x5EED_F00Du64 ^ hops as u64 ^ payload_len as u64);
         let now = 1_690_000_000u32;
@@ -152,12 +254,7 @@ impl HornetFixture {
             rng.fill_bytes(&mut si_bytes);
             keys.push(hornet::types::Si(si_bytes));
 
-            if hop + 1 == hops {
-                routing.push(deliver_route());
-            } else {
-                let port = 41000 + hop as u16;
-                routing.push(udp_route(port));
-            }
+            routing.push(route_fn(hop, hops));
         }
 
         let fses = (0..hops)
@@ -225,6 +322,29 @@ fn clone_ahdr(ahdr: &hornet::types::Ahdr) -> hornet::types::Ahdr {
     }
 }
 
+struct CaptureForward {
+    slot: Rc<RefCell<Option<hornet::types::Ahdr>>>,
+}
+
+impl CaptureForward {
+    fn new(slot: Rc<RefCell<Option<hornet::types::Ahdr>>>) -> Self {
+        Self { slot }
+    }
+}
+
+impl hornet::forward::Forward for CaptureForward {
+    fn send(
+        &mut self,
+        _rseg: &hornet::types::RoutingSegment,
+        _chdr: &hornet::types::Chdr,
+        ahdr: &hornet::types::Ahdr,
+        _payload: &mut Vec<u8>,
+    ) -> hornet::types::Result<()> {
+        *self.slot.borrow_mut() = Some(clone_ahdr(ahdr));
+        Ok(())
+    }
+}
+
 fn udp_route(port: u16) -> hornet::types::RoutingSegment {
     let mut bytes = Vec::with_capacity(8);
     bytes.push(0x01);
@@ -236,4 +356,296 @@ fn udp_route(port: u16) -> hornet::types::RoutingSegment {
 
 fn deliver_route() -> hornet::types::RoutingSegment {
     hornet::types::RoutingSegment(vec![0xFF, 0x00])
+}
+
+fn tcp_next_hop_route(port: u16) -> hornet::types::RoutingSegment {
+    use hornet::routing::{IpAddr, RouteElem};
+    hornet::routing::segment_from_elems(&[RouteElem::NextHop {
+        addr: IpAddr::V4([127, 0, 0, 1]),
+        port,
+    }])
+}
+
+fn tcp_exit_route(port: u16) -> hornet::types::RoutingSegment {
+    use hornet::routing::{IpAddr, RouteElem};
+    hornet::routing::segment_from_elems(&[RouteElem::ExitTcp {
+        addr: IpAddr::V4([127, 0, 0, 1]),
+        port,
+        tls: false,
+    }])
+}
+
+struct NetworkHarness {
+    fixture: HornetFixture,
+    _routers: Vec<RouterWorker>,
+    first_hop_addr: String,
+    delivery_rx: mpsc::Receiver<()>,
+    _sink: SinkServer,
+}
+
+impl NetworkHarness {
+    fn new(hops: usize, payload_len: usize) -> io::Result<Self> {
+        let sink_listener = TcpListener::bind("127.0.0.1:0")?;
+        let sink_port = sink_listener.local_addr()?.port();
+
+        let mut router_listeners = Vec::with_capacity(hops);
+        let mut router_ports = Vec::with_capacity(hops);
+        let mut router_addrs = Vec::with_capacity(hops);
+        for _ in 0..hops {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let addr = listener.local_addr()?;
+            router_ports.push(addr.port());
+            router_addrs.push(addr.to_string());
+            router_listeners.push(listener);
+        }
+
+        let fixture = HornetFixture::with_routing(hops, payload_len, |idx, total| {
+            if idx + 1 == total {
+                tcp_exit_route(sink_port)
+            } else {
+                tcp_next_hop_route(router_ports[idx + 1])
+            }
+        });
+
+        let (notify_tx, delivery_rx) = mpsc::channel();
+        let sink = SinkServer::new(sink_listener, notify_tx)?;
+
+        let mut routers = Vec::with_capacity(hops);
+        for (idx, listener) in router_listeners.into_iter().enumerate() {
+            routers.push(RouterWorker::new(listener, fixture.svs[idx], fixture.now)?);
+        }
+
+        let first_hop_addr = router_addrs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "127.0.0.1:0".to_string());
+
+        Ok(Self {
+            fixture,
+            _routers: routers,
+            first_hop_addr,
+            delivery_rx,
+            _sink: sink,
+        })
+    }
+
+    fn run_once(&mut self) {
+        let chdr = hornet::packet::chdr::data_header(self.fixture.hops as u8, self.fixture.iv0);
+        let ahdr = clone_ahdr(&self.fixture.ahdr);
+        let payload = self.fixture.payload_template.clone();
+        self.send_over_network(chdr, ahdr, payload, self.fixture.iv0);
+    }
+
+    fn send_over_network(
+        &mut self,
+        mut chdr: hornet::types::Chdr,
+        ahdr: hornet::types::Ahdr,
+        mut payload: Vec<u8>,
+        mut iv: hornet::types::Nonce,
+    ) {
+        hornet::source::build(&mut chdr, &ahdr, &self.fixture.keys, &mut iv, &mut payload)
+            .expect("network build data packet");
+
+        let frame = encode_frame_bytes(PacketDirection::Forward, &chdr, &ahdr, &payload);
+        let mut stream = TcpStream::connect(&self.first_hop_addr).expect("connect to first router");
+        stream.write_all(&frame).expect("write frame to first hop");
+        self.delivery_rx.recv().expect("await sink delivery");
+    }
+}
+
+struct RouterWorker {
+    addr: String,
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl RouterWorker {
+    fn new(listener: TcpListener, sv: hornet::types::Sv, now: u32) -> io::Result<Self> {
+        let addr = listener.local_addr()?.to_string();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_signal = stop.clone();
+        let handle = thread::spawn(move || {
+            let router = hornet::router::Router::new();
+            let time = FixedTimeProvider { now };
+            let mut runtime = hornet::router::runtime::RouterRuntime::new(
+                &router,
+                &time,
+                || Box::new(hornet::router::io::TcpForward::new()),
+                || Box::new(hornet::node::NoReplay),
+            );
+
+            let listener = listener;
+            loop {
+                let (mut stream, _) = listener.accept().expect("router accept");
+                if stop_signal.load(Ordering::SeqCst) {
+                    break;
+                }
+                let mut packet = read_bench_packet(&mut stream).expect("router packet decode");
+                runtime
+                    .process(
+                        packet.direction,
+                        sv,
+                        &mut packet.chdr,
+                        &mut packet.ahdr,
+                        &mut packet.payload,
+                    )
+                    .expect("router forward process");
+            }
+        });
+
+        Ok(Self {
+            addr,
+            stop,
+            join: Some(handle),
+        })
+    }
+}
+
+impl Drop for RouterWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(&self.addr);
+        if let Some(handle) = self.join.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct SinkServer {
+    addr: String,
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl SinkServer {
+    fn new(listener: TcpListener, notify: mpsc::Sender<()>) -> io::Result<Self> {
+        let addr = listener.local_addr()?.to_string();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_signal = stop.clone();
+        let handle = thread::spawn(move || {
+            let listener = listener;
+            loop {
+                let (mut stream, _) = listener.accept().expect("sink accept");
+                if stop_signal.load(Ordering::SeqCst) {
+                    break;
+                }
+                let _packet = read_bench_packet(&mut stream).expect("sink packet decode");
+                let _ = notify.send(());
+            }
+        });
+
+        Ok(Self {
+            addr,
+            stop,
+            join: Some(handle),
+        })
+    }
+}
+
+impl Drop for SinkServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(&self.addr);
+        if let Some(handle) = self.join.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct RawPacket {
+    direction: PacketDirection,
+    chdr: hornet::types::Chdr,
+    ahdr: hornet::types::Ahdr,
+    payload: Vec<u8>,
+}
+
+fn encode_frame_bytes(
+    direction: PacketDirection,
+    chdr: &hornet::types::Chdr,
+    ahdr: &hornet::types::Ahdr,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.bytes.len() + payload.len());
+    frame.push(direction_to_u8(direction));
+    frame.push(packet_type_to_u8(chdr.typ));
+    frame.push(chdr.hops);
+    frame.push(0);
+    frame.extend_from_slice(&chdr.specific);
+    frame.extend_from_slice(&(ahdr.bytes.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&ahdr.bytes);
+    frame.extend_from_slice(payload);
+    frame
+}
+
+fn read_bench_packet(stream: &mut TcpStream) -> io::Result<RawPacket> {
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header)?;
+    let direction = direction_from_u8(header[0])?;
+    let pkt_type = packet_type_from_u8(header[1])?;
+    let hops = header[2];
+
+    let mut specific = [0u8; 16];
+    stream.read_exact(&mut specific)?;
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf)?;
+    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
+    stream.read_exact(&mut len_buf)?;
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+
+    let mut ahdr_bytes = vec![0u8; ahdr_len];
+    if ahdr_len > 0 {
+        stream.read_exact(&mut ahdr_bytes)?;
+    }
+    let mut payload = vec![0u8; payload_len];
+    if payload_len > 0 {
+        stream.read_exact(&mut payload)?;
+    }
+
+    Ok(RawPacket {
+        direction,
+        chdr: hornet::types::Chdr {
+            typ: pkt_type,
+            hops,
+            specific,
+        },
+        ahdr: hornet::types::Ahdr { bytes: ahdr_bytes },
+        payload,
+    })
+}
+
+fn packet_type_to_u8(pt: hornet::types::PacketType) -> u8 {
+    match pt {
+        hornet::types::PacketType::Setup => 0,
+        hornet::types::PacketType::Data => 1,
+    }
+}
+
+fn packet_type_from_u8(value: u8) -> io::Result<hornet::types::PacketType> {
+    match value {
+        0 => Ok(hornet::types::PacketType::Setup),
+        1 => Ok(hornet::types::PacketType::Data),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unknown packet type",
+        )),
+    }
+}
+
+fn direction_to_u8(direction: PacketDirection) -> u8 {
+    match direction {
+        PacketDirection::Forward => 0,
+        PacketDirection::Backward => 1,
+    }
+}
+
+fn direction_from_u8(value: u8) -> io::Result<PacketDirection> {
+    match value {
+        0 => Ok(PacketDirection::Forward),
+        1 => Ok(PacketDirection::Backward),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unknown direction",
+        )),
+    }
 }
