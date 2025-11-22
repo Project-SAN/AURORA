@@ -47,7 +47,7 @@ fn main() {
                 let mut runtime = RouterRuntime::new(
                     &router,
                     &time,
-                    || Box::new(TcpForward::new()),
+                    move || Box::new(TcpForward::new(secrets.sv)),
                     || Box::new(NoReplay),
                 );
                 if let Err(err) = runtime.process(
@@ -58,6 +58,9 @@ fn main() {
                     &mut packet.payload,
                 ) {
                     eprintln!("packet processing failed: {:?}", err);
+                    eprintln!("  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}", 
+                              packet.direction, packet.chdr.hops, 
+                              packet.ahdr.bytes.len(), packet.payload.len());
                 }
             }
             Err(err) => {

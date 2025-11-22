@@ -1,15 +1,9 @@
 use crate::router::Router;
-use crate::types::{Ahdr, Chdr, Result};
+use crate::types::{Ahdr, Chdr, Result, PacketDirection};
 use crate::{forward::Forward, node::ReplayFilter, time::TimeProvider};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PacketDirection {
-    Forward,
-    Backward,
-}
 
 /// Runtime helper that wires Router policy state into node processing loops.
 pub struct RouterRuntime<'a> {
@@ -101,6 +95,7 @@ pub mod forward {
             _chdr: &Chdr,
             _ahdr: &Ahdr,
             payload: &mut Vec<u8>,
+            _direction: crate::types::PacketDirection,
         ) -> Result<()> {
             let mut owned = Vec::with_capacity(payload.len());
             owned.extend_from_slice(payload);

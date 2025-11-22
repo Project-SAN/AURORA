@@ -35,6 +35,12 @@ pub enum PacketType {
     Data = 0x02,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacketDirection {
+    Forward,
+    Backward,
+}
+
 pub struct Chdr {
     pub typ: PacketType,
     pub hops: u8,

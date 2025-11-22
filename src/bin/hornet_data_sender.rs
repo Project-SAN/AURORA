@@ -12,9 +12,11 @@ use rand::{RngCore, SeedableRng};
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::sync::{Arc, Mutex};
 
 fn main() {
     if let Err(err) = run() {
@@ -65,7 +67,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let (target_ip, target_port) = resolve_target(host)?;
     println!("Resolved {} to {:?}:{}", host, target_ip, target_port);
 
-    let request_payload = format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n");
+    let request_payload = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
     let target = extractor
         .extract(request_payload.as_bytes())
@@ -123,10 +125,73 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     };
     let mut chdr = hornet::packet::chdr::data_header(hops as u8, iv);
 
+    // Setup listener for response
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("failed to bind listener: {e}"))?;
+    let local_addr = listener.local_addr().map_err(|e| format!("failed to get local addr: {e}"))?;
+    println!("Listening for response on {}", local_addr);
+
+    // Construct Backward Path
+    // Path: Exit -> Middle -> Entry -> Client
+    // We need keys and FSes for [Exit, Middle, Entry]
+    
+    let mut keys_b = Vec::with_capacity(hops);
+    for _ in 0..hops {
+        let mut si = [0u8; 16];
+        rng.fill_bytes(&mut si);
+        keys_b.push(Si(si));
+    }
+
+    let mut fses_b = Vec::with_capacity(hops);
+    // Iterate reverse: Exit, Middle, Entry
+    for (i, hop_idx) in (0..hops).rev().enumerate() {
+        // hop_idx: 2 (Exit), 1 (Middle), 0 (Entry)
+        // i: 0, 1, 2 (Index in backward path)
+        
+        let segment = if hop_idx == 0 {
+            // Entry -> Client
+            let (ip, port) = match local_addr {
+                std::net::SocketAddr::V4(v4) => (IpAddr::V4(v4.ip().octets()), v4.port()),
+                std::net::SocketAddr::V6(v6) => (IpAddr::V6(v6.ip().octets()), v6.port()),
+            };
+            let elem = RouteElem::NextHop { addr: ip, port };
+            routing::segment_from_elems(&[elem])
+        } else {
+            // Exit -> Middle or Middle -> Entry
+            // The next hop in backward path is the previous hop in forward path (hop_idx - 1)
+            let prev_router = &routers[hop_idx - 1].1;
+             // Parse bind address of prev router to get IP/Port
+             // Assuming bind is "IP:Port"
+            let (ip_str, port_str) = prev_router.bind.rsplit_once(':').ok_or("invalid bind addr")?;
+            let port: u16 = port_str.parse().map_err(|_| "invalid port")?;
+            let ip_octets = parse_ipv4_octets(ip_str)?; // Helper needed
+            let elem = RouteElem::NextHop { addr: IpAddr::V4(ip_octets), port };
+            routing::segment_from_elems(&[elem])
+        };
+
+        // Use keys_b[i]
+        // Note: StoredState sv is needed. 
+        // routers[hop_idx].0 is the state for the node we are processing (Exit, Middle, Entry)
+        let state = &routers[hop_idx].0;
+        
+        let fs = hornet::packet::core::create(&state.sv(), &keys_b[i], &segment, exp)
+            .map_err(|err| format!("failed to build FS for backward hop {}: {err:?}", i))?;
+        fses_b.push(fs);
+    }
+
+    let mut ahdr_b_rng = SmallRng::seed_from_u64(derive_seed() ^ 0xBEEFBEEF);
+    let ahdr_b = hornet::packet::ahdr::create_ahdr(&keys_b, &fses_b, rmax, &mut ahdr_b_rng)
+        .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
+
+    // Prepend Backward AHDR to payload
+    let mut full_payload = Vec::new();
+    full_payload.extend_from_slice(&(ahdr_b.bytes.len() as u32).to_le_bytes());
+    full_payload.extend_from_slice(&ahdr_b.bytes);
+    full_payload.extend_from_slice(request_payload.as_bytes());
+
     let capsule_bytes = capsule.encode();
     let mut encrypted_tail = Vec::new();
     encrypted_tail.extend_from_slice(&canonical_bytes);
-    encrypted_tail.extend_from_slice(payload_tail);
+    encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
     hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
     let mut payload = capsule_bytes;
@@ -140,7 +205,61 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         payload.len(),
         hops
     );
+
+    // Listen for response
+    println!("Waiting for response...");
+    let (mut stream, addr) = listener.accept().map_err(|e| format!("accept failed: {e}"))?;
+    println!("Connection from {}", addr);
+    
+    // Read response frame
+    // Frame format: [direction:1][type:1][hops:1][res:1][specific:16][ahdr_len:4][payload_len:4][ahdr][payload]
+    // But wait, the router sends back a HORNET packet.
+    // The Client is NOT a router, but it needs to parse the frame.
+    // Let's reuse `read_incoming_packet` logic or just read manually.
+    
+    // Simple read for now
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header).map_err(|e| format!("read header failed: {e}"))?;
+    // direction should be 1 (Backward)
+    // type should be 1 (Data)
+    
+    let mut specific = [0u8; 16];
+    stream.read_exact(&mut specific).map_err(|e| format!("read specific failed: {e}"))?;
+    
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).map_err(|e| format!("read ahdr len failed: {e}"))?;
+    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
+    
+    stream.read_exact(&mut len_buf).map_err(|e| format!("read payload len failed: {e}"))?;
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    
+    if ahdr_len > 0 {
+        let mut ahdr_buf = vec![0u8; ahdr_len];
+        stream.read_exact(&mut ahdr_buf).map_err(|e| format!("read ahdr failed: {e}"))?;
+    }
+    
+    let mut encrypted_response = vec![0u8; payload_len];
+        stream.read_exact(&mut encrypted_response).map_err(|e| format!("read response failed: {e}"))?;
+    
+    // Decrypt response
+    // Keys for backward path: keys_b
+    // IV: specific
+    // IMPORTANT: Routers add layers in order Exit→Middle→Entry (keys_b[0]→keys_b[1]→keys_b[2])
+    // So we must remove layers in reverse: Entry→Middle→Exit (keys_b[2]→keys_b[1]→keys_b[0])
+    let mut iv_resp = specific;
+    let mut keys_b_reversed = keys_b.clone();
+    keys_b_reversed.reverse();
+    hornet::source::decrypt_backward_payload(&keys_b_reversed, &mut iv_resp, &mut encrypted_response)
+         .map_err(|e| format!("decrypt failed: {e:?}"))?;
+         
+    println!("Received Response:\n{}", String::from_utf8_lossy(&encrypted_response));
+
     Ok(())
+}
+
+fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
+    let addr: std::net::Ipv4Addr = ip.parse().map_err(|_| "invalid ipv4")?;
+    Ok(addr.octets())
 }
 
 fn resolve_target(host: &str) -> Result<(IpAddr, u16), String> {
