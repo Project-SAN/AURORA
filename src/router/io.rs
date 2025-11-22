@@ -91,6 +91,7 @@ impl TcpForward {
         Self { sv }
     }
 
+    #[cfg(test)]
     fn resolve_next_hop(segment: &RoutingSegment) -> Result<String> {
         let elems = routing::elems_from_segment(segment).map_err(|_| Error::Length)?;
         let hop = elems.first().ok_or(Error::Length)?;

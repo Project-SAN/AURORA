@@ -15,8 +15,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::thread;
-use std::sync::{Arc, Mutex};
 
 fn main() {
     if let Err(err) = run() {
@@ -67,10 +65,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let (target_ip, target_port) = resolve_target(host)?;
     println!("Resolved {} to {:?}:{}", host, target_ip, target_port);
 
-    let request_payload = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let base_request = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let mut request_payload = base_request.into_bytes();
+    request_payload.extend_from_slice(payload_tail);
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
     let target = extractor
-        .extract(request_payload.as_bytes())
+        .extract(&request_payload)
         .map_err(|err| format!("failed to extract host: {err:?}"))?;
     let entry = blocklist::entry_from_target(&target)
         .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
@@ -186,7 +186,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut full_payload = Vec::new();
     full_payload.extend_from_slice(&(ahdr_b.bytes.len() as u32).to_le_bytes());
     full_payload.extend_from_slice(&ahdr_b.bytes);
-    full_payload.extend_from_slice(request_payload.as_bytes());
+    full_payload.extend_from_slice(&request_payload);
 
     let capsule_bytes = capsule.encode();
     let mut encrypted_tail = Vec::new();

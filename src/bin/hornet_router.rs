@@ -170,9 +170,8 @@ impl DirectoryClient for LocalFileClient {
 mod tests {
     use super::*;
     use hornet::policy::PolicyMetadata;
-    use hornet::router::runtime::PacketDirection;
     use hornet::setup::directory::RouteAnnouncement;
-    use hornet::types::{self, RoutingSegment};
+    use hornet::types::{self, PacketDirection, RoutingSegment};
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
     use rand_core::RngCore;

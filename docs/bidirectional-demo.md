@@ -110,6 +110,52 @@ Content-Length: 872
 ...
 ```
 
+### ポリシー拒否のテスト
+
+ブロックリストに登録されたドメインへのアクセスが正しく拒否されることを確認できます。
+
+#### ブロックされたドメインへのアクセス（blocked.example）
+
+```bash
+cargo run --bin hornet_data_sender config/localnet/policy-info.json blocked.example:8080
+```
+
+**期待される出力:**
+```
+Resolved blocked.example:8080 to ...
+hornet_data_sender error: failed to prove payload: PolicyViolation
+```
+
+ポリシー証明の生成段階で `Error::PolicyViolation` が発生し、パケットは送信されません。
+
+#### 実際のブロックされたドメインへのアクセス（lp.sejuku.ne）
+
+```bash
+cargo run --bin hornet_data_sender config/localnet/policy-info.json lp.sejuku.ne:443
+```
+
+**期待される出力:**
+```
+Resolved lp.sejuku.ne to V4([...]):443
+hornet_data_sender error: failed to prove payload: PolicyViolation
+```
+
+同様に、ポリシー違反により証明生成が失敗します。
+
+> [!IMPORTANT]
+> これらのテストでは、クライアント側でポリシー検証が実行され、ブロックリストに含まれるドメインに対してはゼロ知識証明の生成が失敗します。この動作により、プライバシーを保ちながらポリシー適合性を確保できます。
+
+#### 許可されたドメインの確認
+
+ブロックリストに含まれないドメインへのアクセスは成功することを確認：
+
+```bash
+cargo run --bin hornet_data_sender config/localnet/policy-info.json 127.0.0.1:8080
+```
+
+正常にHTTPレスポンスを受信できるはずです。
+
+
 ## パケットフロー詳細
 
 ### 前方パス（Forward Path）

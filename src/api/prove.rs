@@ -371,8 +371,10 @@ mod tests {
             chdr: &crate::types::Chdr,
             _ahdr: &crate::types::Ahdr,
             payload: &mut Vec<u8>,
+            direction: crate::types::PacketDirection,
         ) -> crate::types::Result<()> {
             assert_eq!(chdr.hops, 1);
+            assert!(matches!(direction, crate::types::PacketDirection::Forward));
             assert_eq!(payload.as_slice(), self.expected_payload.as_slice());
             self.called = true;
             Ok(())
