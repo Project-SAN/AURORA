@@ -3,6 +3,7 @@ use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
 use hornet::policy::Extractor;
 use hornet::router::storage::StoredState;
+use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
 use hornet::types::{Nonce, PacketType, Si};
 use hornet::utils::decode_hex;
@@ -12,7 +13,7 @@ use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
@@ -60,6 +61,10 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         return Err("policy-id mismatch between policy-info and blocklist".into());
     }
 
+    // Resolve target host
+    let (target_ip, target_port) = resolve_target(host)?;
+    println!("Resolved {} to {:?}:{}", host, target_ip, target_port);
+
     let request_payload = format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n");
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
     let target = extractor
@@ -84,12 +89,25 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let exp = compute_expiry(600);
     let mut fses = Vec::with_capacity(hops);
     for (hop, (state, _route)) in routers.iter().enumerate() {
-        let route = select_route(state, &policy_id)?;
-        let fs = hornet::packet::core::create(&state.sv(), &keys[hop], &route.segment, exp)
+        let segment = if hop == hops - 1 {
+            // Last hop: construct dynamic exit segment
+            let elem = RouteElem::ExitTcp {
+                addr: target_ip.clone(),
+                port: target_port,
+                tls: false, // TODO: infer from port or scheme?
+            };
+            routing::segment_from_elems(&[elem])
+        } else {
+            // Intermediate hop: use stored route
+            let route = select_route(state, &policy_id)?;
+            route.segment
+        };
+
+        let fs = hornet::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
             .map_err(|err| {
                 format!(
-                    "failed to build FS for {}: {err:?}",
-                    route.interface.as_deref().unwrap_or("?")
+                    "failed to build FS for hop {}: {err:?}",
+                    hop
                 )
             })?;
         fses.push(fs);
@@ -123,6 +141,36 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         hops
     );
     Ok(())
+}
+
+fn resolve_target(host: &str) -> Result<(IpAddr, u16), String> {
+    let (hostname, port) = if let Some((h, p)) = host.rsplit_once(':') {
+        if let Ok(port_num) = p.parse::<u16>() {
+            (h, port_num)
+        } else {
+            (host, 80)
+        }
+    } else {
+        (host, 80)
+    };
+
+    // Try to resolve
+    let addrs = (hostname, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("failed to resolve {}: {}", host, e))?;
+
+    for addr in addrs {
+        match addr {
+            std::net::SocketAddr::V4(v4) => {
+                return Ok((IpAddr::V4(v4.ip().octets()), v4.port()));
+            }
+            std::net::SocketAddr::V6(v6) => {
+                return Ok((IpAddr::V6(v6.ip().octets()), v6.port()));
+            }
+        }
+    }
+
+    Err(format!("no suitable address found for {}", host))
 }
 
 fn load_router_states(
