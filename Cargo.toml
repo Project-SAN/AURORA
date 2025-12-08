@@ -1,7 +1,10 @@
 [package]
-name = "hornet"
+name = "aurora"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+name = "hornet"
 
 [features]
 default = ["api", "http-client", "std"]
