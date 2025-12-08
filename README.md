@@ -1,16 +1,16 @@
-# HORNET
+# AURORA (Attested Unlinkable Routing with Overlay Relay Assurance)
 
-HORNET is an experimental Rust implementation of the High-speed Onion Routing at the Network Layer protocol, extended with **ZKMB-HORNET** support for zero-knowledge policy capsules.
+AURORA is the renamed, experimental Rust implementation of a verifiable onion-routing protocol that fuses zkMB-style policy capsules with HORNET-inspired packet formats. The crate name remains `hornet` for now, but the protocol and project branding are AURORA.
 
 ## Project Layout
 
-- `src/` – core HORNET transport, policy client, and demo sender implementation
-- `docs/zkmb-hornet-protocol.md` – detailed protocol draft covering actors, data formats, and verifier expectations
+- `src/` – core AURORA transport, policy client, and demo sender implementation
+- `docs/zkmb-hornet-protocol.md` – detailed protocol draft (legacy filename) covering actors, data formats, and verifier expectations
 - `src/policy/` – policy capsule types, Merkle blocklist utilities, JSON loader, and proof-client wiring
 
-## ZKMB-HORNET Overview
+## AURORA Overview
 
-ZKMB-HORNET embeds a `PolicyCapsule` at the beginning of each payload. A sender obtains the capsule from a Policy Authority (PA) without revealing the underlying policy by proving **non-membership** against a Merkle-committed blocklist. Forwarding nodes validate the capsule with the `PolicyMetadata` that travels in the anonymous header (TLV type `0xA1`). If verification fails, the node drops the packet with `Error::PolicyViolation`.
+AURORA embeds a `PolicyCapsule` at the beginning of each payload. A sender obtains the capsule from a Policy Authority (PA) without revealing the underlying policy by proving **non-membership** against a Merkle-committed blocklist. Forwarding nodes validate the capsule with the `PolicyMetadata` that travels in the anonymous header (TLV type `0xA1`). If verification fails, the node drops the packet with `Error::PolicyViolation`.
 
 See `docs/zkmb-hornet-protocol.md` for the full flow (setup → proving → forwarding) and the PA REST contract.
 
@@ -57,9 +57,9 @@ cargo run --features policy-client
 
 `POLICY_BLOCKLIST_JSON` で使用するブロックリスト JSON を指定できます。PA の URL を変更したい場合は `POLICY_AUTHORITY_URL` をエクスポートしてください（デフォルトは `http://127.0.0.1:8080`）。ブロックリストに含まれるホストを指定すると、クライアント側で証明生成が失敗しポリシー違反として扱われます。
 
-## Router Runtime (実験的)
+## AURORA Router Runtime (実験的)
 
-`hornet_router` バイナリはライブラリ内のルータ機能をテストするための最小実装です。ディレクトリアナウンスを適用した後、TCP 上でパケットを受信し `RouterRuntime` を通じて検証→転送を行います。
+`hornet_router` バイナリ（名称は互換のため暫定）はライブラリ内のルータ機能をテストするための最小実装です。ディレクトリアナウンスを適用した後、TCP 上でパケットを受信し `RouterRuntime` を通じて検証→転送を行います。
 
 ### 前提と制限
 - `std` feature を有効にしてビルドします（`cargo run --features "std" --bin hornet_router`）。
@@ -110,6 +110,6 @@ Forward 際には、同じ形式で `direction=0`（forward）として次ホッ
 
 ## Further Reading
 
-- `docs/zkmb-hornet-protocol.md` – end-to-end overview of ZKMB-HORNET, including TLV formats, API schema, and roadmap items.
+- `docs/zkmb-hornet-protocol.md` – end-to-end overview of AURORA (legacy filename), including TLV formats, API schema, and roadmap items.
 - `src/policy/blocklist.rs` – JSON schema, canonical leaf encoding, and Merkle proof helpers used by the client.
 - `src/policy/client.rs` – proof preprocessor, HTTP client, and non-membership witness serialization.
