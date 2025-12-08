@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use hornet::router::runtime::PacketDirection;
+use hornet::types::PacketDirection;
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use std::cell::RefCell;
@@ -151,7 +151,7 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
                             capture_slot.borrow_mut().take();
                             runtime
                                 .process(
-                                    hornet::router::runtime::PacketDirection::Forward,
+                                    hornet::types::PacketDirection::Forward,
                                     sv,
                                     &mut chdr,
                                     &mut ahdr,
@@ -190,13 +190,77 @@ fn bench_end_to_end_user_to_router_network(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_round_trip_example_com(c: &mut Criterion) {
+    let mut group = c.benchmark_group("round_trip/example_com");
+    for &hops in HOP_CASES {
+        let fixture = RoundTripFixture::new(hops);
+        let time = FixedTimeProvider { now: fixture.forward.now };
+        let id = BenchmarkId::from_parameter(format!("hops{hops}"));
+        group.bench_function(id, move |b| {
+            let fixture = fixture.clone();
+            b.iter_batched(
+                || {
+                    let mut iv_fwd = fixture.forward.iv0;
+                    let mut chdr_fwd = hornet::packet::chdr::data_header(hops as u8, iv_fwd);
+                    let ahdr_fwd = clone_ahdr(&fixture.forward.ahdr);
+                    let mut request = fixture.http_request.clone();
+                    hornet::source::build(
+                        &mut chdr_fwd,
+                        &ahdr_fwd,
+                        &fixture.forward.keys,
+                        &mut iv_fwd,
+                        &mut request,
+                    )
+                    .expect("build forward payload");
+                    let chdr_bwd =
+                        hornet::packet::chdr::data_header(hops as u8, fixture.iv_resp);
+                    let ahdr_bwd = clone_ahdr(&fixture.backward_ahdr);
+                    (chdr_fwd, ahdr_fwd, request, chdr_bwd, ahdr_bwd)
+                },
+                |(mut chdr_fwd, mut ahdr_fwd, mut request, mut chdr_bwd, mut ahdr_bwd)| {
+                    let mut response = fixture.http_response.clone();
+                    run_forward_chain(&fixture.forward, &time, &mut chdr_fwd, &mut ahdr_fwd, &mut request);
+                    assert!(
+                        request
+                            .windows(b"example.com".len())
+                            .any(|w| w.eq_ignore_ascii_case(b"example.com")),
+                        "forward payload missing host"
+                    );
+
+                    run_backward_chain(
+                        &fixture.backward_keys,
+                        &fixture.forward.svs,
+                        &time,
+                        &mut chdr_bwd,
+                        &mut ahdr_bwd,
+                        &mut response,
+                    );
+                    let mut iv = chdr_bwd.specific;
+                    let mut keys = fixture.backward_keys.clone();
+                    keys.reverse();
+                    hornet::source::decrypt_backward_payload(&keys, &mut iv, &mut response)
+                        .expect("decrypt backward response");
+                    assert!(
+                        response.ends_with(fixture.example_body.as_bytes()),
+                        "unexpected response body"
+                    );
+                    black_box(response.len());
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_create_ahdr,
     bench_build_data_packet,
     bench_process_data_forward,
     bench_end_to_end_user_to_router,
-    bench_end_to_end_user_to_router_network
+    bench_end_to_end_user_to_router_network,
+    bench_round_trip_example_com
 );
 criterion_main!(benches);
 
@@ -302,6 +366,182 @@ impl HornetFixture {
     }
 }
 
+impl Clone for HornetFixture {
+    fn clone(&self) -> Self {
+        Self {
+            hops: self.hops,
+            now: self.now,
+            svs: self.svs.clone(),
+            keys: self.keys.clone(),
+            fses: self.fses.clone(),
+            ahdr: clone_ahdr(&self.ahdr),
+            payload_template: self.payload_template.clone(),
+            iv0: self.iv0,
+        }
+    }
+}
+
+struct RoundTripFixture {
+    forward: HornetFixture,
+    backward_keys: Vec<hornet::types::Si>,
+    backward_ahdr: hornet::types::Ahdr,
+    iv_resp: hornet::types::Nonce,
+    http_request: Vec<u8>,
+    http_response: Vec<u8>,
+    example_body: &'static str,
+}
+
+impl RoundTripFixture {
+    fn new(hops: usize) -> Self {
+        let example_body = "Example Domain";
+        let http_request = example_request_bytes();
+        let http_response = example_response_bytes(example_body);
+        let forward = HornetFixture::new(hops, http_request.len());
+        let mut rng = SmallRng::seed_from_u64(0xBEEF_5EEDu64 ^ hops as u64);
+        let exp = hornet::types::Exp(forward.now.saturating_add(600));
+
+        let mut backward_keys = Vec::with_capacity(hops);
+        let mut backward_fses = Vec::with_capacity(hops);
+        for idx in 0..hops {
+            let mut si_bytes = [0u8; 16];
+            rng.fill_bytes(&mut si_bytes);
+            let key = hornet::types::Si(si_bytes);
+            backward_keys.push(key);
+            let sv = forward.svs[hops - 1 - idx];
+            let fs = hornet::packet::core::create(&sv, &key, &deliver_route(), exp)
+                .expect("backward fs create");
+            backward_fses.push(fs);
+        }
+
+        let mut ahdr_rng = SmallRng::seed_from_u64(0xACCE_55EDu64 ^ hops as u64);
+        let backward_ahdr = hornet::packet::ahdr::create_ahdr(
+            &backward_keys,
+            &backward_fses,
+            hornet::types::R_MAX,
+            &mut ahdr_rng,
+        )
+        .expect("backward ahdr");
+
+        let mut iv_bytes = [0u8; 16];
+        rng.fill_bytes(&mut iv_bytes);
+        let iv_resp = hornet::types::Nonce(iv_bytes);
+
+        Self {
+            forward,
+            backward_keys,
+            backward_ahdr,
+            iv_resp,
+            http_request,
+            http_response,
+            example_body,
+        }
+    }
+}
+
+impl Clone for RoundTripFixture {
+    fn clone(&self) -> Self {
+        Self {
+            forward: self.forward.clone(),
+            backward_keys: self.backward_keys.clone(),
+            backward_ahdr: clone_ahdr(&self.backward_ahdr),
+            iv_resp: self.iv_resp,
+            http_request: self.http_request.clone(),
+            http_response: self.http_response.clone(),
+            example_body: self.example_body,
+        }
+    }
+}
+
+fn example_request_bytes() -> Vec<u8> {
+    b"GET /?q=example.com HTTP/1.1\r\nHost: example.com\r\nUser-Agent: hornet-bench\r\nConnection: close\r\n\r\n"
+        .to_vec()
+}
+
+fn example_response_bytes(body: &str) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body.as_bytes());
+    response
+}
+
+fn run_forward_chain(
+    fixture: &HornetFixture,
+    time: &FixedTimeProvider,
+    chdr: &mut hornet::types::Chdr,
+    ahdr: &mut hornet::types::Ahdr,
+    payload: &mut Vec<u8>,
+) {
+    let slot: Rc<RefCell<Option<hornet::types::Ahdr>>> = Rc::new(RefCell::new(None));
+    for &sv in &fixture.svs {
+        slot.borrow_mut().take();
+        let mut forward = CaptureForward::new(slot.clone());
+        let mut replay = hornet::node::NoReplay;
+        let mut ctx = hornet::node::NodeCtx {
+            sv,
+            now: time,
+            forward: &mut forward,
+            replay: &mut replay,
+            policy: None,
+        };
+        hornet::node::forward::process_data(&mut ctx, chdr, ahdr, payload)
+            .expect("process forward hop");
+        if let Some(next) = slot.borrow_mut().take() {
+            *ahdr = next;
+        }
+    }
+}
+
+fn run_backward_chain(
+    backward_keys: &[hornet::types::Si],
+    svs_forward_order: &[hornet::types::Sv],
+    time: &FixedTimeProvider,
+    chdr: &mut hornet::types::Chdr,
+    ahdr: &mut hornet::types::Ahdr,
+    payload: &mut Vec<u8>,
+) {
+    let slot: Rc<RefCell<Option<hornet::types::Ahdr>>> = Rc::new(RefCell::new(None));
+    // Nodes add onion layers in exit -> entry order; keys are used later for decryption.
+    for (sv, _key) in svs_forward_order.iter().rev().zip(backward_keys.iter()) {
+        slot.borrow_mut().take();
+        let mut forward = CaptureForward::new(slot.clone());
+        let mut replay = hornet::node::NoReplay;
+        let mut ctx = hornet::node::NodeCtx {
+            sv: *sv,
+            now: time,
+            forward: &mut forward,
+            replay: &mut replay,
+            policy: None,
+        };
+        process_backward_silent(&mut ctx, chdr, ahdr, payload).expect("process backward hop");
+        if let Some(next) = slot.borrow_mut().take() {
+            *ahdr = next;
+        }
+    }
+}
+
+fn process_backward_silent(
+    ctx: &mut hornet::node::NodeCtx,
+    chdr: &mut hornet::types::Chdr,
+    ahdr: &mut hornet::types::Ahdr,
+    payload: &mut Vec<u8>,
+) -> hornet::types::Result<()> {
+    use hornet::types::{Error, Exp, PacketDirection};
+    let now = Exp(ctx.now.now_coarse());
+    let res = hornet::packet::ahdr::proc_ahdr(&ctx.sv, ahdr, now)?;
+    let tau = hornet::sphinx::derive_tau_tag(&res.s);
+    if !ctx.replay.insert(tau) {
+        return Err(Error::Replay);
+    }
+    let mut iv = chdr.specific;
+    hornet::packet::onion::add_layer(&res.s, &mut iv, payload)?;
+    chdr.specific = iv;
+    ctx.forward
+        .send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Backward)
+}
+
 struct ForwardPacket {
     chdr: hornet::types::Chdr,
     ahdr: hornet::types::Ahdr,
@@ -339,6 +579,7 @@ impl hornet::forward::Forward for CaptureForward {
         _chdr: &hornet::types::Chdr,
         ahdr: &hornet::types::Ahdr,
         _payload: &mut Vec<u8>,
+        _direction: hornet::types::PacketDirection,
     ) -> hornet::types::Result<()> {
         *self.slot.borrow_mut() = Some(clone_ahdr(ahdr));
         Ok(())
@@ -481,15 +722,15 @@ impl RouterWorker {
                     break;
                 }
                 let mut packet = read_bench_packet(&mut stream).expect("router packet decode");
-                runtime
-                    .process(
-                        packet.direction,
-                        sv,
-                        &mut packet.chdr,
-                        &mut packet.ahdr,
-                        &mut packet.payload,
-                    )
-                    .expect("router forward process");
+                if let Err(err) = runtime.process(
+                    packet.direction,
+                    sv,
+                    &mut packet.chdr,
+                    &mut packet.ahdr,
+                    &mut packet.payload,
+                ) {
+                    eprintln!("[bench router] forward process error: {:?}", err);
+                }
             }
         });
 
