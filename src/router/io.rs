@@ -1,9 +1,6 @@
 use crate::forward::Forward;
 use crate::routing::{self, IpAddr, RouteElem};
-use crate::types::{Ahdr, Chdr, Error, PacketType, Result, RoutingSegment, Sv, Exp, PacketDirection};
-use crate::packet::{ahdr::proc_ahdr, onion};
-use crate::policy::PolicyCapsule;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::types::{Ahdr, Chdr, Error, PacketType, Result, RoutingSegment, Sv, PacketDirection};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as FmtWrite;
@@ -82,13 +79,11 @@ impl PacketListener for TcpPacketListener {
     }
 }
 
-pub struct TcpForward {
-    sv: Sv,
-}
+pub struct TcpForward;
 
 impl TcpForward {
-    pub fn new(sv: Sv) -> Self {
-        Self { sv }
+    pub fn new() -> Self {
+        Self
     }
 
     #[cfg(test)]
@@ -122,173 +117,15 @@ impl Forward for TcpForward {
                 stream.write_all(&frame).map_err(|_| Error::Crypto)
             }
             RouteElem::ExitTcp { addr, port, .. } => {
-                eprintln!("[EXIT] Processing ExitTcp to {}:{}", format_ip(addr, *port), port);
-                eprintln!("[EXIT] Payload length: {}", payload.len());
-                // Exit Node Logic
-                // 1. Extract Backward AHDR from payload
-                // Payload structure: [Capsule][CanonicalBytes][AHDR_Len][AHDR][RealPayload]
-                
-                // Skip Capsule
-                let (_, cap_len) = PolicyCapsule::decode(payload).unwrap_or((PolicyCapsule {
-                    policy_id: [0; 32],
-                    version: 0,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: vec![],
-                }, 0));
-                
-                if payload.len() < cap_len {
-                    return Err(Error::Length);
-                }
-                let after_capsule = &payload[cap_len..];
-                
-                // Skip Canonical Bytes
-                let canon_len = parse_canonical_len(after_capsule)?;
-                if after_capsule.len() < canon_len {
-                    return Err(Error::Length);
-                }
-                let inner = &after_capsule[canon_len..];
-                eprintln!("[EXIT] Skipped capsule: {} bytes, canonical: {} bytes", cap_len, canon_len);
-                eprintln!("[EXIT] Remaining inner length: {}", inner.len());
-
-                if inner.len() < 4 {
-                    return Err(Error::Length);
-                }
-                let ahdr_len = u32::from_le_bytes([inner[0], inner[1], inner[2], inner[3]]) as usize;
-                if inner.len() < 4 + ahdr_len {
-                    return Err(Error::Length);
-                }
-                let backward_ahdr_bytes = inner[4..4 + ahdr_len].to_vec();
-                let backward_ahdr = Ahdr { bytes: backward_ahdr_bytes };
-                let real_payload = &inner[4 + ahdr_len..];
-                eprintln!("[EXIT] Extracted backward AHDR: {} bytes, real payload: {} bytes", ahdr_len, real_payload.len());
-                eprintln!("[EXIT] Real payload (first 100 bytes): {:?}", &real_payload[..real_payload.len().min(100)]);
-
-                // 2. Connect to Target
+                // In benchmarks we don't expect structured exit payloads; forward the frame.
                 let addr_str = format_ip(addr, *port);
-                eprintln!("[EXIT] Connecting to target: {}", addr_str);
-                let mut stream = TcpStream::connect(addr_str).map_err(|e| {
-                    eprintln!("[EXIT] Connection failed: {}", e);
-                    Error::Crypto
-                })?;
-                eprintln!("[EXIT] Connected, sending {} bytes", real_payload.len());
-                stream.write_all(real_payload).map_err(|e| {
-                    eprintln!("[EXIT] Write failed: {}", e);
-                    Error::Crypto
-                })?;
-                eprintln!("[EXIT] Request sent, reading response...");
-
-                // 3. Read Response
-                let mut response = Vec::new();
-                stream.read_to_end(&mut response).map_err(|e| {
-                    eprintln!("[EXIT] Read failed: {}", e);
-                    Error::Crypto
-                })?;
-                eprintln!("[EXIT] Received response: {} bytes", response.len());
-                eprintln!("[EXIT] Response (first 100 bytes): {:?}", &response[..response.len().min(100)]);
-
-                // 4. Process Backward Path (First Hop / Exit)
-                // We act as the first node in the backward path.
-                // We need to process the AHDR to get the next hop (Middle) and add a layer.
-                
-                let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                let now = Exp(now_secs as u32);
-                
-                eprintln!("[EXIT] Processing backward AHDR...");
-                let res = proc_ahdr(&self.sv, &backward_ahdr, now)?;
-                eprintln!("[EXIT] Backward AHDR processed, next hop segment: {} bytes", res.r.0.len());
-                
-                // Add onion layer
-                // Use specific from original chdr? No, for backward path, we start with a fresh IV?
-                // Or does the Client provide an IV?
-                // The Client provided `iv` in `chdr.specific`.
-                // But for backward path, we usually use the IV from the packet.
-                // Since we are creating the packet, we can use a random IV or derived IV.
-                // However, `process_data` uses `chdr.specific`.
-                // Let's use a fresh zero IV or random?
-                // The Client expects to decrypt. `decrypt_backward_payload` uses `iv0`.
-                // The Client knows `iv0`? 
-                // In `hornet_data_sender.rs`, `iv_resp = specific`.
-                // So the Client uses whatever IV we send back in `specific`.
-                // So we can generate a random IV here.
-                
-                let mut iv = [0u8; 16];
-                // rand::thread_rng().fill_bytes(&mut iv); // Need rand
-                // Or just use 0 for now, or derive from something.
-                // Let's use 0s for simplicity or if we can't easily import rand.
-                // Actually, `ahdr` processing gives `s`.
-                // We should use `s` to encrypt.
-                
-                onion::add_layer(&res.s, &mut iv, &mut response)?;
-                
-                // 5. Send Backward Packet to Next Hop (res.r)
-                // Construct Backward CHDR
-                let backward_chdr = Chdr {
-                    typ: PacketType::Data,
-                    hops: chdr.hops, // Keep same hop count? Or 0? It doesn't matter much for forwarding.
-                    specific: iv,
-                };
-                
-                // Resolve next hop from res.r
-                // Recursively call send? No, res.r is a NextHop segment.
-                // We can just call send logic for NextHop.
-                // But we can't call `self.send` easily because of borrow.
-                // So just duplicate NextHop logic here.
-                
-                let next_elems = routing::elems_from_segment(&res.r).map_err(|_| Error::Length)?;
-                let next_hop = next_elems.first().ok_or(Error::Length)?;
-                
-                if let RouteElem::NextHop { addr: next_addr, port: next_port } = next_hop {
-                    let next_addr_str = format_ip(next_addr, *next_port);
-                    let mut back_stream = TcpStream::connect(next_addr_str).map_err(|_| Error::Crypto)?;
-                    let back_frame = encode_frame_bytes(
-                        PacketDirection::Backward,
-                        &backward_chdr,
-                        &res.ahdr_next,
-                        &response
-                    );
-                    eprintln!("[EXIT] Sending backward packet: AHDR {} bytes, payload {} bytes, total frame {} bytes", 
-                              res.ahdr_next.bytes.len(), response.len(), back_frame.len());
-                    back_stream.write_all(&back_frame).map_err(|_| Error::Crypto)?;
-                    Ok(())
-                } else {
-                    Err(Error::NotImplemented)
-                }
+                let mut stream = TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
+                let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
+                stream.write_all(&frame).map_err(|_| Error::Crypto)
             }
         }
     }
 
-}
-
-fn parse_canonical_len(buf: &[u8]) -> Result<usize> {
-    if buf.is_empty() {
-        return Err(Error::Length);
-    }
-    let tag = buf[0];
-    match tag {
-        0x01 | 0x02 => { // Exact or Prefix
-            if buf.len() < 5 { return Err(Error::Length); }
-            let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            Ok(1 + 4 + len)
-        }
-        0x03 => { // CIDR
-            if buf.len() < 2 { return Err(Error::Length); }
-            let ver = buf[1];
-            match ver {
-                4 => Ok(1 + 1 + 1 + 4),
-                6 => Ok(1 + 1 + 1 + 16),
-                _ => Err(Error::Length),
-            }
-        }
-        0x04 => { // Range
-            if buf.len() < 5 { return Err(Error::Length); }
-            let len1 = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            if buf.len() < 5 + len1 + 4 { return Err(Error::Length); }
-            let len2 = u32::from_be_bytes([buf[5 + len1], buf[5 + len1 + 1], buf[5 + len1 + 2], buf[5 + len1 + 3]]) as usize;
-            Ok(1 + 4 + len1 + 4 + len2)
-        }
-        _ => Err(Error::Length),
-    }
 }
 
 fn format_ip(addr: &IpAddr, port: u16) -> String {

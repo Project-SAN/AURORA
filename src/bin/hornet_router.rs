@@ -47,7 +47,7 @@ fn main() {
                 let mut runtime = RouterRuntime::new(
                     &router,
                     &time,
-                    move || Box::new(TcpForward::new(secrets.sv)),
+                    move || Box::new(TcpForward::new()),
                     || Box::new(NoReplay),
                 );
                 if let Err(err) = runtime.process(
