@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
-    policy::PolicyCapsule,
     sphinx::derive_tau_tag,
     types::{Ahdr, Chdr, Error, Exp},
 };
@@ -15,33 +14,24 @@ pub fn process_data(
     ahdr: &mut Ahdr,
     payload: &mut Vec<u8>,
 ) -> Result<()> {
+    eprintln!("[BACKWARD] Processing backward packet: ahdr_len={}, payload_len={}", 
+              ahdr.bytes.len(), payload.len());
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
+    eprintln!("[BACKWARD] proc_ahdr succeeded, r_len={}", res.r.0.len());
     let tau = derive_tau_tag(&res.s);
     if !ctx.replay.insert(tau) {
         return Err(crate::types::Error::Replay);
     }
-    let capsule_len = if let Some(reg) = ctx.policy.as_mut() {
-        let (_capsule, consumed) = reg.enforce(payload)?;
-        Some(consumed)
-    } else {
-        None
-    }
-    .or_else(|| {
-        PolicyCapsule::decode(payload.as_slice())
-            .ok()
-            .map(|(_, len)| len)
-    })
-    .unwrap_or(0);
+
+    // Backward packets don't have policy capsules - they contain encrypted responses
+    // from the exit node. We just need to add our onion layer and forward.
+    use crate::types::PacketDirection;
 
     let mut iv = chdr.specific;
-    if capsule_len >= payload.len() {
-        chdr.specific = iv;
-        return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload);
-    }
-
-    let tail = &mut payload[capsule_len..];
-    onion::add_layer(&res.s, &mut iv, tail)?;
+    onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
+    eprintln!("[BACKWARD] Added onion layer, forwarding {} bytes", payload.len());
+    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Backward)
 }
+

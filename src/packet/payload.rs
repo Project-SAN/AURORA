@@ -20,6 +20,25 @@ impl Payload {
         prg::prg1(seed, &mut bytes);
         Self { bytes, rmax }
     }
+
+    pub fn from_bytes(bytes: Vec<u8>, rmax: usize) -> Result<Self> {
+        if bytes.len() != rmax * C_BLOCK {
+            return Err(Error::Length);
+        }
+        Ok(Self { bytes, rmax })
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 // Alg.1: Add FS into FS payload

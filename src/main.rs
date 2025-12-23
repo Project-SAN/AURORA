@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use actix_web::{web, App, HttpServer};
 use hornet::api::hello::{hello, manual_hello};
-use hornet::api::prove::{prove, verify, PolicyAuthorityState};
+use hornet::api::prove::{prove, verify, PolicyAuthorityState, ProofPipelineHandle};
 use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::{self, PlonkPolicy};
@@ -14,10 +14,14 @@ use hornet::utils::encode_hex;
 
 #[actix_web::main]
 async fn main() -> io::Result<()> {
-    let authority_state = web::Data::new(init_authority_state()?);
+    let authority_state = Arc::new(init_authority_state()?);
+    let directory_data: web::Data<PolicyAuthorityState> = web::Data::from(authority_state.clone());
+    let pipeline_arc: Arc<ProofPipelineHandle> = authority_state.clone();
+    let pipeline_data: web::Data<Arc<ProofPipelineHandle>> = web::Data::new(pipeline_arc);
     HttpServer::new(move || {
         App::new()
-            .app_data(authority_state.clone())
+            .app_data(directory_data.clone())
+            .app_data(pipeline_data.clone())
             .service(hello)
             .service(prove)
             .service(verify)

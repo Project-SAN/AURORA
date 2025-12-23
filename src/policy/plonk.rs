@@ -210,8 +210,9 @@ pub fn prove_for_payload(policy_id: &PolicyId, payload: &[u8]) -> Result<PolicyC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
+    use crate::adapters::plonk::validator::PlonkCapsuleValidator;
     use crate::policy::blocklist::BlocklistEntry;
+    use alloc::vec;
 
     #[test]
     fn proof_roundtrip() {
@@ -223,13 +224,14 @@ mod tests {
         let metadata = policy.metadata(42, 0);
         let mut registry = PolicyRegistry::new();
         ensure_registry(&mut registry, &metadata).expect("registry");
+        let validator = PlonkCapsuleValidator::new();
 
         let safe_leaf = BlocklistEntry::Exact("safe.example".into()).leaf_bytes();
         let capsule = policy.prove_payload(&safe_leaf).expect("prove payload");
         assert_eq!(capsule.policy_id, metadata.policy_id);
         let mut buffer = capsule.encode();
         buffer.extend_from_slice(b"safe.example");
-        let (_capsule, consumed) = registry.enforce(&mut buffer).expect("enforce");
+        let (_capsule, consumed) = registry.enforce(&mut buffer, &validator).expect("enforce");
         assert_eq!(consumed, capsule.encode().len());
 
         assert!(matches!(

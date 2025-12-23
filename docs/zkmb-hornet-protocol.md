@@ -1,21 +1,17 @@
-# ZKMB-HORNET プロトコル仕様草案
+# ZKMB-HORNET Protocol Specification (Draft)
 
-## 概要
-ZKMB-HORNET は、HORNET ルーティングに第三者機関発行のゼロ知識証明カプセルを組み込み、
-ポリシー内容を秘匿したまま通信制御を行うためのプロトコル草案である。
-送信者はポリシー適合性を証明する `PolicyCapsule` をペイロードへ付与し、
-各中継ノードは `PolicyMetadata` 内の検証器記述を用いて証明を確認する。
-ノード運営者や他の参加者はポリシー内容を知ることなく違反パケットを遮断できる。
+## Overview
+ZKMB-HORNET extends HORNET routing with third-party-issued zero-knowledge proof capsules so that policy enforcement happens without disclosing the underlying policy to relays. The source attaches a `PolicyCapsule` that proves policy compliance, and each forwarding node verifies the capsule using `PolicyMetadata` delivered during setup. Packets that violate the policy are dropped without revealing the secret rules.
 
-## 参加アクター
-- **Policy Authority (PA)**: ポリシー回路を Plonk 系 SNARK でコンパイルし、証明 API を提供する第三者機関。
-- **Source Client**: 通信平文をコミットし、PA の API から証明（PolicyCapsule）を取得してパケットを送信する正規クライアント。
-- **Forwarding Nodes**: HORNET の中継ノード。セットアップ時に `PolicyMetadata` を受け取り、データ平面でカプセル検証を行う。
-- **Destination**: カプセル除去後のアプリケーションペイロードを受信するエンドポイント。
+## Actors
+- **Policy Authority (PA)**: Compiles the policy circuit to a Plonk-like SNARK and exposes an API for proof generation and metadata distribution.
+- **Source Client**: Extracts policy-relevant data from plaintext traffic, obtains a proof capsule from the PA (or a local prover), and prepends it to outgoing payloads.
+- **Forwarding Nodes**: HORNET relays that receive `PolicyMetadata` during setup and verify capsules on the data plane.
+- **Destination**: The final hop that receives the decrypted payload after the capsule has been stripped.
 
-## データ構造
+## Data Structures
 ### PolicyMetadata TLV
-AHDR 内に封入される TLV。TLV タイプは `0xA1` を予約。
+Encoded inside the AHDR as TLV type `0xA1`.
 ```
 u8  tlv_type   = 0xA1
 u16 tlv_len    = |payload|
@@ -28,12 +24,12 @@ payload = struct PolicyMetadataPayload {
     verifier_blob: [u8; verifier_blob_len],
 }
 ```
-- `policy_id`: ポリシー回路とバージョンを識別。
-- `verifier_blob`: `dusk-plonk` の `composer::Verifier::to_bytes()` 出力（検証鍵・開鍵・公開入力配置・トランスクリプト種別を含む）。
-- `expiry`: UNIX time (秒)。期限切れ後は再セットアップ要求を行う。
+- `policy_id`: identifies the circuit and version.
+- `verifier_blob`: raw bytes from `dusk-plonk`’s `composer::Verifier::to_bytes()` (verification key, openings, public input layout, transcript type).
+- `expiry`: UNIX timestamp (seconds). Nodes should request re-setup when expired.
 
-### PolicyCapsule ペイロード
-データパケットのアプリケーションペイロード先頭に挿入する構造。
+### PolicyCapsule Payload
+Prepend this structure to the application payload:
 ```
 struct PolicyCapsule {
     magic: [u8; 4] = "ZKMB",
@@ -48,41 +44,40 @@ struct PolicyCapsule {
     aux_data: [u8; aux_len],
 }
 ```
-- `proof`: Plonk 証明。数百バイト～1KB を想定。
-- `commitment`: 平文／TLS transcript 等のコミットメント（Poseidon/BLAKE3 など）。
-- `aux_data`: 追加公開入力。例: セッション ID、時刻 nonce。
+- `proof`: Plonk proof (hundreds of bytes to 1 KB).
+- `commitment`: commitment of the plaintext or TLS transcript (Poseidon/BLAKE3, etc.).
+- `aux_data`: additional public inputs, e.g., session IDs or time nonces.
+The capsule is followed immediately by the actual application payload.
 
-カプセル直後にアプリケーションペイロードが続く。
+## Protocol Flow
+1. **Setup**
+   - The source fetches routing data and `PolicyMetadata` from the directory.
+   - During AHDR construction, it embeds the metadata TLV. Each node parses the TLV while decrypting AHDR, then registers `policy_id → verifier`.
 
-## プロトコルフロー
-1. **セットアップ**
-   - ソースはディレクトリから経路情報と `PolicyMetadata` を取得。
-   - AHDR 生成時に `PolicyMetadata` TLV を挿入。各ノードは AHDR 復号時に TLV を取り出し、`policy_id → verifier` をレジストリへ登録。
+2. **Proof Generation**
+   - The source extracts the policy-relevant field (e.g., HTTP Host) from the payload, hashes it, and feeds it into the circuit.
+   - The client calls the proof API (`POLICY_PROOF_URL`) with `{policy_id, payload_hex, aux_hex}` and receives proof/commitment JSON, or locally runs the same Plonk prover (`policy-plonk` + `policy-client`).
+   - The PA returns the Plonk proof; on error it responds with HTTP 4xx and `non_compliant`.
 
-2. **証明生成**
-   - ソースはペイロードから検査対象値（例: HTTP Host ドメイン）を抽出し、ハッシュ化した値を回路入力に使う。
-   - クライアントは外部証明サービス API (`POLICY_PROOF_URL`) に `{policy_id, payload_hex, aux_hex}` を送信し、Plonk 証明・コミットメントを含む JSON を受領して `PolicyCapsule` に変換。`policy-plonk` と `policy-client` を併用する場合、ローカルの Plonk プロバーが同等の証明（ブロックリストとの非一致）を生成する。
-   - PA は Plonk 回路で証明を生成し、`proof` を返却。エラー時は「non-compliant」のみ返す。
+3. **Data Transmission**
+   - The source builds the `PolicyCapsule` and prepends it to the payload.
+   - `hornet::source::build_data_packet` assembles AHDR/CHDR and dispatches the onion packet.
 
-3. **データ送信**
-   - ソースは `PolicyCapsule` を構築し、ペイロード先頭に付加。
-   - `hornet::source::build_data_packet` で AHDR/CHDR を組み立てて送出。
+4. **Forwarding Node**
+   - `process_data_forward` removes an onion layer, decodes the capsule, and looks up the verifier via `policy_id`.
+   - It runs `verify(proof, [commitment, aux])`.
+   - Success: drop the capsule bytes and forward the remaining payload.
+   - Failure: return `Error::PolicyViolation`, drop the packet, and log only `policy_id` + result.
 
-4. **中継ノード処理**
-   - `process_data_forward` でオニオン層を剥がした後、カプセルを抽出。
-   - `policy_id` から検証鍵を取得し、Plonk 検証 `verify(proof, [commitment, aux])` を実行。
-   - 成功: カプセル部分を削除し、残りのペイロードを次ホップへ。
-   - 失敗: `Error::PolicyViolation` を返してパケットを破棄。ログには `policy_id` と結果のみ記録。
+5. **Destination**
+   - The last hop receives only the application payload and handles it per normal HORNET delivery rules.
 
-5. **宛先**
-   - 最終ノードでアプリケーションペイロードだけが残り、通常の HORNET データフローに従って Delivery。
-
-## API 仕様 (PA)
+## PA API
 ```
 POST /plonk/prove
 Headers:
   Authorization: Bearer <token>
-Body (JSON or CBOR):
+Body (JSON/CBOR):
 {
   "policy_id": "base64",
   "commit": "base64",
@@ -98,130 +93,156 @@ Response:
   "expiry": <u64>
 }
 ```
-- 成功時のみ証明を返す。失敗時は HTTP 4xx と "non_compliant"。
-- レート制限・監査ログでポリシー推測を抑止。
+- Proofs are only returned on success; failures use HTTP 4xx with `non_compliant`.
+- Apply rate limiting and auditing to prevent policy probing.
 
-## エラーハンドリング
-- `Error::PolicyViolation`: カプセル不在、ID 不一致、検証失敗等を示す。
-- `Error::Expired`: `PolicyMetadata.expiry` 超過。
-- PI 収集: `policy_id`, `peer`, `timestamp` を記録。理由はログに残さない。
+## Error Handling
+- `Error::PolicyViolation`: missing capsule, policy mismatch, or proof failure.
+- `Error::Expired`: metadata expired.
+- PI collection: log `policy_id`, peer, timestamp only (no plaintext reason).
 
-## セキュリティ要件
-- Plonk 証明はユニバーサル SRS を使用（Trusted Setup は一度きり）。
-- ポリシー更新時は `policy_id` をローテーションし、旧 ID への証明発行を停止。
-- クライアントは API 認証必須。未認証クライアントには証明が提供されないため通信できない。
-- ノード実装はカプセル検証を無効化できないようにすることで、証明未添付パケットを強制的に遮断。
+## Security Requirements
+- Plonk proofs rely on a universal SRS (single trusted setup).
+- Rotate `policy_id` when updating circuits; stop issuing proofs for old IDs.
+- Clients must authenticate to the API; unauthenticated clients cannot send traffic.
+- Nodes must not allow capsule verification to be disabled; packets without proofs must be dropped.
 
-## 実装ロードマップ
-1. `PolicyCapsule`/`PolicyMetadata` の型とシリアライザーを `policy` モジュールに実装。
-2. AHDR への TLV 埋め込み・ノード側レジストリ実装。
-3. `process_data_forward` へカプセル抽出＋検証フックを追加。
-4. Plonk 検証器（`std` 依存の場合は別プロセス or FFI）と ProofService API 連携。
-5. テスト: カプセル parsing、検証成功/失敗、期限管理。
+## Implementation Roadmap
+1. Implement `PolicyCapsule`/`PolicyMetadata` types + codecs.
+2. Embed metadata TLVs into AHDR; implement node registry.
+3. Hook capsule extraction/verification into `process_data_forward`.
+4. Integrate Plonk verifier (possibly via FFI) and proof service API.
+5. Testing: capsule parsing, success/failure paths, expiry handling.
 
-## 想定ユースケース
-- 違法・詐欺サイトの秘匿フィルタリング
-- B2B ポータルや業務 API の限定公開
-- リモート規制遵守（TLS トランスクリプト検査など）
+## Use Cases
+- Privacy-preserving filtering of illegal/phishing content.
+- Controlled access to B2B portals or enterprise APIs.
+- Remote compliance (e.g., TLS transcript inspections).
 
-## 今後の課題
-- `no_std` 環境で動く Plonk 検証器の選定またはアーキテクチャ調整。
-- 証明 API の SLA/NFR（遅延、可用性）の定義。
-- 複数ポリシーを同時強制する際のカプセル連結方式。
-- プライバシー攻撃（failure オラクル）対策としてのレート制限・監査。
+## Open Questions
+- Viable Plonk verifier for `no_std`.
+- API SLAs/NFRs (latency, availability).
+- Capsule chaining for multiple simultaneous policies.
+- Rate limiting / auditing to withstand failure-oracle attacks.
 
-## 付録: プライバシー保持型リモート証明プロトコル案
+## Implementation Architecture (hornet crate)
+The Rust implementation follows a functional domain modeling style and is split into three layers—`core`, `application`, and `adapters`. This keeps the reusable library surface (`no_std + alloc`) independent from I/O-heavy components such as Actix or Plonk backends.
 
-### 目的と前提
-現行の `POST /prove` はクライアントが抽出したペイロード（例: 検索語や Host ヘッダ）を平文のまま PA に送信し、PA がブロックリスト照合と証明生成を行う。これでは PA 運用者が問い合わせ内容を直接観測できるため、以下を満たす改訂案を提示する。
+### Core layer (`src/core`)
+- Pure domain layer that depends only on `alloc`. It owns `PolicyCapsule`, `PolicyMetadata`, TLV codecs, and `PolicyRegistry`.
+- `PolicyRegistry` keeps the `policy_id → PolicyMetadata` map and delegates validation to the `CapsuleValidator` trait. `enforce(payload, validator)` returns `(PolicyCapsule, consumed_len)` while preserving determinism.
+- All functions are side-effect free and return `crate::types::Error::{Length, PolicyViolation}` for callers to handle.
 
-1. クライアントは **検索語やドメインの平文を PA に渡さない**。
-2. PA は **正しくブロックリスト非該当性を証明する責務** を保持する。
-3. 中継ノードは従来通り `PolicyCapsule` の検証だけでポリシー強制ができる。
-4. 追加の暗号処理はクライアント側で完結し、ブラウザ拡張など軽量実装でも成立する。
+### Application layer (`src/application`)
+- **SetupPipeline** orchestrates how metadata TLVs are installed. `RegistrySetupPipeline` reuses `policy::plonk::ensure_registry()` to hydrate verifier blobs, and `setup::node_process_with_policy()` accepts any pipeline implementation.
+- **ProofPipeline** transforms `ProveInput { policy_id, payload, aux }` into a `PolicyCapsule`, surfacing `ProofError::{PolicyNotFound, Extraction, Prover}`. `PolicyAuthorityState` (Plonk policy + extractor) implements the trait and is injected as `Arc<dyn ProofPipeline + Send + Sync>`.
+- **ForwardPipeline** abstracts enforcement on the data plane. `RegistryForwardPipeline` delegates to `PolicyRegistry::enforce()` and returns `Option<(PolicyCapsule, usize)>`, allowing capsule-free flows to pass through unchanged.
 
-本案では TEE（例: Intel SGX/TDX）によるリモートアテステーションと VOPRF（Verifiable Oblivious PRF）を組み合わせ、PA 運用者から利用者のターゲット情報を秘匿する。
+### Adapters layer (`src/adapters`)
+- **plonk::validator** provides `PlonkCapsuleValidator`, caching per-policy `PlonkVerifier` instances (in a `BTreeMap`) and checking proof/commitment lengths (`Proof::SIZE`, `BlsScalar::SIZE`).
+- **actix** wires HTTP handlers (feature `api`). `POST /prove` decodes `payload_hex` into `ProveInput` and calls the injected `ProofPipeline`; `POST /verify` derives metadata, populates a fresh `PolicyRegistry`, and validates capsules via `PlonkCapsuleValidator`.
+- **CLI/bin** (`src/main.rs`) shares `PolicyAuthorityState` via `Arc`, registering both `web::Data<PolicyAuthorityState>` (directory access) and `web::Data<Arc<ProofPipelineHandle>>` (proof generation) so binaries and libraries use the same pipeline.
 
-### 新規構成要素
-- **アテステーション付き TEE**: `prove` エンドポイントは enclaved サービスとして動作し、運用者から隔離されたメモリで処理する。クライアントはアテステーション証明書を検証し、正しいバイナリが動作していると確信した場合のみ以降の暗号ハンドシェイクを継続する。
-- **VOPRF キー対**: PA は秘密鍵 `k` を用いてドメイン/検索語 `x` を `y = F_k(x)` に射影する。VOPRF の盲検出性により、PA は `x` を特定できない。
-- **ハッシュ済みブロックリスト**: Blocklist の各要素 `b_i` について `F_k(b_i)` を事前計算し、Merkle ツリーでコミットしておく。以後の検証は `y` がツリーに含まれないことを証明する手続きに置き換える。
-- **ペイロード拘束用コミットメント**: クライアントは HTTP リクエストヘッダから抽出したターゲット値 `x` を Poseidon 等でコミットし、同時に `y = F_k(x)` を得る。TEE 内の証明回路は「`y` はブロックリストに含まれず、かつコミットされた payload から復元できる `x` と一致する」ことを示す。
+### Node/Runtime
+- `NodeCtx` carries an optional `PolicyRuntime { registry, validator, forward }`; both forward/backward paths call `ForwardPipeline::enforce()` and fall back to `PolicyCapsule::decode()` when no registry is configured.
+- `setup::install_policy_metadata()` parses TLVs and pushes them through `SetupPipeline`, keeping the TLV format reusable even if the verifier backend changes.
+- Validators only need to implement `CapsuleValidator`, making them pluggable across setup/proof/forward flows.
+- Experimental router runtime (`src/router`) now includes:
+  - `router::runtime::RouterRuntime`: wires policy state + time provider + replay/forward factories into packet processing loops.
+  - `router::io::TcpPacketListener` / `TcpForward`: reference TCP transport that consumes/produces fixed-length frames and resolves next hops from `routing::RouteElem` TLVs.
+  - `router::storage::FileRouterStorage`: persists `PolicyMetadata` and node secrets (`Sv`) as JSON so routers can restore policy state on restart.
+  - `router::sync::client`: pluggable directory client (`ureq` HTTP or local file) that fetches signed announcements and applies them to the `Router`.
 
-### 変更後ワークフロー
-1. **ディレクトリアクセス**
-   - `GET /@hornet/directory` → 以下を返却:
-     - `policy_id`
-     - `prove_url` / `verify_url`
-     - `voprf` 公開パラメータ（Elliptic curve, generator, 評価ポイント）
-     - `tee_quote`（アテステーションレポート）と `binary_measurement`
-     - `merkle_root`（`F_k(blocklist)` のルート）
-   - クライアントは TEE ベリファイ、バイナリ測定値検証、公開鍵検証を行い、信頼境界を確立。
+### Testing and mocks
+- Shared mocks live under `tests/suppert/`. `tests/pipeline.rs` uses them to exercise setup/install and forward enforcement flows independently of Actix/Plonk internals.
+- End-to-end tests in `src/api/prove.rs` rely on the same dependency injection (WebData + `ProofPipeline`) as production.
 
-2. **VOPRF 評価**
-   - クライアント: 抽出したターゲット `x` から盲検 `α = Blind(x)` を生成し、`POST /@hornet/oprf` に送信。
-   - TEE 内のサービス: `β = Evaluate_k(α)` を返却。
-   - クライアント: `y = Finalize(x, β)` を取得。PA は `x` の平文を知り得ない。
+## Appendix: Privacy-Preserving Remote Proof Protocol
+The current `POST /prove` endpoint requires the client to submit plaintext targets (search terms, HTTP Host headers) to the PA, exposing them to operators. The revised proposal satisfies:
+1. Clients never reveal plaintext targets to the PA.
+2. The PA remains responsible for proving non-membership against the blocklist.
+3. Forwarding nodes continue to enforce policies via `PolicyCapsule` verification only.
+4. Extra crypto is confined to the client side, enabling lightweight implementations (e.g., browser extensions).
 
-3. **プライバシー保護証明リクエスト**
-   - クライアントは以下の JSON を `POST /@hornet/prove_privacy` へ送信:
+TEE-based attestation and Verifiable Oblivious PRF (VOPRF) are combined so that operators cannot observe targets while the PA proves policy compliance.
+
+### New Components
+- **Attested TEE**: The `/prove` endpoint runs inside an enclave; clients verify quotes/binary measurements before proceeding.
+- **VOPRF key pair**: The PA evaluates `y = F_k(x)` without learning the input.
+- **Hashed blocklist**: Precompute `F_k(b_i)` for each blocklist entry and commit via a Merkle tree.
+- **Payload commitments**: Clients commit to payload-derived values (Poseidon/BLAKE3) and include a nonce.
+
+### Revised workflow
+1. **Directory access**
+   - `GET /@hornet/directory` returns `{policy_id, prove_url, verify_url, voprf params, tee_quote, binary_measurement, merkle_root}`.
+   - Clients verify the TEE quote, measurement, and public parameters before trust is established.
+
+2. **VOPRF evaluation**
+   - Client blinds `x` to obtain `α = Blind(x)` and sends it to `POST /@hornet/oprf`.
+   - TEE returns `β = Evaluate_k(α)`.
+   - Client derives `y = Finalize(x, β)`; the PA never learns `x`.
+
+3. **Privacy-preserving proof request**
+   - Client sends:
      ```json
      {
        "policy_id": "<hex>",
        "payload_commitment": "<poseidon(x || nonce)>",
-       "payload_hint": "<ハッシュ済みHTTPヘッダの付随情報>",
+       "payload_hint": "<hashed HTTP metadata>",
        "oprf_output": "<hex(y)>",
        "nonce_commitment": "<blake3(nonce)>"
      }
      ```
-   - ペイロード本体や `x` は送信しない。`nonce` は辞書攻撃対策のブラインド用乱数。
+   - Plaintext payload and `x` are never transmitted; the nonce thwarts dictionary attacks.
 
-4. **TEE 内証明生成**
-   - TEE は `y` とハッシュ済みブロックリストから非包含証明を生成。
-   - ゼロ知識回路は以下を証明:
-     1. `oprf_output == F_k(x)`（TEE 内で再評価）
-     2. `payload_commitment` が `x` と一致する（`nonce` を内部で再現）
-     3. `y` が Merkle ツリーに含まれない（非包含パスの検証）
-   - 出力: `proof`, `commitment`, `aux`（従来互換）に加え `oprf_output` と `nonce_commitment` を kapsule に連結。
+4. **TEE proof generation**
+   - The enclave proves:
+     1. `oprf_output == F_k(x)` (re-evaluated inside the TEE).
+     2. `payload_commitment` matches `x` reconstructed from payload/nonce.
+     3. `y` is not in the Merkle-committed blocklist.
+   - Outputs: `proof`, `commitment`, `aux`, and the new public inputs (`oprf_output`, `nonce_commitment`) concatenated into the capsule.
 
-5. **カプセル検証**
-   - ノードは拡張された `PolicyCapsule` を受け取り、以下を検証:
-     - `proof` が改訂回路の公開入力（`oprf_output`, `payload_commitment`, `nonce_commitment`, `merkle_root`）を満たす。
-     - `payload_commitment` が実際の HTTP ペイロード先頭から計算した値と一致する。
-     - 必要に応じて `nonce_commitment` とクライアントの `nonce` を突合（例: ペイロードヘッダに `x, nonce` を暗号化して送付）。
-   - `proof` が通ればクライアントのターゲットはブロックリスト非該当であり、かつ PA 運用者には `x` が露出しない。
+5. **Capsule verification**
+   - Nodes verify the extended capsule by checking the proof against the new public inputs and recomputing `payload_commitment` from the packet.
+   - Optionally, they compare `nonce_commitment` with encrypted payload hints.
+   - Success guarantees the target is not blocklisted, without exposing `x` to PA operators.
 
-### API 拡張案
-| メソッド | パス | 説明 |
-|----------|------|------|
-| `GET` | `/@hornet/directory` | 改訂メタデータと TEE アテステーションを返す |
-| `POST` | `/@hornet/oprf` | 盲検された入力の VOPRF 評価を返す（TEE 内処理） |
-| `POST` | `/@hornet/prove_privacy` | ペイロード非公開のまま証明を生成 |
-| `POST` | `/@hornet/verify` | カプセル構造拡張に合わせ、公開入力の検証のみを行う（制御プレーン共通） |
+### Additional endpoints
+| Method | Path                  | Description                                           |
+|--------|----------------------|-------------------------------------------------------|
+| GET    | `/@hornet/directory` | Returns metadata plus TEE attestation artifacts        |
+| POST   | `/@hornet/oprf`      | Evaluates blinded inputs inside the TEE               |
+| POST   | `/@hornet/prove_privacy` | Issues proofs without revealing payload plaintext |
+| POST   | `/@hornet/verify`    | Verifies capsules given the new public inputs         |
 
-### セキュリティと運用上の注意
-- **アテステーション検証**: クライアントは TEE レポートが最新 CA で署名されていること、測定値がホワイトリストに載っていることを確認する。失敗時は接続拒否。
-- **辞書攻撃対策**: OPRF の盲検と `nonce` 付きコミットメントを併用することで、PA 運用者が人気検索語の事前計算をしても照合できない。
-- **証明検証キーの配布**: 既存の `verify` 実装は公開入力の追加に対応する必要があるが、回路構造自体は従来の Plonk 検証を再利用できる。
-- **フェールセーフ**: いずれかのステップ（アテステーション検証/VOPRF/証明）が失敗した場合、拡張は接続をブロックし、利用者へ警告する。
+### Operational notes
+- **Attestation**: Clients must validate the quote signer and whitelist binary measurements; otherwise they abort.
+- **Dictionary resistance**: Blind OPRF plus nonce commitments prevent the PA from precomputing popular targets.
+- **Verifier updates**: The existing verification path is extended with the additional public inputs but still relies on Plonk.
+- **Fail-safe**: Errors at any step (attestation, OPRF, proof) cause the connection to abort and notify the user.
 
-### 実装ロードマップ（案）
-1. VOPRF 実装とブロックリスト再構築（`F_k(b_i)` ベースの Merkle ツリー）。
-2. TEE 対応プロセスの整備とリモートアテステーション検証コードの公開。
-3. 新 `prove_privacy` 回路の実装（Commitment 一貫性＋非包含検証）。
-4. `PolicyCapsule` と検証器のフォーマット拡張。
-5. ブラウザ拡張へディレクトリ取得 / VOPRF / 証明要求の新フローを組み込み、旧仕様との後方互換モードを併設。
+### Suggested roadmap
+1. Implement VOPRF and rebuild the blocklist as `F_k(b_i)` Merkle roots.
+2. Ship TEE binaries with attestation verification tooling.
+3. Extend the Plonk circuit for commitment consistency + non-inclusion proofs.
+4. Extend `PolicyCapsule` and verifier formats with the new public inputs.
+5. Update clients/browser extensions to follow the new flow while keeping a backward-compatible mode.
 
-本案を採用すれば、PA 運用者は盲検された入力しか扱わず、アテステーション済み TEE 以外では機密データにアクセスできない。利用者は既存と同じ HTTP ナビゲーション体験のまま、検索語や訪問先を開示せずに検証付きアクセス制御を享受できる。
-### ディレクトリアナウンスメント API
-- REST メッセージ例:
-  ```json
-  {
-    "version": 1,
-    "issued_at": 1710000000,
-    "policies": [ { ...PolicyMetadata... }, ... ],
-    "signature": "<HMAC-SHA256 hex>"
-  }
-  ```
-- `signature` は共有鍵 `secret` を用いた `HMAC-SHA256( json_without_signature )`。クライアントは `from_signed_json(body, secret)` で検証し、`DirectoryAnnouncement` として取り出す。
-- `to_signed_json(announcement, secret, issued_at)` を用いれば配布側で同じフォーマットを生成できる。
+### Outstanding Engineering Tasks
+The current Rust prototype ships an experimental router runtime (directory sync + TCP forwarding + persistence). To reach a production-ready HORNET router, the following work remains:
+
+1. **Setup Packet Handling & Key Management**
+   - Implement full `setup::node_process_with_policy` integration inside the router so setup packets update `Si/Fs/CHDR` state, and persist those secrets (not just `Sv`) via `router::storage`.
+   - Restore the complete setup state (policy registry + node keys) on restart.
+2. **Secure Networking**
+   - Replace the current plaintext TCP frame with an authenticated/ encrypted transport (e.g., TLS or Noise) and support multiple concurrent connections with backpressure.
+   - Add node-to-node handshake/identity verification to prevent spoofing or replay.
+3. **Observability & Control Plane**
+   - Scheduled directory sync with exponential backoff, structured logging, and metrics (policy violations, replay drops, forward success rates).
+   - CLI/configuration for network bindings, storage paths, and security parameters.
+4. **Routing Integration**
+   - Use real routing descriptors (multiple `RouteElem`s per segment), maintain per-hop position, and update routing tables dynamically rather than assuming a single next-hop segment.
+5. **Testing**
+   - End-to-end integration tests covering setup→data flow across multiple nodes, persistence across restarts, and error conditions (expired metadata, invalid proofs, replay attacks).
+
+These tasks are tracked in the Rust repo and should be completed before treating the router as production-ready.

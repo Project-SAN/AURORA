@@ -88,6 +88,15 @@ pub fn decode_elems(mut bytes: &[u8]) -> Result<Vec<RouteElem>> {
         let t = bytes[0];
         let l = bytes[1] as usize;
         bytes = &bytes[2..];
+        if t == 0 {
+            if l != 0 {
+                return Err(Error::Length);
+            }
+            if bytes.iter().any(|&b| b != 0) {
+                return Err(Error::Length);
+            }
+            break;
+        }
         if bytes.len() < l {
             return Err(Error::Length);
         }
@@ -188,5 +197,17 @@ mod tests {
         // invalid TLV len/type combination
         bytes = alloc::vec![T_NEXT_HOP4, 5, 0, 0, 0, 0, 0];
         assert!(decode_elems(&bytes).is_err());
+    }
+
+    #[test]
+    fn decode_ignores_zero_padding() {
+        let base = RouteElem::NextHop {
+            addr: IpAddr::V4([127, 0, 0, 1]),
+            port: 7102,
+        };
+        let mut bytes = encode_elems(&[base.clone()]);
+        bytes.resize(bytes.len() + 4, 0); // pad to simulate FS zero padding
+        let parsed = decode_elems(&bytes).expect("decode padded segment");
+        assert_eq!(parsed, alloc::vec![base]);
     }
 }

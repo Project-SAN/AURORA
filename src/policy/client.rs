@@ -458,8 +458,8 @@ mod tests {
             flags: 0,
             verifier_blob: vec![],
         };
-        let blocked_leaf = crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into())
-            .leaf_bytes();
+        let blocked_leaf =
+            crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
         let blocklist = Blocklist::from_canonical_bytes(vec![blocked_leaf]);
         let preprocessor = ProofPreprocessor::new(HttpHostExtractor::default(), blocklist);
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
@@ -531,8 +531,8 @@ mod tests {
     #[test]
     fn plonk_service_generates_proof() {
         use crate::policy::extract::HttpHostExtractor;
-        let blocked_leaf = crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into())
-            .leaf_bytes();
+        let blocked_leaf =
+            crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
         let blocklist = vec![blocked_leaf];
         let service = PlonkProofService::new(b"test", blocklist, HttpHostExtractor::default())
             .expect("plonk service");
