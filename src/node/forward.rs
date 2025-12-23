@@ -21,9 +21,11 @@ pub fn process_data(
     if !ctx.replay.insert(tau) {
         return Err(crate::types::Error::Replay);
     }
-    let capsule_len = if let Some(reg) = ctx.policy.as_mut() {
-        let (_capsule, consumed) = reg.enforce(payload)?;
-        Some(consumed)
+    let capsule_len = if let Some(policy) = ctx.policy {
+        policy
+            .forward
+            .enforce(policy.registry, payload, policy.validator)?
+            .map(|(_, consumed)| consumed)
     } else {
         None
     }
@@ -34,17 +36,19 @@ pub fn process_data(
     })
     .unwrap_or(0);
 
+    use crate::types::PacketDirection;
+
     let mut iv = chdr.specific;
     if capsule_len >= payload.len() {
         // nothing beyond the capsule to decrypt for the next hop
         chdr.specific = iv;
-        return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload);
+        return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward);
     }
 
     let tail = &mut payload[capsule_len..];
     onion::remove_layer(&res.s, &mut iv, tail)?;
     chdr.specific = iv;
-    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload)
+    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward)
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

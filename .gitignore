@@ -1,4 +1,5 @@
 /target
 .idea/
 .vscode/
-config/*.json
+config/
+*.log

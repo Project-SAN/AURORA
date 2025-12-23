@@ -3,6 +3,7 @@ pub mod forward;
 
 use alloc::collections::BTreeSet;
 
+use crate::application::forward::ForwardPipeline;
 use crate::sphinx::*;
 use crate::types::{Chdr, Result, RoutingSegment, Sv};
 
@@ -42,13 +43,20 @@ impl ReplayFilter for NoReplay {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct PolicyRuntime<'a> {
+    pub registry: &'a crate::policy::PolicyRegistry,
+    pub validator: &'a dyn crate::policy::CapsuleValidator,
+    pub forward: &'a dyn ForwardPipeline,
+}
+
 pub struct NodeCtx<'a> {
     pub sv: Sv,
     pub now: &'a dyn crate::time::TimeProvider,
     // Forwarding abstraction: implementor sends to next hop
     pub forward: &'a mut dyn crate::forward::Forward,
     pub replay: &'a mut dyn ReplayFilter,
-    pub policy: Option<&'a mut crate::policy::PolicyRegistry>,
+    pub policy: Option<PolicyRuntime<'a>>,
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

@@ -2,9 +2,7 @@ use std::env;
 use std::fs;
 use std::process;
 
-use hornet::config::{
-    DEFAULT_AUTHORITY_URL, DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL,
-};
+use hornet::config::{DEFAULT_AUTHORITY_URL, DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::blocklist;
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::PlonkPolicy;

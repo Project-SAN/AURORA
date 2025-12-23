@@ -1,10 +1,12 @@
+use crate::application::setup::SetupPipeline;
 use crate::packet::{core, payload};
-use crate::policy::{PolicyMetadata, PolicyRegistry};
+use crate::policy::PolicyMetadata;
 use crate::sphinx;
 use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
 
 pub mod directory;
+pub mod wire;
 
 // Sphinx-based setup packet carrying FS payload per HORNET setup.
 pub struct SetupPacket {
@@ -75,22 +77,22 @@ pub fn node_process_with_policy(
     node_secret: &[u8; 32],
     sv: &Sv,
     rseg: &RoutingSegment,
-    policy: Option<&mut PolicyRegistry>,
+    policy: Option<&mut dyn SetupPipeline>,
 ) -> Result<Si> {
     let si = sphinx::node_process_forward(&mut pkt.shdr, node_secret)?;
     let fs = core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
     let _alpha = payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
-    if let Some(reg) = policy {
-        install_policy_metadata(pkt, reg)?;
+    if let Some(installer) = policy {
+        install_policy_metadata(pkt, installer)?;
     }
     Ok(si)
 }
 
-pub fn install_policy_metadata(pkt: &SetupPacket, registry: &mut PolicyRegistry) -> Result<()> {
+pub fn install_policy_metadata(pkt: &SetupPacket, installer: &mut dyn SetupPipeline) -> Result<()> {
     for tlv in &pkt.tlvs {
         if tlv.first().copied() == Some(crate::policy::POLICY_METADATA_TLV) {
             let meta = crate::policy::decode_metadata_tlv(tlv)?;
-            crate::policy::plonk::ensure_registry(registry, &meta)?;
+            installer.install(meta)?;
         }
     }
     Ok(())
@@ -245,12 +247,14 @@ mod tests {
 
         let mut registry = PolicyRegistry::new();
         for i in 0..lf {
+            let mut installer =
+                crate::application::setup::RegistrySetupPipeline::new(&mut registry);
             let _ = crate::setup::node_process_with_policy(
                 &mut st.packet,
                 &nodes[i].0,
                 &nodes[i].2,
                 &rs[i],
-                Some(&mut registry),
+                Some(&mut installer),
             )
             .expect("setup hop");
         }
