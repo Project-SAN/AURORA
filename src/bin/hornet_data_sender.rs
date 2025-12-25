@@ -1,7 +1,6 @@
-use hornet::policy::blocklist;
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
-use hornet::policy::Extractor;
+use hornet::policy::client::{HttpWitnessService, WitnessPreprocessor};
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
@@ -74,14 +73,26 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut request_payload = base_request.into_bytes();
     request_payload.extend_from_slice(payload_tail);
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
-    let target = extractor
-        .extract(&request_payload)
-        .map_err(|err| format!("failed to extract host: {err:?}"))?;
-    let entry = blocklist::entry_from_target(&target)
-        .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
-    let canonical_bytes = entry.leaf_bytes();
+    let witness_url = env::var("POLICY_WITNESS_URL")
+        .or_else(|_| {
+            env::var("POLICY_AUTHORITY_URL").map(|base| {
+                let trimmed = base.trim_end_matches('/');
+                format!("{trimmed}/witness")
+            })
+        })
+        .unwrap_or_else(|_| "http://127.0.0.1:8080/witness".into());
+    let witness_service = HttpWitnessService::new(witness_url);
+    let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
+    let metadata = policy.metadata(0, 0);
+    let request = preprocessor
+        .prepare(&metadata, &request_payload, &[])
+        .map_err(|err| format!("failed to obtain witness: {err:?}"))?;
+    let witness = request
+        .non_membership
+        .ok_or_else(|| "missing non-membership witness".to_string())?;
+    let canonical_bytes = witness.target_leaf.clone();
     let capsule = policy
-        .prove_payload(&canonical_bytes)
+        .prove_payload(&witness.target_leaf)
         .map_err(|err| format!("failed to prove payload: {err:?}"))?;
 
     let mut rng = SmallRng::seed_from_u64(derive_seed());
