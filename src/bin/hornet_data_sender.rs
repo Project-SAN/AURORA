@@ -1,3 +1,4 @@
+use hornet::policy::bundle::{fetch_policy_bundle, policy_bundle_url};
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
 use hornet::policy::client::{OprfWitnessService, WitnessPreprocessor};
@@ -15,7 +16,6 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use ureq;
 
 fn main() {
     if let Err(err) = run() {
@@ -54,7 +54,9 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     }
     let policy_id = decode_policy_id(&info.policy_id)?;
     let routers = load_router_states(&info.routers, &policy_id)?;
-    let policy = if let Some(bundle_url) = policy_bundle_url() {
+    let authority_url =
+        env::var("POLICY_AUTHORITY_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let policy = if let Some(bundle_url) = policy_bundle_url(&authority_url) {
         let bundle = fetch_policy_bundle(&bundle_url, &policy_id)?;
         PlonkPolicy::from_prover_bytes(policy_id, &bundle.prover_bytes, bundle.block_hashes)
             .map_err(|err| format!("failed to load proving key: {err:?}"))?
@@ -289,17 +291,6 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     Ok(())
 }
 
-fn policy_bundle_url() -> Option<String> {
-    env::var("POLICY_BUNDLE_URL")
-        .ok()
-        .or_else(|| {
-            env::var("POLICY_AUTHORITY_URL").ok().map(|base| {
-                let trimmed = base.trim_end_matches('/');
-                format!("{trimmed}/policy-bundle")
-            })
-        })
-}
-
 fn witness_url() -> String {
     env::var("POLICY_WITNESS_URL")
         .ok()
@@ -321,48 +312,6 @@ fn oprf_url() -> Option<String> {
                 format!("{trimmed}/oprf")
             })
         })
-}
-
-struct PolicyBundle {
-    prover_bytes: Vec<u8>,
-    block_hashes: Vec<[u8; 32]>,
-}
-
-#[derive(Deserialize)]
-struct PolicyBundleResponse {
-    policy_id: String,
-    prover_hex: String,
-    block_hashes_hex: Vec<String>,
-}
-
-fn fetch_policy_bundle(url: &str, policy_id: &[u8; 32]) -> Result<PolicyBundle, String> {
-    let policy_hex = encode_hex(policy_id);
-    let endpoint = format!("{}/{}", url.trim_end_matches('/'), policy_hex);
-    let response = ureq::get(&endpoint)
-        .call()
-        .map_err(|err| format!("policy bundle request failed: {err}"))?;
-    let parsed: PolicyBundleResponse = response
-        .into_json()
-        .map_err(|err| format!("policy bundle decode failed: {err}"))?;
-    if parsed.policy_id != policy_hex {
-        return Err("policy bundle policy_id mismatch".into());
-    }
-    let prover_bytes =
-        decode_hex(&parsed.prover_hex).map_err(|err| format!("prover hex decode: {err}"))?;
-    let mut block_hashes = Vec::with_capacity(parsed.block_hashes_hex.len());
-    for hex in parsed.block_hashes_hex {
-        let bytes = decode_hex(&hex).map_err(|err| format!("block hash decode: {err}"))?;
-        if bytes.len() != 32 {
-            return Err("block hash length mismatch".into());
-        }
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&bytes);
-        block_hashes.push(out);
-    }
-    Ok(PolicyBundle {
-        prover_bytes,
-        block_hashes,
-    })
 }
 
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
