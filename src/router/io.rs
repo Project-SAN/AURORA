@@ -15,14 +15,20 @@ pub struct IncomingPacket {
     pub payload: Vec<u8>,
 }
 
+pub struct IncomingConnection {
+    pub packet: IncomingPacket,
+    pub stream: TcpStream,
+}
+
 pub trait PacketListener {
-    fn next(&mut self) -> std::io::Result<IncomingPacket>;
+    fn next(&mut self) -> std::io::Result<IncomingConnection>;
 }
 
 fn packet_type_to_u8(pt: PacketType) -> u8 {
     match pt {
         PacketType::Setup => 0,
         PacketType::Data => 1,
+        PacketType::Reject => 2,
     }
 }
 
@@ -30,6 +36,7 @@ fn packet_type_from_u8(value: u8) -> std::io::Result<PacketType> {
     match value {
         0 => Ok(PacketType::Setup),
         1 => Ok(PacketType::Data),
+        2 => Ok(PacketType::Reject),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "unknown packet type",
@@ -73,9 +80,10 @@ impl TcpPacketListener {
 }
 
 impl PacketListener for TcpPacketListener {
-    fn next(&mut self) -> std::io::Result<IncomingPacket> {
+    fn next(&mut self) -> std::io::Result<IncomingConnection> {
         let (mut stream, _) = self.listener.accept()?;
-        read_incoming_packet(&mut stream, self.sv)
+        let packet = read_incoming_packet(&mut stream, self.sv)?;
+        Ok(IncomingConnection { packet, stream })
     }
 }
 
@@ -126,6 +134,43 @@ impl Forward for TcpForward {
         }
     }
 
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RejectReason {
+    PolicyViolation = 1,
+    MissingPolicyMetadata = 2,
+    PolicyMetadataMismatch = 3,
+}
+
+pub fn write_reject_frame(
+    stream: &mut TcpStream,
+    reason: RejectReason,
+    policy_id: Option<[u8; 32]>,
+) -> std::io::Result<()> {
+    let frame = encode_reject_frame_bytes(reason, policy_id);
+    stream.write_all(&frame)
+}
+
+pub fn encode_reject_frame_bytes(
+    reason: RejectReason,
+    policy_id: Option<[u8; 32]>,
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(1 + 1 + policy_id.map_or(0, |_| 32));
+    payload.push(reason as u8);
+    if let Some(id) = policy_id {
+        payload.push(1);
+        payload.extend_from_slice(&id);
+    } else {
+        payload.push(0);
+    }
+    let chdr = Chdr {
+        typ: PacketType::Reject,
+        hops: 0,
+        specific: [0u8; 16],
+    };
+    let ahdr = Ahdr { bytes: Vec::new() };
+    encode_frame_bytes(PacketDirection::Backward, &chdr, &ahdr, payload.as_slice())
 }
 
 fn format_ip(addr: &IpAddr, port: u16) -> String {
@@ -252,5 +297,22 @@ mod tests {
         assert_eq!(packet.chdr.specific, chdr.specific);
         assert_eq!(packet.ahdr.bytes, ahdr_bytes);
         assert_eq!(packet.payload, payload);
+    }
+
+    #[test]
+    fn reject_frame_contains_reason_and_policy_id() {
+        let policy_id = [0xAB; 32];
+        let frame = encode_reject_frame_bytes(RejectReason::PolicyViolation, Some(policy_id));
+        let mut cursor = Cursor::new(frame);
+        let packet = read_incoming_packet(&mut cursor, Sv([0x11; 16])).expect("read reject");
+
+        assert_eq!(packet.direction, PacketDirection::Backward);
+        assert!(matches!(packet.chdr.typ, PacketType::Reject));
+        assert_eq!(packet.chdr.hops, 0);
+        assert!(packet.ahdr.bytes.is_empty());
+        assert!(packet.payload.len() >= 2 + 32);
+        assert_eq!(packet.payload[0], RejectReason::PolicyViolation as u8);
+        assert_eq!(packet.payload[1], 1);
+        assert_eq!(&packet.payload[2..34], &policy_id);
     }
 }

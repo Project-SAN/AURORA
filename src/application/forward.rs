@@ -38,7 +38,7 @@ impl ForwardPipeline for RegistryForwardPipeline {
             .enforce(payload, validator)
             .map(Some)
             .map_err(|err| match err {
-                Error::PolicyViolation => Error::PolicyViolation,
+                Error::PolicyViolation | Error::Length => Error::PolicyViolation,
                 other => other,
             })
     }

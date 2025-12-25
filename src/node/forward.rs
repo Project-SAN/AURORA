@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
-    policy::PolicyCapsule,
     sphinx::derive_tau_tag,
     types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
 };
@@ -21,20 +20,12 @@ pub fn process_data(
     if !ctx.replay.insert(tau) {
         return Err(crate::types::Error::Replay);
     }
-    let capsule_len = if let Some(policy) = ctx.policy {
-        policy
-            .forward
-            .enforce(policy.registry, payload, policy.validator)?
-            .map(|(_, consumed)| consumed)
-    } else {
-        None
-    }
-    .or_else(|| {
-        PolicyCapsule::decode(payload.as_slice())
-            .ok()
-            .map(|(_, len)| len)
-    })
-    .unwrap_or(0);
+    let policy = ctx.policy.ok_or(Error::PolicyViolation)?;
+    let capsule_len = policy
+        .forward
+        .enforce(policy.registry, payload, policy.validator)?
+        .map(|(_, consumed)| consumed)
+        .ok_or(Error::PolicyViolation)?;
 
     use crate::types::PacketDirection;
 

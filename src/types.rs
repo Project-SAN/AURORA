@@ -33,6 +33,7 @@ pub struct Si(pub [u8; 16]);
 pub enum PacketType {
     Setup = 0x01,
     Data = 0x02,
+    Reject = 0x03,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub enum PacketDirection {
     Backward,
 }
 
+#[derive(Clone, Copy)]
 pub struct Chdr {
     pub typ: PacketType,
     pub hops: u8,

@@ -57,6 +57,7 @@ cargo run --bin hornet_sender config/localnet/policy-info.json
 
 - 入口ルータ (`policy-info.json` の先頭) に TCP でフレームを書き込んで完了します。
 - state ファイルが存在しない場合は「ルータを一度起動して state を生成してください」と表示されるため、まずルータを起動→停止して state を用意してください。
+- setup が拒否された場合は `hornet_sender reject: ...` を出力して終了コード `2` になります。
 
 ## スクリプトによる自動化
 
@@ -87,6 +88,7 @@ cargo run --bin hornet_data_sender config/localnet/policy-info.json safe.example
 - 第2引数: ポリシーに適合するホスト名。ブロック対象を指定するとクライアント側で証明が失敗します。
 - 第3引数: 任意のメッセージ文字列（省略可）。ポリシーカプセル + ターゲット葉に続いてペイロード末尾へ追加されます。
 - CLI は AHDR/CHDR/ペイロードを構築し、入口ルータ (`127.0.0.1:7101`) に forward フレームを送信します。
+- ルータがポリシー違反を検出すると `hornet_data_sender reject: ...` を出力して終了コード `2` になります。
 
 ## 動作確認
 

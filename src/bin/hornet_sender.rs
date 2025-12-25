@@ -8,13 +8,18 @@ use rand_core::RngCore;
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use x25519_dalek::x25519;
 
 fn main() {
     if let Err(err) = run() {
+        if let Some(msg) = err.strip_prefix(REJECT_PREFIX) {
+            eprintln!("hornet_sender reject: {msg}");
+            std::process::exit(2);
+        }
         eprintln!("hornet_sender error: {err}");
         std::process::exit(1);
     }
@@ -57,7 +62,18 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     let encoded = wire::encode(&state.packet)
         .map_err(|err| format!("failed to encode setup packet: {err:?}"))?;
     let frame = encode_frame(&state.packet.chdr, &encoded.header, &encoded.payload)?;
-    send_frame(&entry.bind, &frame)?;
+    let mut stream = send_frame(&entry.bind, &frame)?;
+    if let Some(reject) = read_reject_frame(&mut stream)? {
+        return Err(format!(
+            "{REJECT_PREFIX}router rejected setup: {}{}",
+            reject.reason,
+            reject
+                .policy_id
+                .as_ref()
+                .map(|id| format!(" (policy_id={})", id))
+                .unwrap_or_default()
+        ));
+    }
     println!(
         "送信完了: {} へ setup フレーム ({:?} hops)",
         entry.bind, state.packet.chdr.hops
@@ -116,6 +132,7 @@ fn encode_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, S
     frame.push(match chdr.typ {
         PacketType::Setup => 0,
         PacketType::Data => 1,
+        PacketType::Reject => return Err("reject frames are not sendable".into()),
     });
     frame.push(chdr.hops);
     frame.push(0);
@@ -127,13 +144,92 @@ fn encode_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, S
     Ok(frame)
 }
 
-fn send_frame(bind: &str, frame: &[u8]) -> Result<(), String> {
+fn send_frame(bind: &str, frame: &[u8]) -> Result<TcpStream, String> {
     let mut stream =
         TcpStream::connect(bind).map_err(|err| format!("failed to connect to {bind}: {err}"))?;
     stream
         .write_all(frame)
         .map_err(|err| format!("failed to send frame: {err}"))?;
-    Ok(())
+    Ok(stream)
+}
+
+struct RejectInfo {
+    reason: String,
+    policy_id: Option<String>,
+}
+
+const REJECT_PREFIX: &str = "REJECT:";
+
+fn read_reject_frame(stream: &mut TcpStream) -> Result<Option<RejectInfo>, String> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .map_err(|err| format!("set read timeout failed: {err}"))?;
+    let mut header = [0u8; 4];
+    match stream.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+        Err(err) if err.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
+        Err(err) => return Err(format!("read header failed: {err}")),
+    }
+    let pkt_type = header[1];
+    if pkt_type != 2 {
+        return Ok(None);
+    }
+    let mut specific = [0u8; 16];
+    stream
+        .read_exact(&mut specific)
+        .map_err(|err| format!("read specific failed: {err}"))?;
+    let mut len_buf = [0u8; 4];
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|err| format!("read ahdr len failed: {err}"))?;
+    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|err| format!("read payload len failed: {err}"))?;
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    if ahdr_len > 0 {
+        let mut ahdr_buf = vec![0u8; ahdr_len];
+        stream
+            .read_exact(&mut ahdr_buf)
+            .map_err(|err| format!("read ahdr failed: {err}"))?;
+    }
+    let mut payload = vec![0u8; payload_len];
+    if payload_len > 0 {
+        stream
+            .read_exact(&mut payload)
+            .map_err(|err| format!("read payload failed: {err}"))?;
+    }
+    if payload.len() < 2 {
+        return Err("reject payload too short".into());
+    }
+    let reason = match payload[0] {
+        1 => "policy violation",
+        2 => "missing policy metadata",
+        3 => "policy metadata mismatch",
+        _ => "unknown reject reason",
+    }
+    .to_string();
+    let has_policy = payload[1] == 1;
+    let policy_id = if has_policy {
+        if payload.len() < 2 + 32 {
+            return Err("reject payload missing policy_id".into());
+        }
+        Some(encode_hex(&payload[2..34]))
+    } else {
+        None
+    };
+    Ok(Some(RejectInfo { reason, policy_id }))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(TABLE[(b >> 4) as usize] as char);
+        out.push(TABLE[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 #[derive(Deserialize)]
