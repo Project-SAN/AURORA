@@ -1,5 +1,8 @@
 use crate::policy::blocklist::{self, Blocklist, BlocklistEntry, MerkleProof};
 use crate::policy::oprf;
+use crate::policy::endpoint::{
+    authority_url_from_env, oprf_url_from_env, witness_url_from_env,
+};
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
@@ -171,6 +174,12 @@ impl HttpProofService {
         }
     }
 
+    pub fn from_env(default_authority: &str) -> Self {
+        let authority = authority_url_from_env(default_authority);
+        let endpoint = format!("{}/prove", authority.trim_end_matches('/'));
+        Self::new(endpoint)
+    }
+
     pub fn obtain_with_preprocessor<E>(
         &self,
         preprocessor: &ProofPreprocessor<E>,
@@ -215,6 +224,12 @@ impl HttpWitnessService {
             agent,
         }
     }
+
+    pub fn from_env(default_authority: &str) -> Self {
+        let authority = authority_url_from_env(default_authority);
+        let endpoint = witness_url_from_env(&authority);
+        Self::new(endpoint)
+    }
 }
 
 impl WitnessService for HttpWitnessService {
@@ -255,6 +270,14 @@ impl OprfWitnessService {
             witness_endpoint: witness_endpoint.into(),
             agent,
         }
+    }
+
+    pub fn from_env(default_authority: &str) -> Result<Self> {
+        let authority = authority_url_from_env(default_authority);
+        let witness_endpoint = witness_url_from_env(&authority);
+        let oprf_endpoint =
+            oprf_url_from_env(&authority).ok_or(Error::Crypto)?;
+        Ok(Self::new(oprf_endpoint, witness_endpoint))
     }
 }
 
