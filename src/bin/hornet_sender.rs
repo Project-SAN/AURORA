@@ -2,6 +2,7 @@ use hornet::router::storage::StoredState;
 use hornet::setup::directory;
 use hornet::setup::wire;
 use hornet::types::{Chdr, PacketType};
+use hornet::utils::encode_hex;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_core::RngCore;
@@ -221,16 +222,6 @@ fn read_reject_frame(stream: &mut TcpStream) -> Result<Option<RejectInfo>, Strin
         None
     };
     Ok(Some(RejectInfo { reason, policy_id }))
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(TABLE[(b >> 4) as usize] as char);
-        out.push(TABLE[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[derive(Deserialize)]

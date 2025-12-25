@@ -5,7 +5,7 @@ use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
 use hornet::types::{Nonce, PacketType, Si};
-use hornet::utils::decode_hex;
+use hornet::utils::{decode_hex, encode_hex};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
 use serde::Deserialize;
@@ -539,16 +539,6 @@ fn read_reject_frame(stream: &mut TcpStream) -> Result<Option<RejectInfo>, Strin
         None
     };
     Ok(Some(RejectInfo { reason, policy_id }))
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(TABLE[(b >> 4) as usize] as char);
-        out.push(TABLE[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 fn decode_policy_id(hex: &str) -> Result<[u8; 32], String> {
