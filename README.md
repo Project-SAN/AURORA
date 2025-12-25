@@ -48,6 +48,8 @@ cargo run --features policy-client
 
 1. 別ターミナルで PA を起動:
    ```bash
+   # OPRF key を固定したい場合は POLICY_OPRF_KEY_HEX を設定
+   export POLICY_OPRF_KEY_HEX=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
    cargo run
    ```
 2. クライアントから証明を生成して送信（例では `safe.example` へのアクセスを想定）:
@@ -55,7 +57,13 @@ cargo run --features policy-client
    cargo run --bin zkmb_client -- safe.example
    ```
 
-`POLICY_BLOCKLIST_JSON` で使用するブロックリスト JSON を指定できます。PA の URL を変更したい場合は `POLICY_AUTHORITY_URL` をエクスポートしてください（デフォルトは `http://127.0.0.1:8080`）。ブロックリストに含まれるホストを指定すると、クライアント側で証明生成が失敗しポリシー違反として扱われます。
+`POLICY_ID_HEX` を必ず指定してください（PA の `/policy-bundle/{policy_id}` から proving key を取得する前提です）。PA の URL は `POLICY_AUTHORITY_URL` で変更できます（デフォルトは `http://127.0.0.1:8080`）。`POLICY_OPRF_URL` を明示しない場合は `POLICY_AUTHORITY_URL/oprf` を利用します。ブロックリストに含まれるホストを指定すると、クライアント側で証明生成が失敗しポリシー違反として扱われます。
+
+### OPRF 前提の環境変数 (PoC)
+- `POLICY_ID_HEX`（必須）: Policy ID を hex で指定（`/policy-bundle/{policy_id}` 取得用）
+- `POLICY_AUTHORITY_URL`（任意）: PA ベースURL（デフォルト `http://127.0.0.1:8080`）
+- `POLICY_OPRF_URL`（任意）: OPRF 評価API（省略時は `{POLICY_AUTHORITY_URL}/oprf`）
+- `POLICY_OPRF_KEY_HEX`（PA側）: OPRF キーの seed（hex）
 
 ## AURORA Router Runtime (実験的)
 

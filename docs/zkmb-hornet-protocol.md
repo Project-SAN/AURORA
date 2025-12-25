@@ -181,6 +181,11 @@ The current `POST /prove` endpoint requires the client to submit plaintext targe
 
 TEE-based attestation and Verifiable Oblivious PRF (VOPRF) are combined so that operators cannot observe targets while the PA proves policy compliance.
 
+### Current PoC (non-VOPRF)
+- The implementation currently uses a simple Ristretto OPRF (`/oprf`) instead of a full VOPRF.
+- PA builds the blocklist as `F_k(b_i)` and exposes `/policy-bundle/{policy_id}` plus `/witness` that accepts `target_hash_hex`.
+- Clients obtain `policy_id` + proving key from `/policy-bundle/{policy_id}`, call `/oprf` to evaluate `F_k(x)`, then request witnesses with the OPRF output.
+
 ### New Components
 - **Attested TEE**: The `/prove` endpoint runs inside an enclave; clients verify quotes/binary measurements before proceeding.
 - **VOPRF key pair**: The PA evaluates `y = F_k(x)` without learning the input.

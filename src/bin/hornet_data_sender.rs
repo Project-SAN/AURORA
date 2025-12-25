@@ -1,6 +1,6 @@
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
-use hornet::policy::client::{HttpWitnessService, OprfWitnessService, WitnessPreprocessor};
+use hornet::policy::client::{OprfWitnessService, WitnessPreprocessor};
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
@@ -82,20 +82,14 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     request_payload.extend_from_slice(payload_tail);
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
     let witness_url = witness_url();
+    let oprf_url =
+        oprf_url().ok_or_else(|| "POLICY_OPRF_URL or POLICY_AUTHORITY_URL is required".to_string())?;
     let metadata = policy.metadata(0, 0);
-    let request = if let Some(oprf_url) = oprf_url() {
-        let witness_service = OprfWitnessService::new(oprf_url, witness_url);
-        let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
-        preprocessor
-            .prepare(&metadata, &request_payload, &[])
-            .map_err(|err| format!("failed to obtain witness: {err:?}"))?
-    } else {
-        let witness_service = HttpWitnessService::new(witness_url);
-        let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
-        preprocessor
-            .prepare(&metadata, &request_payload, &[])
-            .map_err(|err| format!("failed to obtain witness: {err:?}"))?
-    };
+    let witness_service = OprfWitnessService::new(oprf_url, witness_url);
+    let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
+    let request = preprocessor
+        .prepare(&metadata, &request_payload, &[])
+        .map_err(|err| format!("failed to obtain witness: {err:?}"))?;
     let witness = request
         .non_membership
         .ok_or_else(|| "missing non-membership witness".to_string())?;
@@ -215,6 +209,8 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
 
     let capsule_bytes = capsule.encode();
     let mut encrypted_tail = Vec::new();
+    let leaf_len = canonical_bytes.len() as u32;
+    encrypted_tail.extend_from_slice(&leaf_len.to_le_bytes());
     encrypted_tail.extend_from_slice(&canonical_bytes);
     encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
     hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
