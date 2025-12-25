@@ -1,4 +1,5 @@
 pub mod blocklist;
+pub mod bundle;
 #[cfg(feature = "http-client")]
 pub mod client;
 pub mod extract;
