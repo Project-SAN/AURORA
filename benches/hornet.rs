@@ -131,6 +131,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                                 registry,
                                 validator,
                                 forward: forward_pipeline,
+                                expected_policy_id: None,
                             }),
                         };
                         hornet::node::forward::process_data(
