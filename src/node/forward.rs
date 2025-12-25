@@ -26,11 +26,15 @@ pub fn process_data(
         return Err(crate::types::Error::Replay);
     }
     let policy = ctx.policy.ok_or(Error::PolicyViolation)?;
-    let capsule_len = policy
+    let (capsule, capsule_len) = policy
         .forward
         .enforce(policy.registry, payload, policy.validator)?
-        .map(|(_, consumed)| consumed)
         .ok_or(Error::PolicyViolation)?;
+    if let Some(expected) = policy.expected_policy_id {
+        if capsule.policy_id != expected {
+            return Err(Error::PolicyViolation);
+        }
+    }
 
     use crate::types::PacketDirection;
 

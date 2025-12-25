@@ -352,6 +352,7 @@ mod tests {
                 registry: &registry,
                 validator: &validator,
                 forward: &forward_pipeline,
+                expected_policy_id: None,
             }),
         };
 

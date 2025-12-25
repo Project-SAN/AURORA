@@ -22,6 +22,7 @@ pub struct Router {
     validator: PlonkCapsuleValidator,
     forward_pipeline: RegistryForwardPipeline,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
+    expected_policy_id: Option<[u8; 32]>,
 }
 
 impl Router {
@@ -31,6 +32,7 @@ impl Router {
             validator: PlonkCapsuleValidator::new(),
             forward_pipeline: RegistryForwardPipeline::new(),
             routes: BTreeMap::new(),
+            expected_policy_id: None,
         }
     }
 
@@ -73,7 +75,12 @@ impl Router {
             registry: &self.registry,
             validator: &self.validator,
             forward: &self.forward_pipeline,
+            expected_policy_id: self.expected_policy_id,
         })
+    }
+
+    pub fn set_expected_policy_id(&mut self, policy_id: Option<[u8; 32]>) {
+        self.expected_policy_id = policy_id;
     }
 
     pub fn registry(&self) -> &PolicyRegistry {

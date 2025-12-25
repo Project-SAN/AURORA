@@ -48,6 +48,7 @@ pub struct PolicyRuntime<'a> {
     pub registry: &'a crate::policy::PolicyRegistry,
     pub validator: &'a dyn crate::policy::CapsuleValidator,
     pub forward: &'a dyn ForwardPipeline,
+    pub expected_policy_id: Option<crate::policy::PolicyId>,
 }
 
 pub struct NodeCtx<'a> {
