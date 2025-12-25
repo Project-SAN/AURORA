@@ -92,8 +92,38 @@ impl PlonkPolicy {
         })
     }
 
+    pub fn from_prover_bytes(
+        policy_id: PolicyId,
+        prover_bytes: &[u8],
+        block_hashes: Vec<[u8; 32]>,
+    ) -> Result<Self> {
+        let prover = Prover::try_from_bytes(prover_bytes).map_err(|_| Error::Crypto)?;
+        let mut hashes = Vec::with_capacity(block_hashes.len());
+        for bytes in block_hashes {
+            let scalar = BlsScalar::from_bytes(&bytes).map_err(|_| Error::Crypto)?;
+            hashes.push(scalar);
+        }
+        Ok(Self {
+            prover,
+            verifier_bytes: Vec::new(),
+            policy_id,
+            block_hashes: hashes,
+        })
+    }
+
     pub fn policy_id(&self) -> &PolicyId {
         &self.policy_id
+    }
+
+    pub fn prover_bytes(&self) -> Vec<u8> {
+        self.prover.to_bytes()
+    }
+
+    pub fn block_hashes_bytes(&self) -> Vec<[u8; 32]> {
+        self.block_hashes
+            .iter()
+            .map(|hash| hash.to_bytes())
+            .collect()
     }
 
     pub fn metadata(&self, expiry: u32, flags: u16) -> PolicyMetadata {

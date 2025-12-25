@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use actix_web::{web, App, HttpServer};
 use hornet::api::hello::{hello, manual_hello};
-use hornet::api::prove::{prove, verify, witness, PolicyAuthorityState, ProofPipelineHandle};
+use hornet::api::prove::{
+    policy_bundle, prove, verify, witness, PolicyAuthorityState, ProofPipelineHandle,
+};
 use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::{self, PlonkPolicy};
@@ -26,6 +28,7 @@ async fn main() -> io::Result<()> {
             .service(prove)
             .service(verify)
             .service(witness)
+            .service(policy_bundle)
             .route("/hey", web::get().to(manual_hello))
     })
     .bind(("127.0.0.1", 8080))?
