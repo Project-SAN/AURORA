@@ -859,6 +859,7 @@ fn packet_type_to_u8(pt: hornet::types::PacketType) -> u8 {
     match pt {
         hornet::types::PacketType::Setup => 0,
         hornet::types::PacketType::Data => 1,
+        hornet::types::PacketType::Reject => 2,
     }
 }
 
@@ -866,6 +867,7 @@ fn packet_type_from_u8(value: u8) -> io::Result<hornet::types::PacketType> {
     match value {
         0 => Ok(hornet::types::PacketType::Setup),
         1 => Ok(hornet::types::PacketType::Data),
+        2 => Ok(hornet::types::PacketType::Reject),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unknown packet type",
