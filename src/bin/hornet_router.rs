@@ -25,6 +25,7 @@ fn main() {
     }
     let storage = FileRouterStorage::new(&config.storage_path);
     let mut router = Router::new();
+    router.set_expected_policy_id(config.expected_policy_id);
     let secrets = load_state(&storage, &mut router);
     let directory_path =
         env::var("HORNET_DIRECTORY_PATH").unwrap_or_else(|_| "directory.json".into());

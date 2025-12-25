@@ -7,6 +7,7 @@ use std::time::Duration;
 pub struct RouterConfig {
     pub directory_url: String,
     pub directory_secret: String,
+    pub expected_policy_id: Option<[u8; 32]>,
     #[cfg(feature = "std")]
     pub directory_poll_interval: Duration,
     #[cfg(feature = "std")]
@@ -18,6 +19,7 @@ impl RouterConfig {
         Self {
             directory_url: directory_url.into(),
             directory_secret: directory_secret.into(),
+            expected_policy_id: None,
             #[cfg(feature = "std")]
             directory_poll_interval: Duration::from_secs(60),
             #[cfg(feature = "std")]
@@ -35,6 +37,7 @@ impl RouterConfig {
     #[cfg(feature = "std")]
     pub fn from_env() -> Result<Self> {
         use std::env;
+        use crate::utils::decode_hex;
         let url =
             env::var("HORNET_DIR_URL").unwrap_or_else(|_| "https://example.com/directory".into());
         let secret = env::var("HORNET_DIR_SECRET").unwrap_or_else(|_| "shared-secret".into());
@@ -44,9 +47,22 @@ impl RouterConfig {
             .unwrap_or(60);
         let storage =
             env::var("HORNET_STORAGE_PATH").unwrap_or_else(|_| "router_state.json".into());
+        let expected_policy_id = match env::var("HORNET_POLICY_ID_HEX") {
+            Ok(hex) => {
+                let bytes = decode_hex(hex.as_str()).map_err(|_| crate::types::Error::Length)?;
+                if bytes.len() != 32 {
+                    return Err(crate::types::Error::Length);
+                }
+                let mut id = [0u8; 32];
+                id.copy_from_slice(&bytes);
+                Some(id)
+            }
+            Err(_) => None,
+        };
         let mut cfg = Self::new(url, secret);
         cfg.directory_poll_interval = Duration::from_secs(poll);
         cfg.storage_path = storage;
+        cfg.expected_policy_id = expected_policy_id;
         cfg.validate()?;
         Ok(cfg)
     }

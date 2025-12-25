@@ -53,26 +53,22 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     if info.routers.is_empty() {
         return Err("policy-info has no routers".into());
     }
-    let policy_id = decode_policy_id(&info.policy_id)?;
+    let (policy_open_id, policy_parse_id, policy_check_id) = resolve_policy_ids(&info)?;
     let authority_url = authority_url_from_env("http://127.0.0.1:8080");
-    let routers = load_router_states(&info.routers, &policy_id)?;
-    let policy = if let Some(bundle_url) = policy_bundle_url_from_env(&authority_url) {
-        let bundle = fetch_policy_bundle(&bundle_url, &policy_id)?;
-        PlonkPolicy::from_prover_bytes(policy_id, &bundle.prover_bytes, bundle.block_hashes)
-            .map_err(|err| format!("failed to load proving key: {err:?}"))?
+    let routers = load_router_states(&info.routers, &policy_open_id)?;
+    let bundle_url = policy_bundle_url_from_env(&authority_url);
+    let policy_open = load_policy_for_id(&policy_open_id, bundle_url.as_deref())?;
+    let policy_parse = if policy_parse_id == policy_open_id {
+        policy_open.clone()
     } else {
-        let blocklist_path =
-            env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| "config/blocklist.json".into());
-        let block_json = fs::read_to_string(&blocklist_path)
-            .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
-        let blocklist = Blocklist::from_json(&block_json)
-            .map_err(|err| format!("blocklist parse error: {err:?}"))?;
-        let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
-            .map_err(|err| format!("failed to build policy: {err:?}"))?;
-        if policy.policy_id() != &policy_id {
-            return Err("policy-id mismatch between policy-info and blocklist".into());
-        }
-        policy
+        load_policy_for_id(&policy_parse_id, bundle_url.as_deref())?
+    };
+    let policy_check = if policy_check_id == policy_open_id {
+        policy_open.clone()
+    } else if policy_check_id == policy_parse_id {
+        policy_parse.clone()
+    } else {
+        load_policy_for_id(&policy_check_id, bundle_url.as_deref())?
     };
 
     // Resolve target host
@@ -86,7 +82,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let witness_url = witness_url_from_env(&authority_url);
     let oprf_url =
         oprf_url_from_env(&authority_url).ok_or_else(|| "POLICY_OPRF_URL or POLICY_AUTHORITY_URL is required".to_string())?;
-    let metadata = policy.metadata(0, 0);
+    let metadata = policy_check.metadata(0, 0);
     let witness_service = OprfWitnessService::new(oprf_url, witness_url);
     let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
     let request = preprocessor
@@ -96,9 +92,15 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         .non_membership
         .ok_or_else(|| "missing non-membership witness".to_string())?;
     let canonical_bytes = witness.target_leaf.clone();
-    let capsule = policy
+    let capsule_open = policy_open
         .prove_payload(&witness.target_leaf)
-        .map_err(|err| format!("failed to prove payload: {err:?}"))?;
+        .map_err(|err| format!("failed to prove opening payload: {err:?}"))?;
+    let capsule_parse = policy_parse
+        .prove_payload(&witness.target_leaf)
+        .map_err(|err| format!("failed to prove parse payload: {err:?}"))?;
+    let capsule_check = policy_check
+        .prove_payload(&witness.target_leaf)
+        .map_err(|err| format!("failed to prove policy payload: {err:?}"))?;
 
     let mut rng = SmallRng::seed_from_u64(derive_seed());
     let hops = routers.len();
@@ -122,7 +124,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             routing::segment_from_elems(&[elem])
         } else {
             // Intermediate hop: use stored route
-            let route = select_route(state, &policy_id)?;
+            let route = select_route(state, &policy_open_id)?;
             route.segment
         };
 
@@ -209,7 +211,6 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     full_payload.extend_from_slice(&ahdr_b.bytes);
     full_payload.extend_from_slice(&request_payload);
 
-    let capsule_bytes = capsule.encode();
     let mut encrypted_tail = Vec::new();
     let leaf_len = canonical_bytes.len() as u32;
     encrypted_tail.extend_from_slice(&leaf_len.to_le_bytes());
@@ -217,8 +218,10 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
     hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
-    let mut payload = capsule_bytes;
-    payload.extend_from_slice(&encrypted_tail);
+    let mut payload = encrypted_tail;
+    for capsule in [capsule_open, capsule_parse, capsule_check].iter().rev() {
+        capsule.prepend_to(&mut payload);
+    }
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
     let mut stream = send_frame(entry, &frame)?;
@@ -289,6 +292,55 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     println!("Received Response:\n{}", String::from_utf8_lossy(&encrypted_response));
 
     Ok(())
+}
+
+fn resolve_policy_ids(info: &PolicyInfo) -> Result<([u8; 32], [u8; 32], [u8; 32]), String> {
+    let open_hex = env::var("POLICY_OPEN_ID_HEX")
+        .ok()
+        .or_else(|| env::var("POLICY_ID_HEX").ok())
+        .or_else(|| info.policy_id_open.clone())
+        .unwrap_or_else(|| info.policy_id.clone());
+    let parse_hex = env::var("POLICY_PARSE_ID_HEX")
+        .ok()
+        .or_else(|| info.policy_id_parse.clone());
+    let check_hex = env::var("POLICY_CHECK_ID_HEX")
+        .ok()
+        .or_else(|| info.policy_id_check.clone());
+    let open_id = decode_policy_id(&open_hex)?;
+    let parse_id = if let Some(hex) = parse_hex {
+        decode_policy_id(&hex)?
+    } else {
+        open_id
+    };
+    let check_id = if let Some(hex) = check_hex {
+        decode_policy_id(&hex)?
+    } else {
+        open_id
+    };
+    Ok((open_id, parse_id, check_id))
+}
+
+fn load_policy_for_id(
+    policy_id: &[u8; 32],
+    bundle_url: Option<&str>,
+) -> Result<PlonkPolicy, String> {
+    if let Some(bundle_url) = bundle_url {
+        let bundle = fetch_policy_bundle(bundle_url, policy_id)?;
+        return PlonkPolicy::from_prover_bytes(*policy_id, &bundle.prover_bytes, bundle.block_hashes)
+            .map_err(|err| format!("failed to load proving key: {err:?}"));
+    }
+    let blocklist_path =
+        env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| "config/blocklist.json".into());
+    let block_json = fs::read_to_string(&blocklist_path)
+        .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
+    let blocklist = Blocklist::from_json(&block_json)
+        .map_err(|err| format!("blocklist parse error: {err:?}"))?;
+    let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
+        .map_err(|err| format!("failed to build policy: {err:?}"))?;
+    if policy.policy_id() != policy_id {
+        return Err("policy-id mismatch between policy-info and blocklist".into());
+    }
+    Ok(policy)
 }
 
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
@@ -497,6 +549,12 @@ fn derive_seed() -> u64 {
 #[derive(Clone, Deserialize)]
 struct PolicyInfo {
     policy_id: String,
+    #[serde(default)]
+    policy_id_open: Option<String>,
+    #[serde(default)]
+    policy_id_parse: Option<String>,
+    #[serde(default)]
+    policy_id_check: Option<String>,
     routers: Vec<RouterInfo>,
 }
 
