@@ -144,6 +144,14 @@ pub trait ProofService {
     fn obtain_proof(&self, request: &ProofRequest<'_>) -> Result<PolicyCapsule>;
 }
 
+pub trait WitnessService {
+    fn obtain_witness(
+        &self,
+        policy_id: &[u8; 32],
+        target_leaf: &[u8],
+    ) -> Result<NonMembershipWitness>;
+}
+
 #[derive(Clone, Debug)]
 pub struct HttpProofService {
     endpoint: String,
@@ -186,6 +194,44 @@ impl ProofService for HttpProofService {
             .map_err(|_| Error::Crypto)?;
         let parsed: ProofServiceResponse = response.into_json().map_err(|_| Error::Crypto)?;
         parsed.into_capsule(&request.policy.policy_id)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct HttpWitnessService {
+    endpoint: String,
+    agent: ureq::Agent,
+}
+
+impl HttpWitnessService {
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        let agent = ureq::AgentBuilder::new().build();
+        Self {
+            endpoint: endpoint.into(),
+            agent,
+        }
+    }
+}
+
+impl WitnessService for HttpWitnessService {
+    fn obtain_witness(
+        &self,
+        policy_id: &[u8; 32],
+        target_leaf: &[u8],
+    ) -> Result<NonMembershipWitness> {
+        let body = WitnessRequest {
+            policy_id: hex::encode(policy_id),
+            target_leaf_hex: hex::encode(target_leaf),
+        };
+        let json = serde_json::to_string(&body).map_err(|_| Error::Crypto)?;
+        let response = self
+            .agent
+            .post(self.endpoint.as_str())
+            .set("content-type", "application/json")
+            .send_string(&json)
+            .map_err(|_| Error::Crypto)?;
+        let parsed: WitnessResponse = response.into_json().map_err(|_| Error::Crypto)?;
+        parsed.into_witness()
     }
 }
 
@@ -252,6 +298,68 @@ impl MerkleProofRequest {
             leaf_hash_hex: hex::encode(&proof.leaf_hash),
             siblings_hex: proof.siblings.iter().map(|sib| hex::encode(sib)).collect(),
         }
+    }
+}
+
+#[derive(Serialize)]
+struct WitnessRequest {
+    policy_id: String,
+    target_leaf_hex: String,
+}
+
+#[derive(Deserialize)]
+struct WitnessResponse {
+    root_hex: String,
+    target_leaf_hex: String,
+    target_hash_hex: String,
+    gap_index: u64,
+    left: Option<MerkleProofResponse>,
+    right: Option<MerkleProofResponse>,
+}
+
+impl WitnessResponse {
+    fn into_witness(self) -> Result<NonMembershipWitness> {
+        let target_leaf = hex::decode_str(&self.target_leaf_hex).map_err(|_| Error::Crypto)?;
+        let target_hash = decode_fixed_32(&self.target_hash_hex)?;
+        let blocklist_root = decode_fixed_32(&self.root_hex)?;
+        let left = self.left.map(MerkleProofResponse::into_proof).transpose()?;
+        let right = self
+            .right
+            .map(MerkleProofResponse::into_proof)
+            .transpose()?;
+        Ok(NonMembershipWitness {
+            target_leaf,
+            target_hash,
+            blocklist_root,
+            gap_index: self.gap_index as usize,
+            left,
+            right,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct MerkleProofResponse {
+    index: u64,
+    leaf_hex: String,
+    leaf_hash_hex: String,
+    siblings_hex: Vec<String>,
+}
+
+impl MerkleProofResponse {
+    fn into_proof(self) -> Result<MerkleProof> {
+        let leaf_bytes = hex::decode_str(&self.leaf_hex).map_err(|_| Error::Crypto)?;
+        let leaf_hash = decode_fixed_32(&self.leaf_hash_hex)?;
+        let mut siblings = Vec::with_capacity(self.siblings_hex.len());
+        for sib_hex in self.siblings_hex {
+            siblings.push(decode_fixed_32(&sib_hex)?);
+        }
+        Ok(MerkleProof {
+            index: self.index as usize,
+            leaf_bytes,
+            leaf_hash,
+            siblings,
+        })
     }
 }
 
@@ -341,6 +449,63 @@ impl<E: Extractor + Send + Sync + 'static> ProofService for PlonkProofService<E>
     }
 }
 
+pub struct WitnessPreprocessor<E, W> {
+    extractor: E,
+    witness: W,
+    fail_open: bool,
+}
+
+impl<E, W> WitnessPreprocessor<E, W>
+where
+    E: Extractor,
+    W: WitnessService,
+{
+    pub fn new(extractor: E, witness: W) -> Self {
+        Self {
+            extractor,
+            witness,
+            fail_open: false,
+        }
+    }
+
+    pub fn fail_open(mut self, enabled: bool) -> Self {
+        self.fail_open = enabled;
+        self
+    }
+
+    pub fn prepare<'a>(
+        &self,
+        policy: &'a PolicyMetadata,
+        payload: &'a [u8],
+        aux: &'a [u8],
+    ) -> Result<ProofRequest<'a>> {
+        let target = self
+            .extractor
+            .extract(payload)
+            .map_err(|_| Error::PolicyViolation)?;
+        let entry = blocklist::entry_from_target(&target)?;
+        let leaf = entry.leaf_bytes();
+        match self.witness.obtain_witness(&policy.policy_id, &leaf) {
+            Ok(witness) => Ok(ProofRequest {
+                policy,
+                payload,
+                aux,
+                non_membership: Some(witness),
+            }),
+            Err(err) if self.fail_open => {
+                let _ = err;
+                Ok(ProofRequest {
+                    policy,
+                    payload,
+                    aux,
+                    non_membership: None,
+                })
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
 mod hex {
     use alloc::string::String;
     use alloc::vec::Vec;
@@ -395,6 +560,16 @@ mod hex {
             }
         }
     }
+}
+
+fn decode_fixed_32(hex_str: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode_str(hex_str).map_err(|_| Error::Crypto)?;
+    if bytes.len() != 32 {
+        return Err(Error::Crypto);
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 #[cfg(test)]

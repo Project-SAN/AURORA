@@ -395,6 +395,7 @@ fn read_reject_frame(stream: &mut TcpStream) -> Result<Option<RejectInfo>, Strin
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
         Err(err) if err.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(err) => return Err(format!("read header failed: {err}")),
     }
     let pkt_type = header[1];
