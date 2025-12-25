@@ -3,6 +3,7 @@ use crate::policy::oprf;
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
+use crate::utils::{decode_hex, encode_hex};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -223,8 +224,8 @@ impl WitnessService for HttpWitnessService {
         target_leaf: &[u8],
     ) -> Result<NonMembershipWitness> {
         let body = WitnessRequest {
-            policy_id: hex::encode(policy_id),
-            target_leaf_hex: Some(hex::encode(target_leaf)),
+            policy_id: encode_hex(policy_id),
+            target_leaf_hex: Some(encode_hex(target_leaf)),
             target_hash_hex: None,
         };
         let json = serde_json::to_string(&body).map_err(|_| Error::Crypto)?;
@@ -266,8 +267,8 @@ impl WitnessService for OprfWitnessService {
         let mut rng = SmallRng::from_seed(oprf_seed(policy_id, target_leaf));
         let (blind, blinded) = oprf::blind(target_leaf, &mut rng);
         let oprf_body = OprfRequest {
-            policy_id: hex::encode(policy_id),
-            blinded_hex: hex::encode(&blinded),
+            policy_id: encode_hex(policy_id),
+            blinded_hex: encode_hex(&blinded),
         };
         let oprf_json = serde_json::to_string(&oprf_body).map_err(|_| Error::Crypto)?;
         let response = self
@@ -281,9 +282,9 @@ impl WitnessService for OprfWitnessService {
         let unblinded = oprf::unblind(&blind, &evaluated).ok_or(Error::Crypto)?;
 
         let witness_body = WitnessRequest {
-            policy_id: hex::encode(policy_id),
+            policy_id: encode_hex(policy_id),
             target_leaf_hex: None,
-            target_hash_hex: Some(hex::encode(&unblinded)),
+            target_hash_hex: Some(encode_hex(&unblinded)),
         };
         let witness_json = serde_json::to_string(&witness_body).map_err(|_| Error::Crypto)?;
         let response = self
@@ -313,9 +314,9 @@ impl ProofServiceRequest {
             .as_ref()
             .map(NonMembershipRequest::from_witness);
         Self {
-            policy_id: hex::encode(&req.policy.policy_id),
-            payload_hex: hex::encode(req.payload),
-            aux_hex: hex::encode(req.aux),
+            policy_id: encode_hex(&req.policy.policy_id),
+            payload_hex: encode_hex(req.payload),
+            aux_hex: encode_hex(req.aux),
             non_membership,
         }
     }
@@ -334,9 +335,9 @@ struct NonMembershipRequest {
 impl NonMembershipRequest {
     fn from_witness(witness: &NonMembershipWitness) -> Self {
         Self {
-            target_leaf_hex: hex::encode(&witness.target_leaf),
-            target_hash_hex: hex::encode(&witness.target_hash),
-            root_hex: hex::encode(&witness.blocklist_root),
+            target_leaf_hex: encode_hex(&witness.target_leaf),
+            target_hash_hex: encode_hex(&witness.target_hash),
+            root_hex: encode_hex(&witness.blocklist_root),
             gap_index: witness.gap_index as u64,
             left: witness.left.as_ref().map(MerkleProofRequest::from_proof),
             right: witness.right.as_ref().map(MerkleProofRequest::from_proof),
@@ -356,9 +357,9 @@ impl MerkleProofRequest {
     fn from_proof(proof: &MerkleProof) -> Self {
         Self {
             index: proof.index as u64,
-            leaf_hex: hex::encode(&proof.leaf_bytes),
-            leaf_hash_hex: hex::encode(&proof.leaf_hash),
-            siblings_hex: proof.siblings.iter().map(|sib| hex::encode(sib)).collect(),
+            leaf_hex: encode_hex(&proof.leaf_bytes),
+            leaf_hash_hex: encode_hex(&proof.leaf_hash),
+            siblings_hex: proof.siblings.iter().map(|sib| encode_hex(sib)).collect(),
         }
     }
 }
@@ -395,7 +396,7 @@ struct WitnessResponse {
 
 impl WitnessResponse {
     fn into_witness(self) -> Result<NonMembershipWitness> {
-        let target_leaf = hex::decode_str(&self.target_leaf_hex).map_err(|_| Error::Crypto)?;
+        let target_leaf = decode_hex_bytes(&self.target_leaf_hex)?;
         let target_hash = decode_fixed_32(&self.target_hash_hex)?;
         let blocklist_root = decode_fixed_32(&self.root_hex)?;
         let left = self.left.map(MerkleProofResponse::into_proof).transpose()?;
@@ -424,7 +425,7 @@ struct MerkleProofResponse {
 
 impl MerkleProofResponse {
     fn into_proof(self) -> Result<MerkleProof> {
-        let leaf_bytes = hex::decode_str(&self.leaf_hex).map_err(|_| Error::Crypto)?;
+        let leaf_bytes = decode_hex_bytes(&self.leaf_hex)?;
         let leaf_hash = decode_fixed_32(&self.leaf_hash_hex)?;
         let mut siblings = Vec::with_capacity(self.siblings_hex.len());
         for sib_hex in self.siblings_hex {
@@ -449,10 +450,10 @@ struct ProofServiceResponse {
 
 impl ProofServiceResponse {
     fn into_capsule(self, policy_id: &[u8; 32]) -> Result<PolicyCapsule> {
-        let proof = hex::decode(self.proof_hex).map_err(|_| Error::Crypto)?;
-        let commitment = hex::decode(self.commitment_hex).map_err(|_| Error::Crypto)?;
+        let proof = decode_hex_bytes(&self.proof_hex)?;
+        let commitment = decode_hex_bytes(&self.commitment_hex)?;
         let aux = if let Some(aux_hex) = self.aux_hex {
-            hex::decode(aux_hex).map_err(|_| Error::Crypto)?
+            decode_hex_bytes(&aux_hex)?
         } else {
             Vec::new()
         };
@@ -582,70 +583,18 @@ where
     }
 }
 
-mod hex {
-    use alloc::string::String;
-    use alloc::vec::Vec;
-    use core::fmt;
-
-    pub fn encode(bytes: &[u8]) -> String {
-        const TABLE: &[u8; 16] = b"0123456789abcdef";
-        let mut out = String::with_capacity(bytes.len() * 2);
-        for &b in bytes {
-            out.push(TABLE[(b >> 4) as usize] as char);
-            out.push(TABLE[(b & 0x0f) as usize] as char);
-        }
-        out
-    }
-
-    pub fn decode(input: String) -> core::result::Result<Vec<u8>, HexError> {
-        decode_str(input.as_str())
-    }
-
-    pub fn decode_str(input: &str) -> core::result::Result<Vec<u8>, HexError> {
-        let mut buf = Vec::with_capacity(input.len() / 2);
-        let mut chars = input.chars();
-        while let Some(high) = chars.next() {
-            let low = chars.next().ok_or(HexError::OddLength)?;
-            let h = nibble(high)?;
-            let l = nibble(low)?;
-            buf.push((h << 4) | l);
-        }
-        Ok(buf)
-    }
-
-    fn nibble(c: char) -> core::result::Result<u8, HexError> {
-        match c {
-            '0'..='9' => Ok((c as u8) - b'0'),
-            'a'..='f' => Ok((c as u8) - b'a' + 10),
-            'A'..='F' => Ok((c as u8) - b'A' + 10),
-            _ => Err(HexError::InvalidChar(c)),
-        }
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub enum HexError {
-        OddLength,
-        InvalidChar(char),
-    }
-
-    impl fmt::Display for HexError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                HexError::OddLength => write!(f, "odd length"),
-                HexError::InvalidChar(c) => write!(f, "invalid char {c}"),
-            }
-        }
-    }
-}
-
 fn decode_fixed_32(hex_str: &str) -> Result<[u8; 32]> {
-    let bytes = hex::decode_str(hex_str).map_err(|_| Error::Crypto)?;
+    let bytes = decode_hex_bytes(hex_str)?;
     if bytes.len() != 32 {
         return Err(Error::Crypto);
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
     Ok(out)
+}
+
+fn decode_hex_bytes(hex_str: &str) -> Result<Vec<u8>> {
+    decode_hex(hex_str).map_err(|_| Error::Crypto)
 }
 
 fn oprf_seed(policy_id: &[u8; 32], target_leaf: &[u8]) -> [u8; 32] {
