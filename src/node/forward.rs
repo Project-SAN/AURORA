@@ -158,14 +158,25 @@ fn parse_blocklist_leaf_len(bytes: &[u8]) -> Result<usize> {
 }
 
 fn parse_exit_payload(tail: &[u8]) -> Option<(Vec<u8>, &[u8])> {
-    let leaf_len = parse_blocklist_leaf_len(tail).ok()?;
-    if tail.len() < leaf_len + 4 {
+    let (leaf_len, offset) = if let Ok(len) = parse_blocklist_leaf_len(tail) {
+        (len, 0usize)
+    } else {
+        if tail.len() < 4 {
+            return None;
+        }
+        let mut len_buf = [0u8; 4];
+        len_buf.copy_from_slice(&tail[..4]);
+        let len = u32::from_le_bytes(len_buf) as usize;
+        (len, 4usize)
+    };
+    let leaf_end = offset + leaf_len;
+    if tail.len() < leaf_end + 4 {
         return None;
     }
     let mut len_buf = [0u8; 4];
-    len_buf.copy_from_slice(&tail[leaf_len..leaf_len + 4]);
+    len_buf.copy_from_slice(&tail[leaf_end..leaf_end + 4]);
     let ahdr_len = u32::from_le_bytes(len_buf) as usize;
-    let ahdr_start = leaf_len + 4;
+    let ahdr_start = leaf_end + 4;
     let ahdr_end = ahdr_start + ahdr_len;
     if tail.len() < ahdr_end {
         return None;

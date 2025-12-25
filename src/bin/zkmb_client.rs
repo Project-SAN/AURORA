@@ -1,13 +1,11 @@
 use std::env;
-use std::fs;
 use std::process;
 
-use hornet::config::{DEFAULT_AUTHORITY_URL, DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
+use hornet::config::DEFAULT_AUTHORITY_URL;
 use hornet::policy::blocklist;
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::oprf;
 use hornet::policy::plonk::PlonkPolicy;
-use hornet::policy::Blocklist;
 use hornet::policy::Extractor;
 use hornet::types::Error as HornetError;
 use hornet::utils::{decode_hex, encode_hex};
@@ -30,35 +28,21 @@ fn run() -> Result<(), String> {
     let program = args.next().unwrap_or_else(|| "zkmb_client".into());
     let host = args
         .next()
-        .ok_or_else(|| format!("usage: {program} <hostname>"))?;
+        .ok_or_else(|| format!("usage: {program} <hostname> (requires POLICY_ID_HEX)"))?;
 
     let authority_url =
         env::var("POLICY_AUTHORITY_URL").unwrap_or_else(|_| DEFAULT_AUTHORITY_URL.into());
-    let blocklist_path =
-        env::var("POLICY_BLOCKLIST_JSON").unwrap_or_else(|_| DEFAULT_BLOCKLIST_PATH.into());
-
-    let policy_id_override = policy_id_from_env()?;
-    let (policy, policy_id) = if let Some(policy_id) = policy_id_override {
-        let bundle_url = policy_bundle_url(&authority_url)
-            .ok_or("policy bundle url missing")?;
-        let bundle = fetch_policy_bundle(&bundle_url, &policy_id)?;
-        let policy = PlonkPolicy::from_prover_bytes(
-            bundle.policy_id,
-            &bundle.prover_bytes,
-            bundle.block_hashes,
-        )
-        .map_err(|err| format!("failed to load proving key: {err:?}"))?;
-        (policy, bundle.policy_id)
-    } else {
-        let blocklist_json = fs::read_to_string(&blocklist_path)
-            .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
-        let blocklist = Blocklist::from_json(&blocklist_json)
-            .map_err(|err| format!("blocklist parse error: {err:?}"))?;
-        let policy = PlonkPolicy::new_from_blocklist(DEFAULT_POLICY_LABEL, &blocklist)
-            .map_err(|err| format!("failed to build policy: {err:?}"))?;
-        let policy_id = *policy.policy_id();
-        (policy, policy_id)
-    };
+    let policy_id = policy_id_from_env()?
+        .ok_or_else(|| "POLICY_ID_HEX is required to fetch policy bundle".to_string())?;
+    let bundle_url = policy_bundle_url(&authority_url)
+        .ok_or_else(|| "policy bundle url missing".to_string())?;
+    let bundle = fetch_policy_bundle(&bundle_url, &policy_id)?;
+    let policy = PlonkPolicy::from_prover_bytes(
+        bundle.policy_id,
+        &bundle.prover_bytes,
+        bundle.block_hashes,
+    )
+    .map_err(|err| format!("failed to load proving key: {err:?}"))?;
     let extractor = HttpHostExtractor::default();
     let request_payload = format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n");
     let target = extractor

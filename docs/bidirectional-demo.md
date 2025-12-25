@@ -85,6 +85,8 @@ python3 -m http.server 8080
 cargo run --bin hornet_data_sender config/localnet/policy-info.json 127.0.0.1:8080
 ```
 
+`hornet_data_sender` は OPRF 前提なので、`POLICY_AUTHORITY_URL`（または `POLICY_OPRF_URL`）を必ず指定してください。
+
 ### 期待される出力
 
 成功すると、以下のような出力が表示されます：
@@ -123,10 +125,10 @@ cargo run --bin hornet_data_sender config/localnet/policy-info.json blocked.exam
 **期待される出力:**
 ```
 Resolved blocked.example:8080 to ...
-hornet_data_sender error: failed to prove payload: PolicyViolation
+hornet_data_sender error: failed to obtain witness: Crypto
 ```
 
-ポリシー証明の生成段階で `Error::PolicyViolation` が発生し、パケットは送信されません。
+OPRF 経由の witness 取得で拒否され、パケットは送信されません。
 
 #### 実際のブロックされたドメインへのアクセス（lp.sejuku.ne）
 
@@ -137,8 +139,10 @@ cargo run --bin hornet_data_sender config/localnet/policy-info.json lp.sejuku.ne
 **期待される出力:**
 ```
 Resolved lp.sejuku.ne to V4([...]):443
-hornet_data_sender error: failed to prove payload: PolicyViolation
+hornet_data_sender error: failed to obtain witness: Crypto
 ```
+
+**補足:** `hornet_data_sender` は引数をそのまま `Host:` ヘッダに入れます。`127.0.0.1:8081` のようにポート込みで指定する場合は、ブロックリストも同じ文字列で `exact` 登録してください。
 
 同様に、ポリシー違反により証明生成が失敗します。
 

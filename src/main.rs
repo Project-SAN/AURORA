@@ -41,7 +41,9 @@ async fn main() -> io::Result<()> {
 
 fn init_authority_state() -> io::Result<PolicyAuthorityState> {
     let mut state = PolicyAuthorityState::new();
-    let (policy, policy_id, blocklist, oprf_key) = load_policy(DEFAULT_BLOCKLIST_PATH)?;
+    let label = policy_label_from_env();
+    let (policy, policy_id, blocklist, oprf_key) =
+        load_policy_with_label(DEFAULT_BLOCKLIST_PATH, &label)?;
     plonk::register_policy(policy.clone());
     state.register_policy(policy, HttpHostExtractor::default(), oprf_key, blocklist);
 
@@ -49,10 +51,15 @@ fn init_authority_state() -> io::Result<PolicyAuthorityState> {
     Ok(state)
 }
 
-fn load_policy(
+fn load_policy_with_label(
     block_list_path: &str,
-) -> io::Result<(Arc<PlonkPolicy>, hornet::policy::PolicyId, Blocklist, curve25519_dalek::scalar::Scalar)>
-{
+    label: &[u8],
+) -> io::Result<(
+    Arc<PlonkPolicy>,
+    hornet::policy::PolicyId,
+    Blocklist,
+    curve25519_dalek::scalar::Scalar,
+)> {
     let json = fs::read_to_string(block_list_path)?;
     let blocklist = Blocklist::from_json(&json).map_err(|err| {
         io::Error::new(
@@ -60,16 +67,23 @@ fn load_policy(
             format!("blocklist parse error: {err:?}"),
         )
     })?;
-    let oprf_key = oprf_key_from_env_or_label(DEFAULT_POLICY_LABEL)?;
+    let oprf_key = oprf_key_from_env_or_label(label)?;
     let oprf_blocklist = oprf_blocklist_from(&blocklist, &oprf_key);
     let policy = Arc::new(
-        PlonkPolicy::new_from_blocklist(DEFAULT_POLICY_LABEL, &oprf_blocklist).map_err(|err| {
+        PlonkPolicy::new_from_blocklist(label, &oprf_blocklist).map_err(|err| {
             io::Error::new(ErrorKind::Other, format!("failed to build policy: {err:?}"))
         })?,
     );
 
     let policy_id = *policy.policy_id();
     Ok((policy, policy_id, oprf_blocklist, oprf_key))
+}
+
+fn policy_label_from_env() -> Vec<u8> {
+    match std::env::var("POLICY_LABEL") {
+        Ok(label) if !label.trim().is_empty() => label.into_bytes(),
+        _ => DEFAULT_POLICY_LABEL.to_vec(),
+    }
 }
 
 fn oprf_key_from_env_or_label(label: &[u8]) -> io::Result<curve25519_dalek::scalar::Scalar> {

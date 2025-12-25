@@ -77,6 +77,15 @@ scripts/localnet_down.sh
 
 `localnet_up.sh` は内部で `cargo run --bin localnet_prep` を実行し、各ルータをバックグラウンドで起動したままにします。`localnet_down.sh` で必ず明示的に停止してください。
 
+## PA の起動（OPRF key 固定）
+
+OPRF ブロックリストが一致するように、PA 側は `POLICY_OPRF_KEY_HEX` を固定してください。
+
+```bash
+export POLICY_OPRF_KEY_HEX=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+cargo run
+```
+
 ## データフレーム送信 CLI (`hornet_data_sender`)
 
 政策検証済みのデータパケットは次のように送信できます。ブロックリストには `config/blocklist.json`（または `LOCALNET_BLOCKLIST` で差し替え）を利用します。
@@ -85,10 +94,13 @@ scripts/localnet_down.sh
 cargo run --bin hornet_data_sender config/localnet/policy-info.json safe.example "hello hornet"
 ```
 
+- `POLICY_AUTHORITY_URL`（または `POLICY_OPRF_URL`）が必須です。OPRF 評価と witness 取得に使用します。
+- `POLICY_BUNDLE_URL` を指定すると proving key の配布先を上書きできます。
 - 第2引数: ポリシーに適合するホスト名。ブロック対象を指定するとクライアント側で証明が失敗します。
 - 第3引数: 任意のメッセージ文字列（省略可）。ポリシーカプセル + ターゲット葉に続いてペイロード末尾へ追加されます。
 - CLI は AHDR/CHDR/ペイロードを構築し、入口ルータ (`127.0.0.1:7101`) に forward フレームを送信します。
 - ルータがポリシー違反を検出すると `hornet_data_sender reject: ...` を出力して終了コード `2` になります。
+- `hornet_data_sender` は引数をそのまま `Host:` ヘッダに入れるため、`127.0.0.1:8081` のようにポート込みで指定する場合はブロックリストも `exact` で同じ文字列を指定してください。
 
 ## 動作確認
 
