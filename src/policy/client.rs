@@ -1,10 +1,13 @@
 use crate::policy::blocklist::{self, Blocklist, BlocklistEntry, MerkleProof};
+use crate::policy::oprf;
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::types::{Error, Result};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -221,7 +224,8 @@ impl WitnessService for HttpWitnessService {
     ) -> Result<NonMembershipWitness> {
         let body = WitnessRequest {
             policy_id: hex::encode(policy_id),
-            target_leaf_hex: hex::encode(target_leaf),
+            target_leaf_hex: Some(hex::encode(target_leaf)),
+            target_hash_hex: None,
         };
         let json = serde_json::to_string(&body).map_err(|_| Error::Crypto)?;
         let response = self
@@ -229,6 +233,64 @@ impl WitnessService for HttpWitnessService {
             .post(self.endpoint.as_str())
             .set("content-type", "application/json")
             .send_string(&json)
+            .map_err(|_| Error::Crypto)?;
+        let parsed: WitnessResponse = response.into_json().map_err(|_| Error::Crypto)?;
+        parsed.into_witness()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OprfWitnessService {
+    oprf_endpoint: String,
+    witness_endpoint: String,
+    agent: ureq::Agent,
+}
+
+impl OprfWitnessService {
+    pub fn new(oprf_endpoint: impl Into<String>, witness_endpoint: impl Into<String>) -> Self {
+        let agent = ureq::AgentBuilder::new().build();
+        Self {
+            oprf_endpoint: oprf_endpoint.into(),
+            witness_endpoint: witness_endpoint.into(),
+            agent,
+        }
+    }
+}
+
+impl WitnessService for OprfWitnessService {
+    fn obtain_witness(
+        &self,
+        policy_id: &[u8; 32],
+        target_leaf: &[u8],
+    ) -> Result<NonMembershipWitness> {
+        let mut rng = SmallRng::from_seed(oprf_seed(policy_id, target_leaf));
+        let (blind, blinded) = oprf::blind(target_leaf, &mut rng);
+        let oprf_body = OprfRequest {
+            policy_id: hex::encode(policy_id),
+            blinded_hex: hex::encode(&blinded),
+        };
+        let oprf_json = serde_json::to_string(&oprf_body).map_err(|_| Error::Crypto)?;
+        let response = self
+            .agent
+            .post(self.oprf_endpoint.as_str())
+            .set("content-type", "application/json")
+            .send_string(&oprf_json)
+            .map_err(|_| Error::Crypto)?;
+        let parsed: OprfResponse = response.into_json().map_err(|_| Error::Crypto)?;
+        let evaluated = decode_fixed_32(&parsed.evaluated_hex)?;
+        let unblinded = oprf::unblind(&blind, &evaluated).ok_or(Error::Crypto)?;
+
+        let witness_body = WitnessRequest {
+            policy_id: hex::encode(policy_id),
+            target_leaf_hex: None,
+            target_hash_hex: Some(hex::encode(&unblinded)),
+        };
+        let witness_json = serde_json::to_string(&witness_body).map_err(|_| Error::Crypto)?;
+        let response = self
+            .agent
+            .post(self.witness_endpoint.as_str())
+            .set("content-type", "application/json")
+            .send_string(&witness_json)
             .map_err(|_| Error::Crypto)?;
         let parsed: WitnessResponse = response.into_json().map_err(|_| Error::Crypto)?;
         parsed.into_witness()
@@ -304,7 +366,21 @@ impl MerkleProofRequest {
 #[derive(Serialize)]
 struct WitnessRequest {
     policy_id: String,
-    target_leaf_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_leaf_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_hash_hex: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OprfRequest {
+    policy_id: String,
+    blinded_hex: String,
+}
+
+#[derive(Deserialize)]
+struct OprfResponse {
+    evaluated_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -570,6 +646,17 @@ fn decode_fixed_32(hex_str: &str) -> Result<[u8; 32]> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
     Ok(out)
+}
+
+fn oprf_seed(policy_id: &[u8; 32], target_leaf: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"oprf-blind");
+    hasher.update(policy_id);
+    hasher.update(target_leaf);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
 }
 
 #[cfg(test)]

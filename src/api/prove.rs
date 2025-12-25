@@ -12,10 +12,12 @@ use serde_json::json;
 use crate::adapters::plonk::validator::PlonkCapsuleValidator;
 use crate::application::prove::{ProofError, ProofPipeline as DomainProofPipeline, ProveInput};
 use crate::policy::extract::{ExtractionError, Extractor};
+use crate::policy::oprf;
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Blocklist, PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
 use crate::types::Error as HornetError;
 use crate::utils::{decode_hex, encode_hex, HexError};
+use curve25519_dalek::scalar::Scalar;
 use sha2::{Digest, Sha256};
 
 pub struct PolicyAuthorityState {
@@ -33,12 +35,13 @@ impl PolicyAuthorityState {
         &mut self,
         policy: Arc<PlonkPolicy>,
         extractor: E,
+        oprf_key: Scalar,
         blocklist: Blocklist,
     ) -> PolicyId
     where
         E: Extractor + Send + Sync + 'static,
     {
-        let entry = PolicyAuthorityEntry::new(policy, extractor, blocklist);
+        let entry = PolicyAuthorityEntry::new(policy, extractor, oprf_key, blocklist);
         let policy_id = entry.policy_id;
         self.policies.insert(policy_id, entry);
         policy_id
@@ -69,11 +72,13 @@ mod tests {
     use super::*;
     use crate::policy::blocklist::BlocklistEntry;
     use crate::policy::extract::HttpHostExtractor;
+    use crate::policy::oprf;
     use crate::policy::{plonk, PolicyCapsule, PolicyRegistry};
     use crate::utils::decode_hex;
     use actix_web::{http::StatusCode, test, App};
     use alloc::vec;
     use alloc::vec::Vec;
+    use curve25519_dalek::scalar::Scalar;
     use rand::rngs::SmallRng;
     use rand::{RngCore, SeedableRng};
 
@@ -83,12 +88,25 @@ mod tests {
             BlocklistEntry::Exact("malicious.test".into()).leaf_bytes(),
         ];
         let blocklist = crate::policy::Blocklist::from_canonical_bytes(blocklist_entries);
+        let oprf_key = oprf::derive_key_from_seed(b"test-oprf");
+        let oprf_blocklist = oprf_blocklist_from(&blocklist, &oprf_key);
         let policy =
-            Arc::new(PlonkPolicy::new_from_blocklist(b"test-policy", &blocklist).expect("policy"));
+            Arc::new(PlonkPolicy::new_from_blocklist(b"test-policy", &oprf_blocklist).expect("policy"));
         plonk::register_policy(policy.clone());
         let mut state = PolicyAuthorityState::new();
-        let policy_id = state.register_policy(policy, HttpHostExtractor::default(), blocklist);
+        let policy_id =
+            state.register_policy(policy, HttpHostExtractor::default(), oprf_key, oprf_blocklist);
         (state, policy_id)
+    }
+
+    fn oprf_blocklist_from(blocklist: &Blocklist, key: &Scalar) -> Blocklist {
+        let mut leaves = Vec::with_capacity(blocklist.len());
+        for entry in blocklist.entries() {
+            let leaf = entry.leaf_bytes();
+            let evaluated = oprf::eval_unblinded(key, &leaf);
+            leaves.push(evaluated.to_vec());
+        }
+        Blocklist::from_canonical_bytes(leaves)
     }
 
     fn wrap_state_data(
@@ -408,11 +426,17 @@ struct PolicyAuthorityEntry {
     policy_id: PolicyId,
     policy: Arc<PlonkPolicy>,
     extractor: Box<dyn Extractor + Send + Sync>,
+    oprf_key: Scalar,
     blocklist: Blocklist,
 }
 
 impl PolicyAuthorityEntry {
-    fn new<E>(policy: Arc<PlonkPolicy>, extractor: E, blocklist: Blocklist) -> Self
+    fn new<E>(
+        policy: Arc<PlonkPolicy>,
+        extractor: E,
+        oprf_key: Scalar,
+        blocklist: Blocklist,
+    ) -> Self
     where
         E: Extractor + Send + Sync + 'static,
     {
@@ -421,6 +445,7 @@ impl PolicyAuthorityEntry {
             policy_id,
             policy,
             extractor: Box::new(extractor),
+            oprf_key,
             blocklist,
         }
     }
@@ -437,8 +462,9 @@ impl PolicyAuthorityEntry {
         let entry =
             crate::policy::blocklist::entry_from_target(&target).map_err(ProofError::Prover)?;
         let canonical_bytes = entry.leaf_bytes();
+        let oprf_leaf = oprf::eval_unblinded(&self.oprf_key, &canonical_bytes);
         self.policy
-            .prove_payload(&canonical_bytes)
+            .prove_payload(&oprf_leaf)
             .map_err(ProofError::Prover)
     }
 
@@ -476,6 +502,10 @@ impl PolicyAuthorityEntry {
                 })
             }
         }
+    }
+
+    fn evaluate_oprf(&self, blinded: [u8; 32]) -> Result<[u8; 32], HornetError> {
+        oprf::eval_blinded(&self.oprf_key, &blinded).ok_or(HornetError::Crypto)
     }
 }
 
@@ -523,7 +553,21 @@ pub struct PolicyBundleResponse {
 #[derive(Deserialize)]
 pub struct WitnessRequest {
     pub policy_id: String,
-    pub target_leaf_hex: String,
+    #[serde(default)]
+    pub target_leaf_hex: Option<String>,
+    #[serde(default)]
+    pub target_hash_hex: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct OprfRequest {
+    pub policy_id: String,
+    pub blinded_hex: String,
+}
+
+#[derive(Serialize)]
+pub struct OprfResponse {
+    pub evaluated_hex: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -670,13 +714,42 @@ pub async fn witness(
     request: web::Json<WitnessRequest>,
 ) -> Result<impl Responder, ApiError> {
     let policy_id = decode_policy_id(request.policy_id.as_str())?;
-    let target_leaf = decode_hex(request.target_leaf_hex.as_str())?;
+    let target_hex = request
+        .target_hash_hex
+        .as_deref()
+        .or(request.target_leaf_hex.as_deref())
+        .ok_or_else(|| ApiError::InvalidHex("missing target leaf".into()))?;
+    let target_leaf = decode_hex(target_hex)?;
     let entry = state
         .get(&policy_id)
         .ok_or(ApiError::PolicyNotFound(request.policy_id.clone()))?;
     let response = entry
         .witness_from_leaf(target_leaf)
         .map_err(ApiError::from_prover)?;
+    Ok(web::Json(response))
+}
+
+#[post("/oprf")]
+pub async fn oprf_eval(
+    state: web::Data<PolicyAuthorityState>,
+    request: web::Json<OprfRequest>,
+) -> Result<impl Responder, ApiError> {
+    let policy_id = decode_policy_id(request.policy_id.as_str())?;
+    let blinded = decode_hex(request.blinded_hex.as_str())?;
+    if blinded.len() != 32 {
+        return Err(ApiError::InvalidHex("blinded element must be 32 bytes".into()));
+    }
+    let mut blinded_bytes = [0u8; 32];
+    blinded_bytes.copy_from_slice(&blinded);
+    let entry = state
+        .get(&policy_id)
+        .ok_or(ApiError::PolicyNotFound(request.policy_id.clone()))?;
+    let evaluated = entry
+        .evaluate_oprf(blinded_bytes)
+        .map_err(ApiError::from_prover)?;
+    let response = OprfResponse {
+        evaluated_hex: encode_hex(&evaluated),
+    };
     Ok(web::Json(response))
 }
 
