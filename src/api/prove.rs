@@ -13,9 +13,10 @@ use crate::adapters::plonk::validator::PlonkCapsuleValidator;
 use crate::application::prove::{ProofError, ProofPipeline as DomainProofPipeline, ProveInput};
 use crate::policy::extract::{ExtractionError, Extractor};
 use crate::policy::plonk::{self, PlonkPolicy};
-use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
+use crate::policy::{Blocklist, PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
 use crate::types::Error as HornetError;
 use crate::utils::{decode_hex, encode_hex, HexError};
+use sha2::{Digest, Sha256};
 
 pub struct PolicyAuthorityState {
     policies: BTreeMap<PolicyId, PolicyAuthorityEntry>,
@@ -28,11 +29,16 @@ impl PolicyAuthorityState {
         }
     }
 
-    pub fn register_policy<E>(&mut self, policy: Arc<PlonkPolicy>, extractor: E) -> PolicyId
+    pub fn register_policy<E>(
+        &mut self,
+        policy: Arc<PlonkPolicy>,
+        extractor: E,
+        blocklist: Blocklist,
+    ) -> PolicyId
     where
         E: Extractor + Send + Sync + 'static,
     {
-        let entry = PolicyAuthorityEntry::new(policy, extractor);
+        let entry = PolicyAuthorityEntry::new(policy, extractor, blocklist);
         let policy_id = entry.policy_id;
         self.policies.insert(policy_id, entry);
         policy_id
@@ -72,15 +78,16 @@ mod tests {
     use rand::{RngCore, SeedableRng};
 
     fn demo_authority_state() -> (PolicyAuthorityState, PolicyId) {
-        let blocklist = vec![
+        let blocklist_entries = vec![
             BlocklistEntry::Exact("blocked.example".into()).leaf_bytes(),
             BlocklistEntry::Exact("malicious.test".into()).leaf_bytes(),
         ];
+        let blocklist = crate::policy::Blocklist::from_canonical_bytes(blocklist_entries);
         let policy =
-            Arc::new(PlonkPolicy::new_with_blocklist(b"test-policy", &blocklist).expect("policy"));
+            Arc::new(PlonkPolicy::new_from_blocklist(b"test-policy", &blocklist).expect("policy"));
         plonk::register_policy(policy.clone());
         let mut state = PolicyAuthorityState::new();
-        let policy_id = state.register_policy(policy, HttpHostExtractor::default());
+        let policy_id = state.register_policy(policy, HttpHostExtractor::default(), blocklist);
         (state, policy_id)
     }
 
@@ -401,10 +408,11 @@ struct PolicyAuthorityEntry {
     policy_id: PolicyId,
     policy: Arc<PlonkPolicy>,
     extractor: Box<dyn Extractor + Send + Sync>,
+    blocklist: Blocklist,
 }
 
 impl PolicyAuthorityEntry {
-    fn new<E>(policy: Arc<PlonkPolicy>, extractor: E) -> Self
+    fn new<E>(policy: Arc<PlonkPolicy>, extractor: E, blocklist: Blocklist) -> Self
     where
         E: Extractor + Send + Sync + 'static,
     {
@@ -413,6 +421,7 @@ impl PolicyAuthorityEntry {
             policy_id,
             policy,
             extractor: Box::new(extractor),
+            blocklist,
         }
     }
 
@@ -431,6 +440,42 @@ impl PolicyAuthorityEntry {
         self.policy
             .prove_payload(&canonical_bytes)
             .map_err(ProofError::Prover)
+    }
+
+    fn witness_from_leaf(&self, leaf: Vec<u8>) -> Result<WitnessResponse, HornetError> {
+        let leaves = self.blocklist.canonical_leaves();
+        match leaves.binary_search(&leaf) {
+            Ok(_) => Err(HornetError::PolicyViolation),
+            Err(index) => {
+                let left = if index > 0 {
+                    self.blocklist
+                        .merkle_proof(index - 1)
+                        .map(MerkleProofResponse::from_proof)
+                } else {
+                    None
+                };
+                let right = if index < self.blocklist.len() {
+                    self.blocklist
+                        .merkle_proof(index)
+                        .map(MerkleProofResponse::from_proof)
+                } else {
+                    None
+                };
+                let mut hasher = Sha256::new();
+                hasher.update(&leaf);
+                let digest = hasher.finalize();
+                let mut target_hash = [0u8; 32];
+                target_hash.copy_from_slice(&digest);
+                Ok(WitnessResponse {
+                    root_hex: encode_hex(&self.blocklist.merkle_root()),
+                    target_leaf_hex: encode_hex(&leaf),
+                    target_hash_hex: encode_hex(&target_hash),
+                    gap_index: index as u64,
+                    left,
+                    right,
+                })
+            }
+        }
     }
 }
 
@@ -466,6 +511,43 @@ pub struct VerifyRequest {
 pub struct VerifyResponse {
     pub valid: bool,
     pub commitment_hex: String,
+}
+
+#[derive(Deserialize)]
+pub struct WitnessRequest {
+    pub policy_id: String,
+    pub target_leaf_hex: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct MerkleProofResponse {
+    pub index: u64,
+    pub leaf_hex: String,
+    pub leaf_hash_hex: String,
+    pub siblings_hex: Vec<String>,
+}
+
+impl MerkleProofResponse {
+    fn from_proof(proof: crate::policy::blocklist::MerkleProof) -> Self {
+        Self {
+            index: proof.index as u64,
+            leaf_hex: encode_hex(&proof.leaf_bytes),
+            leaf_hash_hex: encode_hex(&proof.leaf_hash),
+            siblings_hex: proof.siblings.iter().map(|sib| encode_hex(sib)).collect(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct WitnessResponse {
+    pub root_hex: String,
+    pub target_leaf_hex: String,
+    pub target_hash_hex: String,
+    pub gap_index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left: Option<MerkleProofResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<MerkleProofResponse>,
 }
 
 #[post("/prove")]
@@ -547,6 +629,22 @@ pub async fn verify(
         valid: true,
         commitment_hex: encode_hex(&expected_commit),
     };
+    Ok(web::Json(response))
+}
+
+#[post("/witness")]
+pub async fn witness(
+    state: web::Data<PolicyAuthorityState>,
+    request: web::Json<WitnessRequest>,
+) -> Result<impl Responder, ApiError> {
+    let policy_id = decode_policy_id(request.policy_id.as_str())?;
+    let target_leaf = decode_hex(request.target_leaf_hex.as_str())?;
+    let entry = state
+        .get(&policy_id)
+        .ok_or(ApiError::PolicyNotFound(request.policy_id.clone()))?;
+    let response = entry
+        .witness_from_leaf(target_leaf)
+        .map_err(ApiError::from_prover)?;
     Ok(web::Json(response))
 }
 
