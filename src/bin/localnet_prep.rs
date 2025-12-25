@@ -1,9 +1,11 @@
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
+use hornet::policy::oprf;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::to_signed_json;
 use hornet::setup::directory::{DirectoryAnnouncement, RouteAnnouncement};
 use hornet::utils::encode_hex;
+use hornet::utils::decode_hex;
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -26,7 +28,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let block_json = fs::read_to_string(&blocklist_path)?;
     let blocklist =
         Blocklist::from_json(&block_json).map_err(|err| format!("blocklist error: {err:?}"))?;
-    let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
+    let oprf_key = oprf_key_from_env_or_label(b"localnet-demo")?;
+    let oprf_blocklist = oprf_blocklist_from(&blocklist, &oprf_key);
+    let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &oprf_blocklist)
         .map_err(|err| format!("policy init failed: {err:?}"))?;
     let metadata = policy.metadata(900, 0);
     fs::create_dir_all("config/localnet")?;
@@ -84,6 +88,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::write("config/localnet/policy-info.json", policy_json)?;
     println!("generated config/localnet for 3-router demo");
     Ok(())
+}
+
+fn oprf_key_from_env_or_label(label: &[u8]) -> Result<curve25519_dalek::scalar::Scalar, Box<dyn std::error::Error>> {
+    match env::var("POLICY_OPRF_KEY_HEX") {
+        Ok(hex) => {
+            let seed = decode_hex(hex.as_str())
+                .map_err(|err| format!("OPRF key hex error: {err}"))?;
+            Ok(oprf::derive_key_from_seed(&seed))
+        }
+        Err(_) => Ok(oprf::derive_key_from_seed(label)),
+    }
+}
+
+fn oprf_blocklist_from(
+    blocklist: &Blocklist,
+    key: &curve25519_dalek::scalar::Scalar,
+) -> Blocklist {
+    let mut leaves = Vec::with_capacity(blocklist.len());
+    for entry in blocklist.entries() {
+        let leaf = entry.leaf_bytes();
+        let evaluated = oprf::eval_unblinded(key, &leaf);
+        leaves.push(evaluated.to_vec());
+    }
+    Blocklist::from_canonical_bytes(leaves)
 }
 
 fn write_directory(

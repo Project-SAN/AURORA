@@ -1,6 +1,6 @@
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
-use hornet::policy::client::{HttpWitnessService, WitnessPreprocessor};
+use hornet::policy::client::{HttpWitnessService, OprfWitnessService, WitnessPreprocessor};
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
@@ -81,20 +81,21 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut request_payload = base_request.into_bytes();
     request_payload.extend_from_slice(payload_tail);
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
-    let witness_url = env::var("POLICY_WITNESS_URL")
-        .or_else(|_| {
-            env::var("POLICY_AUTHORITY_URL").map(|base| {
-                let trimmed = base.trim_end_matches('/');
-                format!("{trimmed}/witness")
-            })
-        })
-        .unwrap_or_else(|_| "http://127.0.0.1:8080/witness".into());
-    let witness_service = HttpWitnessService::new(witness_url);
-    let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
+    let witness_url = witness_url();
     let metadata = policy.metadata(0, 0);
-    let request = preprocessor
-        .prepare(&metadata, &request_payload, &[])
-        .map_err(|err| format!("failed to obtain witness: {err:?}"))?;
+    let request = if let Some(oprf_url) = oprf_url() {
+        let witness_service = OprfWitnessService::new(oprf_url, witness_url);
+        let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
+        preprocessor
+            .prepare(&metadata, &request_payload, &[])
+            .map_err(|err| format!("failed to obtain witness: {err:?}"))?
+    } else {
+        let witness_service = HttpWitnessService::new(witness_url);
+        let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
+        preprocessor
+            .prepare(&metadata, &request_payload, &[])
+            .map_err(|err| format!("failed to obtain witness: {err:?}"))?
+    };
     let witness = request
         .non_membership
         .ok_or_else(|| "missing non-membership witness".to_string())?;
@@ -299,6 +300,29 @@ fn policy_bundle_url() -> Option<String> {
             env::var("POLICY_AUTHORITY_URL").ok().map(|base| {
                 let trimmed = base.trim_end_matches('/');
                 format!("{trimmed}/policy-bundle")
+            })
+        })
+}
+
+fn witness_url() -> String {
+    env::var("POLICY_WITNESS_URL")
+        .ok()
+        .or_else(|| {
+            env::var("POLICY_AUTHORITY_URL").ok().map(|base| {
+                let trimmed = base.trim_end_matches('/');
+                format!("{trimmed}/witness")
+            })
+        })
+        .unwrap_or_else(|| "http://127.0.0.1:8080/witness".into())
+}
+
+fn oprf_url() -> Option<String> {
+    env::var("POLICY_OPRF_URL")
+        .ok()
+        .or_else(|| {
+            env::var("POLICY_AUTHORITY_URL").ok().map(|base| {
+                let trimmed = base.trim_end_matches('/');
+                format!("{trimmed}/oprf")
             })
         })
 }

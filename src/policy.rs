@@ -2,6 +2,7 @@ pub mod blocklist;
 #[cfg(feature = "http-client")]
 pub mod client;
 pub mod extract;
+pub mod oprf;
 pub mod plonk;
 pub mod registry {
     pub use crate::core::policy::registry::*;
