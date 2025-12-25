@@ -1,4 +1,4 @@
-use actix_web::{http::StatusCode, post, web, HttpResponse, Responder, ResponseError};
+use actix_web::{get, http::StatusCode, post, web, HttpResponse, Responder, ResponseError};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -513,6 +513,13 @@ pub struct VerifyResponse {
     pub commitment_hex: String,
 }
 
+#[derive(Serialize)]
+pub struct PolicyBundleResponse {
+    pub policy_id: String,
+    pub prover_hex: String,
+    pub block_hashes_hex: Vec<String>,
+}
+
 #[derive(Deserialize)]
 pub struct WitnessRequest {
     pub policy_id: String,
@@ -628,6 +635,31 @@ pub async fn verify(
     let response = VerifyResponse {
         valid: true,
         commitment_hex: encode_hex(&expected_commit),
+    };
+    Ok(web::Json(response))
+}
+
+#[get("/policy-bundle/{policy_id}")]
+pub async fn policy_bundle(
+    state: web::Data<PolicyAuthorityState>,
+    path: web::Path<String>,
+) -> Result<impl Responder, ApiError> {
+    let policy_id_hex = path.into_inner();
+    let policy_id = decode_policy_id(policy_id_hex.as_str())?;
+    let entry = state
+        .get(&policy_id)
+        .ok_or(ApiError::PolicyNotFound(policy_id_hex.clone()))?;
+    let prover_hex = encode_hex(&entry.policy.prover_bytes());
+    let block_hashes_hex = entry
+        .policy
+        .block_hashes_bytes()
+        .into_iter()
+        .map(|hash| encode_hex(&hash))
+        .collect();
+    let response = PolicyBundleResponse {
+        policy_id: policy_id_hex,
+        prover_hex,
+        block_hashes_hex,
     };
     Ok(web::Json(response))
 }
