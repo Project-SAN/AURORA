@@ -1,4 +1,5 @@
-use hornet::policy::bundle::{fetch_policy_bundle, policy_bundle_url};
+use hornet::policy::bundle::fetch_policy_bundle;
+use hornet::policy::endpoint::{authority_url_from_env, oprf_url_from_env, policy_bundle_url_from_env, witness_url_from_env};
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
 use hornet::policy::client::{OprfWitnessService, WitnessPreprocessor};
@@ -53,10 +54,9 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         return Err("policy-info has no routers".into());
     }
     let policy_id = decode_policy_id(&info.policy_id)?;
+    let authority_url = authority_url_from_env("http://127.0.0.1:8080");
     let routers = load_router_states(&info.routers, &policy_id)?;
-    let authority_url =
-        env::var("POLICY_AUTHORITY_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
-    let policy = if let Some(bundle_url) = policy_bundle_url(&authority_url) {
+    let policy = if let Some(bundle_url) = policy_bundle_url_from_env(&authority_url) {
         let bundle = fetch_policy_bundle(&bundle_url, &policy_id)?;
         PlonkPolicy::from_prover_bytes(policy_id, &bundle.prover_bytes, bundle.block_hashes)
             .map_err(|err| format!("failed to load proving key: {err:?}"))?
@@ -83,9 +83,9 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut request_payload = base_request.into_bytes();
     request_payload.extend_from_slice(payload_tail);
     let extractor = hornet::policy::extract::HttpHostExtractor::default();
-    let witness_url = witness_url();
+    let witness_url = witness_url_from_env(&authority_url);
     let oprf_url =
-        oprf_url().ok_or_else(|| "POLICY_OPRF_URL or POLICY_AUTHORITY_URL is required".to_string())?;
+        oprf_url_from_env(&authority_url).ok_or_else(|| "POLICY_OPRF_URL or POLICY_AUTHORITY_URL is required".to_string())?;
     let metadata = policy.metadata(0, 0);
     let witness_service = OprfWitnessService::new(oprf_url, witness_url);
     let preprocessor = WitnessPreprocessor::new(extractor, witness_service);
@@ -289,29 +289,6 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     println!("Received Response:\n{}", String::from_utf8_lossy(&encrypted_response));
 
     Ok(())
-}
-
-fn witness_url() -> String {
-    env::var("POLICY_WITNESS_URL")
-        .ok()
-        .or_else(|| {
-            env::var("POLICY_AUTHORITY_URL").ok().map(|base| {
-                let trimmed = base.trim_end_matches('/');
-                format!("{trimmed}/witness")
-            })
-        })
-        .unwrap_or_else(|| "http://127.0.0.1:8080/witness".into())
-}
-
-fn oprf_url() -> Option<String> {
-    env::var("POLICY_OPRF_URL")
-        .ok()
-        .or_else(|| {
-            env::var("POLICY_AUTHORITY_URL").ok().map(|base| {
-                let trimmed = base.trim_end_matches('/');
-                format!("{trimmed}/oprf")
-            })
-        })
 }
 
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {

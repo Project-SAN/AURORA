@@ -2,7 +2,8 @@ use std::env;
 use std::process;
 
 use hornet::config::DEFAULT_AUTHORITY_URL;
-use hornet::policy::bundle::{fetch_policy_bundle, policy_bundle_url};
+use hornet::policy::bundle::fetch_policy_bundle;
+use hornet::policy::endpoint::{authority_url_from_env, oprf_url_from_env, policy_bundle_url_from_env};
 use hornet::policy::blocklist;
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::oprf;
@@ -30,11 +31,10 @@ fn run() -> Result<(), String> {
         .next()
         .ok_or_else(|| format!("usage: {program} <hostname> (requires POLICY_ID_HEX)"))?;
 
-    let authority_url =
-        env::var("POLICY_AUTHORITY_URL").unwrap_or_else(|_| DEFAULT_AUTHORITY_URL.into());
+    let authority_url = authority_url_from_env(DEFAULT_AUTHORITY_URL);
     let policy_id = policy_id_from_env()?
         .ok_or_else(|| "POLICY_ID_HEX is required to fetch policy bundle".to_string())?;
-    let bundle_url = policy_bundle_url(&authority_url)
+    let bundle_url = policy_bundle_url_from_env(&authority_url)
         .ok_or_else(|| "policy bundle url missing".to_string())?;
     let bundle = fetch_policy_bundle(&bundle_url, &policy_id)?;
     let policy = PlonkPolicy::from_prover_bytes(
@@ -51,7 +51,7 @@ fn run() -> Result<(), String> {
     let entry = blocklist::entry_from_target(&target)
         .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
     let canonical_bytes = entry.leaf_bytes();
-    let target_leaf = if let Some(oprf_endpoint) = oprf_url(&authority_url) {
+    let target_leaf = if let Some(oprf_endpoint) = oprf_url_from_env(&authority_url) {
         oprf_eval(&oprf_endpoint, &policy_id, &canonical_bytes)?
     } else {
         canonical_bytes.clone()
@@ -109,15 +109,6 @@ fn run() -> Result<(), String> {
     println!("commitment: {}", verify.commitment_hex);
 
     Ok(())
-}
-
-fn oprf_url(authority_url: &str) -> Option<String> {
-    env::var("POLICY_OPRF_URL")
-        .ok()
-        .or_else(|| {
-            let trimmed = authority_url.trim_end_matches('/');
-            Some(format!("{trimmed}/oprf"))
-        })
 }
 
 fn policy_id_from_env() -> Result<Option<[u8; 32]>, String> {
