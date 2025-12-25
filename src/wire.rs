@@ -2,7 +2,7 @@
 //! Format (version 1):
 //!
 //! [0]      : u8   version (=1)
-//! [1]      : u8   packet_type (0x01 Setup, 0x02 Data)
+//! [1]      : u8   packet_type (0x01 Setup, 0x02 Data, 0x03 Reject)
 //! [2]      : u8   hops
 //! [3]      : u8   reserved (=0)
 //! [4..20]  : 16B  chdr.specific (EXP for Setup, Nonce/IV for Data)
@@ -23,6 +23,7 @@ fn pkt_type_to_u8(t: PacketType) -> u8 {
     match t {
         PacketType::Setup => 0x01,
         PacketType::Data => 0x02,
+        PacketType::Reject => 0x03,
     }
 }
 
@@ -30,6 +31,7 @@ fn pkt_type_from_u8(b: u8) -> core::result::Result<PacketType, Error> {
     match b {
         0x01 => Ok(PacketType::Setup),
         0x02 => Ok(PacketType::Data),
+        0x03 => Ok(PacketType::Reject),
         _ => Err(Error::Length),
     }
 }

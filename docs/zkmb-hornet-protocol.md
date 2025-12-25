@@ -68,6 +68,7 @@ The capsule is followed immediately by the actual application payload.
    - It runs `verify(proof, [commitment, aux])`.
    - Success: drop the capsule bytes and forward the remaining payload.
    - Failure: return `Error::PolicyViolation`, drop the packet, and log only `policy_id` + result.
+   - In the TCP router demo, the node also emits a **Reject** frame back to the client.
 
 5. **Destination**
    - The last hop receives only the application payload and handles it per normal HORNET delivery rules.
@@ -100,6 +101,20 @@ Response:
 - `Error::PolicyViolation`: missing capsule, policy mismatch, or proof failure.
 - `Error::Expired`: metadata expired.
 - PI collection: log `policy_id`, peer, timestamp only (no plaintext reason).
+
+### Reject Frame (TCP router demo)
+When `PolicyViolation` occurs, the TCP router can return a Reject frame to the client.
+
+Wire format (same framing as other TCP packets):
+- `packet_type = 0x03` (Reject)
+- `direction = backward`
+- `ahdr_len = 0`, `hops = 0`, `specific = 16 bytes of zero`
+- payload:
+  - `reason` (u8): `1 = policy violation`, `2 = missing policy metadata`, `3 = policy metadata mismatch`
+  - `has_policy_id` (u8): `0/1`
+  - `policy_id` (32 bytes) if `has_policy_id == 1`
+
+Note: Reject frames are a demo/transport feature for clients to see a failure reason; the core protocol still treats invalid packets as dropped.
 
 ## Security Requirements
 - Plonk proofs rely on a universal SRS (single trusted setup).

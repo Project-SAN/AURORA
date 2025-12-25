@@ -1,8 +1,10 @@
-use hornet::application::setup::RegistrySetupPipeline;
 use hornet::node::NoReplay;
-use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
+use hornet::policy::{decode_metadata_tlv, PolicyMetadata, POLICY_METADATA_TLV};
 use hornet::router::config::RouterConfig;
-use hornet::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
+use hornet::router::io::{
+    IncomingPacket, PacketListener, RejectReason, TcpForward, TcpPacketListener,
+    write_reject_frame,
+};
 use hornet::router::runtime::RouterRuntime;
 use hornet::router::storage::{FileRouterStorage, RouterStorage, StoredState};
 use hornet::router::sync::client::{sync_once, DirectoryClient};
@@ -37,10 +39,19 @@ fn main() {
     let mut listener = TcpPacketListener::bind(&bind_addr, secrets.sv).expect("bind listener");
     loop {
         match listener.next() {
-            Ok(mut packet) => {
-                if packet.chdr.typ == PacketType::Setup {
-                    if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
+            Ok(mut connection) => {
+                if connection.packet.chdr.typ == PacketType::Setup {
+                    if let Err(err) =
+                        handle_setup_packet(&connection.packet, &mut router, &storage, &secrets)
+                    {
                         eprintln!("setup packet handling failed: {:?}", err);
+                        if err == types::Error::PolicyViolation {
+                            let _ = write_reject_frame(
+                                &mut connection.stream,
+                                RejectReason::PolicyViolation,
+                                None,
+                            );
+                        }
                     }
                     continue;
                 }
@@ -51,16 +62,23 @@ fn main() {
                     || Box::new(NoReplay),
                 );
                 if let Err(err) = runtime.process(
-                    packet.direction,
-                    packet.sv,
-                    &mut packet.chdr,
-                    &mut packet.ahdr,
-                    &mut packet.payload,
+                    connection.packet.direction,
+                    connection.packet.sv,
+                    &mut connection.packet.chdr,
+                    &mut connection.packet.ahdr,
+                    &mut connection.packet.payload,
                 ) {
                     eprintln!("packet processing failed: {:?}", err);
                     eprintln!("  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}", 
-                              packet.direction, packet.chdr.hops, 
-                              packet.ahdr.bytes.len(), packet.payload.len());
+                              connection.packet.direction, connection.packet.chdr.hops, 
+                              connection.packet.ahdr.bytes.len(), connection.packet.payload.len());
+                    if err == types::Error::PolicyViolation {
+                        let _ = write_reject_frame(
+                            &mut connection.stream,
+                            RejectReason::PolicyViolation,
+                            None,
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -111,7 +129,7 @@ fn persist_state(storage: &dyn RouterStorage, router: &Router, secrets: &RouterS
 }
 
 fn handle_setup_packet(
-    packet: IncomingPacket,
+    packet: &IncomingPacket,
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
@@ -119,32 +137,43 @@ fn handle_setup_packet(
     if packet.chdr.typ != PacketType::Setup {
         return Err(types::Error::Length);
     }
-    let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
-    let policy_id = select_policy_id(&setup_packet).ok_or(types::Error::PolicyViolation)?;
+    let mut setup_packet = wire::decode(
+        packet.chdr,
+        &packet.ahdr.bytes,
+        &packet.payload,
+    )?;
+    let policy_meta =
+        select_policy_metadata(&setup_packet).ok_or(types::Error::PolicyViolation)?;
+    let registry_meta = router
+        .registry()
+        .get(&policy_meta.policy_id)
+        .ok_or(types::Error::PolicyViolation)?;
+    if registry_meta != &policy_meta {
+        return Err(types::Error::PolicyViolation);
+    }
     let route_segment = router
-        .route_for_policy(&policy_id)
+        .route_for_policy(&policy_meta.policy_id)
         .cloned()
         .map(|route| route.segment)
         .ok_or(types::Error::NotImplemented)?;
-    let mut pipeline = RegistrySetupPipeline::new(router.registry_mut());
     hornet::setup::node_process_with_policy(
         &mut setup_packet,
         &secrets.node_secret,
         &secrets.sv,
         &route_segment,
-        Some(&mut pipeline),
+        None,
     )?;
     persist_state(storage, router, secrets);
     Ok(())
 }
 
-fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
+fn select_policy_metadata(packet: &hornet::setup::SetupPacket) -> Option<PolicyMetadata> {
     for tlv in &packet.tlvs {
         if tlv.first().copied() != Some(POLICY_METADATA_TLV) {
             continue;
         }
         if let Ok(meta) = decode_metadata_tlv(tlv) {
-            return Some(meta.policy_id);
+            return Some(meta);
         }
     }
     None
@@ -216,6 +245,7 @@ mod tests {
             segment: RoutingSegment(vec![0x01, 0x02, 0x03]),
             interface: None,
         };
+        router.install_policies(&[policy.clone()]).expect("install policy");
         router.install_routes(&[route]).expect("install route");
 
         let mut node_secret = [0x55; 32];
@@ -251,7 +281,7 @@ mod tests {
         let secrets = RouterSecrets::new(types::Sv([0x33; 16]), node_secret);
         let storage = MemoryStorage::default();
 
-        handle_setup_packet(incoming, &mut router, &storage, &secrets).expect("setup");
+        handle_setup_packet(&incoming, &mut router, &storage, &secrets).expect("setup");
         assert!(router.registry().get(&policy.policy_id).is_some());
         assert!(storage.blob.lock().unwrap().is_some());
     }
