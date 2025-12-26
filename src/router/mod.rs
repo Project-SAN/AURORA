@@ -23,6 +23,7 @@ pub struct Router {
     forward_pipeline: RegistryForwardPipeline,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
     expected_policy_id: Option<[u8; 32]>,
+    router_name: Option<alloc::string::String>,
 }
 
 const EXPECTED_HOPS: u8 = 3;
@@ -35,6 +36,7 @@ impl Router {
             forward_pipeline: RegistryForwardPipeline::new(),
             routes: BTreeMap::new(),
             expected_policy_id: None,
+            router_name: None,
         }
     }
 
@@ -42,7 +44,13 @@ impl Router {
     /// This is typically called after verifying the announcement signature.
     pub fn install_directory(&mut self, directory: &DirectoryAnnouncement) -> Result<()> {
         self.install_policies(directory.policies())?;
-        self.install_routes(directory.routes())
+        self.install_routes(directory.routes())?;
+        if let Some(name) = self.router_name.as_deref() {
+            if let Some(policy_id) = directory.hop_policy_for(name) {
+                self.expected_policy_id = Some(policy_id);
+            }
+        }
+        Ok(())
     }
 
     pub fn install_policies(&mut self, policies: &[crate::policy::PolicyMetadata]) -> Result<()> {
@@ -83,6 +91,10 @@ impl Router {
 
     pub fn set_expected_policy_id(&mut self, policy_id: Option<[u8; 32]>) {
         self.expected_policy_id = policy_id;
+    }
+
+    pub fn set_router_name(&mut self, name: Option<alloc::string::String>) {
+        self.router_name = name;
     }
 
     pub fn registry(&self) -> &PolicyRegistry {

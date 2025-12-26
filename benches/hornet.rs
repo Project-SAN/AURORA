@@ -3,7 +3,7 @@ use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
 use hornet::application::forward::RegistryForwardPipeline;
 use hornet::policy::blocklist::BlocklistEntry;
 use hornet::policy::plonk::PlonkPolicy;
-use hornet::policy::PolicyRegistry;
+use hornet::policy::{CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use hornet::types::PacketDirection;
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
@@ -90,9 +90,13 @@ fn bench_process_data_forward(c: &mut Criterion) {
 
             let safe_leaf = BlocklistEntry::Exact("safe.bench".into()).leaf_bytes();
             let capsule = policy.prove_payload(&safe_leaf).expect("prove payload");
-            let capsule_len = capsule.encode().len();
-            let mut base_payload = Vec::with_capacity(capsule_len + payload_len);
-            base_payload.extend_from_slice(&capsule.encode());
+            let capsule_bytes = capsule.encode();
+            let capsule_len = capsule_bytes.len();
+            let capsule_prefix_len = capsule_len * hops;
+            let mut base_payload = Vec::with_capacity(capsule_prefix_len + payload_len);
+            for _ in 0..hops {
+                base_payload.extend_from_slice(&capsule_bytes);
+            }
             base_payload.extend_from_slice(&fixture.payload_template);
 
             let mut base_chdr = hornet::packet::chdr::data_header(hops as u8, fixture.iv0);
@@ -103,7 +107,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                 &base_ahdr,
                 &fixture.keys,
                 &mut iv,
-                &mut base_payload[capsule_len..],
+                &mut base_payload[capsule_prefix_len..],
             )
             .expect("build data packet");
             let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
@@ -151,7 +155,126 @@ fn bench_process_data_forward(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_process_data_forward_split(c: &mut Criterion) {
+    let mut group = c.benchmark_group("node/process_data_forward_split");
+    for &hops in HOP_CASES {
+        for &payload_len in PAYLOAD_CASES {
+            let fixture = HornetFixture::new(hops, payload_len);
+            let now = fixture.now;
+            let blocklist = vec![
+                BlocklistEntry::Exact("blocked.bench".into()).leaf_bytes(),
+                BlocklistEntry::Exact("deny.bench".into()).leaf_bytes(),
+            ];
+            let policy_open = PlonkPolicy::new_with_blocklist(b"bench-open", &blocklist)
+                .expect("policy open");
+            let policy_parse = PlonkPolicy::new_with_blocklist(b"bench-parse", &blocklist)
+                .expect("policy parse");
+            let policy_check = PlonkPolicy::new_with_blocklist(b"bench-check", &blocklist)
+                .expect("policy check");
+            let meta_open = policy_open.metadata(now.saturating_add(600), 0);
+            let meta_parse = policy_parse.metadata(now.saturating_add(600), 0);
+            let meta_check = policy_check.metadata(now.saturating_add(600), 0);
+
+            let mut registry = PolicyRegistry::new();
+            registry.register(meta_open.clone()).expect("register open");
+            registry.register(meta_parse.clone()).expect("register parse");
+            registry.register(meta_check.clone()).expect("register check");
+            let validator = PlonkCapsuleValidator::new();
+            let forward_pipeline = RegistryForwardPipeline::new();
+
+            let safe_leaf = BlocklistEntry::Exact("safe.bench".into()).leaf_bytes();
+            let capsule_open = policy_open.prove_payload(&safe_leaf).expect("prove open");
+            let capsule_parse = policy_parse.prove_payload(&safe_leaf).expect("prove parse");
+            let capsule_check = policy_check.prove_payload(&safe_leaf).expect("prove check");
+
+            let mut base_payload = Vec::with_capacity(
+                capsule_open.encode().len()
+                    + capsule_parse.encode().len()
+                    + capsule_check.encode().len()
+                    + payload_len,
+            );
+            base_payload.extend_from_slice(&capsule_open.encode());
+            base_payload.extend_from_slice(&capsule_parse.encode());
+            base_payload.extend_from_slice(&capsule_check.encode());
+            let capsule_prefix_len = base_payload.len();
+            base_payload.extend_from_slice(&fixture.payload_template);
+
+            let mut base_chdr = hornet::packet::chdr::data_header(hops as u8, fixture.iv0);
+            let base_ahdr = clone_ahdr(&fixture.ahdr);
+            let mut iv = fixture.iv0;
+            hornet::source::build(
+                &mut base_chdr,
+                &base_ahdr,
+                &fixture.keys,
+                &mut iv,
+                &mut base_payload[capsule_prefix_len..],
+            )
+            .expect("build data packet");
+
+            let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
+            group.bench_function(id, |b| {
+                let registry = &registry;
+                let validator = &validator;
+                let forward_pipeline = &forward_pipeline;
+                let expected = [
+                    meta_open.policy_id,
+                    meta_parse.policy_id,
+                    meta_check.policy_id,
+                ];
+                b.iter_batched(
+                    || {
+                        let chdr = clone_chdr(&base_chdr);
+                        let ahdr = clone_ahdr(&base_ahdr);
+                        let payload = base_payload.clone();
+                        (chdr, ahdr, payload)
+                    },
+                    |(mut chdr, mut ahdr, mut payload)| {
+                        let slot: Rc<RefCell<Option<hornet::types::Ahdr>>> =
+                            Rc::new(RefCell::new(None));
+                        for (idx, &sv) in fixture.svs.iter().enumerate() {
+                            slot.borrow_mut().take();
+                            let mut forward = CaptureForward::new(slot.clone());
+                            let mut replay = hornet::node::NoReplay;
+                            let time = FixedTimeProvider { now };
+                            let mut ctx = hornet::node::NodeCtx {
+                                sv,
+                                now: &time,
+                                forward: &mut forward,
+                                replay: &mut replay,
+                                policy: Some(hornet::node::PolicyRuntime {
+                                    registry,
+                                    validator,
+                                    forward: forward_pipeline,
+                                    expected_policy_id: Some(expected[idx]),
+                                }),
+                            };
+                            hornet::node::forward::process_data(
+                                &mut ctx,
+                                &mut chdr,
+                                &mut ahdr,
+                                &mut payload,
+                            )
+                            .expect("process data forward split");
+                            if let Some(next) = slot.borrow_mut().take() {
+                                ahdr = next;
+                            } else {
+                                panic!("forwarder did not capture next AHDR");
+                            }
+                        }
+                        black_box(payload.len());
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
 fn bench_end_to_end_user_to_router(c: &mut Criterion) {
+    if std::env::var("HORNET_BENCH_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
     let mut group = c.benchmark_group("end_to_end/user_to_last_router");
     for &hops in HOP_CASES {
         for &payload_len in PAYLOAD_CASES {
@@ -162,7 +285,8 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
             ];
             let policy = PlonkPolicy::new_with_blocklist(b"bench-policy", &blocklist)
                 .expect("policy");
-            let metadata = policy.metadata(fixture.now.saturating_add(600), 0);
+            let mut metadata = policy.metadata(fixture.now.saturating_add(600), 0);
+            metadata.verifier_blob.clear();
             let mut router = hornet::router::Router::new();
             router
                 .install_policies(&[metadata.clone()])
@@ -233,6 +357,9 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
 }
 
 fn bench_end_to_end_user_to_router_network(c: &mut Criterion) {
+    if std::env::var("HORNET_BENCH_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
     let mut group = c.benchmark_group("end_to_end_network/user_to_exit");
     for &hops in HOP_CASES {
         for &payload_len in PAYLOAD_CASES {
@@ -253,21 +380,29 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
     for &hops in HOP_CASES {
         let fixture = RoundTripFixture::new(hops);
         let time = FixedTimeProvider { now: fixture.forward.now };
+        let (registry, validator, forward_pipeline, capsule_prefix, capsule_prefix_len) =
+            dummy_policy_bundle(hops);
+        let registry = Arc::new(registry);
         let id = BenchmarkId::from_parameter(format!("hops{hops}"));
         group.bench_function(id, move |b| {
             let fixture = fixture.clone();
+            let registry = Arc::clone(&registry);
             b.iter_batched(
                 || {
                     let mut iv_fwd = fixture.forward.iv0;
                     let mut chdr_fwd = hornet::packet::chdr::data_header(hops as u8, iv_fwd);
                     let ahdr_fwd = clone_ahdr(&fixture.forward.ahdr);
-                    let mut request = fixture.http_request.clone();
+                    let mut request = Vec::with_capacity(
+                        capsule_prefix_len + fixture.http_request.len(),
+                    );
+                    request.extend_from_slice(&capsule_prefix);
+                    request.extend_from_slice(&fixture.http_request);
                     hornet::source::build(
                         &mut chdr_fwd,
                         &ahdr_fwd,
                         &fixture.forward.keys,
                         &mut iv_fwd,
-                        &mut request,
+                        &mut request[capsule_prefix_len..],
                     )
                     .expect("build forward payload");
                     let chdr_bwd =
@@ -277,7 +412,16 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
                 },
                 |(mut chdr_fwd, mut ahdr_fwd, mut request, mut chdr_bwd, mut ahdr_bwd)| {
                     let mut response = fixture.http_response.clone();
-                    run_forward_chain(&fixture.forward, &time, &mut chdr_fwd, &mut ahdr_fwd, &mut request);
+                    run_forward_chain(
+                        &fixture.forward,
+                        registry.as_ref(),
+                        &validator,
+                        &forward_pipeline,
+                        &time,
+                        &mut chdr_fwd,
+                        &mut ahdr_fwd,
+                        &mut request,
+                    );
                     assert!(
                         request
                             .windows(b"example.com".len())
@@ -316,6 +460,7 @@ criterion_group!(
     bench_create_ahdr,
     bench_build_data_packet,
     bench_process_data_forward,
+    bench_process_data_forward_split,
     bench_end_to_end_user_to_router,
     bench_end_to_end_user_to_router_network,
     bench_round_trip_example_com
@@ -329,6 +474,63 @@ struct FixedTimeProvider {
 impl hornet::time::TimeProvider for FixedTimeProvider {
     fn now_coarse(&self) -> u32 {
         self.now
+    }
+}
+
+fn dummy_policy_bundle(
+    hops: usize,
+) -> (
+    PolicyRegistry,
+    AllowAllValidator,
+    RegistryForwardPipeline,
+    Vec<u8>,
+    usize,
+) {
+    let policy_id = [0x42; 32];
+    let mut registry = PolicyRegistry::new();
+    registry
+        .register(PolicyMetadata {
+            policy_id,
+            version: 1,
+            expiry: 0,
+            flags: 0,
+            verifier_blob: Vec::new(),
+        })
+        .expect("register dummy policy");
+    let validator = AllowAllValidator;
+    let forward_pipeline = RegistryForwardPipeline::new();
+    let capsule = PolicyCapsule {
+        policy_id,
+        version: 1,
+        proof: Vec::new(),
+        commitment: Vec::new(),
+        aux: Vec::new(),
+    };
+    let capsule_bytes = capsule.encode();
+    let mut capsule_prefix = Vec::with_capacity(capsule_bytes.len() * hops);
+    for _ in 0..hops {
+        capsule_prefix.extend_from_slice(&capsule_bytes);
+    }
+    let capsule_prefix_len = capsule_prefix.len();
+    (
+        registry,
+        validator,
+        forward_pipeline,
+        capsule_prefix,
+        capsule_prefix_len,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct AllowAllValidator;
+
+impl CapsuleValidator for AllowAllValidator {
+    fn validate(
+        &self,
+        _capsule: &PolicyCapsule,
+        _metadata: &PolicyMetadata,
+    ) -> hornet::types::Result<()> {
+        Ok(())
     }
 }
 
@@ -515,6 +717,9 @@ fn example_response_bytes(body: &str) -> Vec<u8> {
 
 fn run_forward_chain(
     fixture: &HornetFixture,
+    registry: &PolicyRegistry,
+    validator: &dyn CapsuleValidator,
+    forward_pipeline: &RegistryForwardPipeline,
     time: &FixedTimeProvider,
     chdr: &mut hornet::types::Chdr,
     ahdr: &mut hornet::types::Ahdr,
@@ -530,7 +735,12 @@ fn run_forward_chain(
             now: time,
             forward: &mut forward,
             replay: &mut replay,
-            policy: None,
+            policy: Some(hornet::node::PolicyRuntime {
+                registry,
+                validator,
+                forward: forward_pipeline,
+                expected_policy_id: None,
+            }),
         };
         hornet::node::forward::process_data(&mut ctx, chdr, ahdr, payload)
             .expect("process forward hop");
@@ -658,8 +868,8 @@ fn tcp_exit_route(port: u16) -> hornet::types::RoutingSegment {
 
 struct NetworkHarness {
     fixture: HornetFixture,
-    capsule: Vec<u8>,
-    capsule_len: usize,
+    capsule_prefix: Vec<u8>,
+    capsule_prefix_len: usize,
     _routers: Vec<RouterWorker>,
     first_hop_addr: String,
     delivery_rx: mpsc::Receiver<()>,
@@ -695,13 +905,19 @@ impl NetworkHarness {
         ];
         let policy = PlonkPolicy::new_with_blocklist(b"bench-policy", &blocklist)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "policy init failed"))?;
-        let metadata = policy.metadata(fixture.now.saturating_add(600), 0);
+        let mut metadata = policy.metadata(fixture.now.saturating_add(600), 0);
+        metadata.verifier_blob.clear();
         let safe_leaf = BlocklistEntry::Exact("safe.bench".into()).leaf_bytes();
         let capsule = policy
             .prove_payload(&safe_leaf)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "capsule init failed"))?;
         let capsule_bytes = capsule.encode();
         let capsule_len = capsule_bytes.len();
+        let capsule_prefix_len = capsule_len * hops;
+        let mut capsule_prefix = Vec::with_capacity(capsule_prefix_len);
+        for _ in 0..hops {
+            capsule_prefix.extend_from_slice(&capsule_bytes);
+        }
 
         let (notify_tx, delivery_rx) = mpsc::channel();
         let sink = SinkServer::new(sink_listener, notify_tx)?;
@@ -723,8 +939,8 @@ impl NetworkHarness {
 
         Ok(Self {
             fixture,
-            capsule: capsule_bytes,
-            capsule_len,
+            capsule_prefix,
+            capsule_prefix_len,
             _routers: routers,
             first_hop_addr,
             delivery_rx,
@@ -735,10 +951,18 @@ impl NetworkHarness {
     fn run_once(&mut self) {
         let chdr = hornet::packet::chdr::data_header(self.fixture.hops as u8, self.fixture.iv0);
         let ahdr = clone_ahdr(&self.fixture.ahdr);
-        let mut payload = Vec::with_capacity(self.capsule_len + self.fixture.payload_template.len());
-        payload.extend_from_slice(&self.capsule);
+        let mut payload = Vec::with_capacity(
+            self.capsule_prefix_len + self.fixture.payload_template.len(),
+        );
+        payload.extend_from_slice(&self.capsule_prefix);
         payload.extend_from_slice(&self.fixture.payload_template);
-        self.send_over_network(chdr, ahdr, payload, self.fixture.iv0, self.capsule_len);
+        self.send_over_network(
+            chdr,
+            ahdr,
+            payload,
+            self.fixture.iv0,
+            self.capsule_prefix_len,
+        );
     }
 
     fn send_over_network(
