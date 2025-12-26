@@ -82,6 +82,18 @@ pub enum PolicyRole {
     Check,
 }
 
+pub const POLICY_FLAG_ROLE_OPEN: u16 = 0x0001;
+pub const POLICY_FLAG_ROLE_PARSE: u16 = 0x0002;
+pub const POLICY_FLAG_ROLE_CHECK: u16 = 0x0004;
+
+pub fn role_flag(role: PolicyRole) -> u16 {
+    match role {
+        PolicyRole::Open => POLICY_FLAG_ROLE_OPEN,
+        PolicyRole::Parse => POLICY_FLAG_ROLE_PARSE,
+        PolicyRole::Check => POLICY_FLAG_ROLE_CHECK,
+    }
+}
+
 #[derive(Clone)]
 pub struct PlonkPolicy {
     prover: Prover,
@@ -192,6 +204,10 @@ impl PlonkPolicy {
             flags,
             verifier_blob: self.verifier_bytes.clone(),
         }
+    }
+
+    pub fn metadata_for_role(&self, expiry: u32, role: PolicyRole) -> PolicyMetadata {
+        self.metadata(expiry, role_flag(role))
     }
 
     pub fn prove_payload(&self, payload: &[u8]) -> Result<PolicyCapsule> {
