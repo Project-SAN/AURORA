@@ -1,7 +1,8 @@
 use hornet::policy::bundle::fetch_policy_bundle;
 use hornet::policy::endpoint::{authority_url_from_env, oprf_url_from_env, policy_bundle_url_from_env, witness_url_from_env};
-use hornet::policy::plonk::PlonkPolicy;
+use hornet::policy::plonk::{PlonkPolicy, PolicyRole};
 use hornet::policy::Blocklist;
+use hornet::policy::oprf;
 use hornet::policy::client::{OprfWitnessService, WitnessPreprocessor};
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
@@ -341,12 +342,70 @@ fn load_policy_for_id(
         .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
     let blocklist = Blocklist::from_json(&block_json)
         .map_err(|err| format!("blocklist parse error: {err:?}"))?;
-    let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
-        .map_err(|err| format!("failed to build policy: {err:?}"))?;
-    if policy.policy_id() != policy_id {
-        return Err("policy-id mismatch between policy-info and blocklist".into());
+    let blocklist = maybe_oprf_blocklist(blocklist)?;
+    let labels = candidate_policy_labels();
+    for label in labels {
+        let role = role_from_label(&label);
+        let policy = PlonkPolicy::new_from_blocklist_with_role(label.as_bytes(), &blocklist, role)
+            .map_err(|err| format!("failed to build policy: {err:?}"))?;
+        if policy.policy_id() == policy_id {
+            return Ok(policy);
+        }
     }
-    Ok(policy)
+    Err("policy-id mismatch between policy-info and blocklist".into())
+}
+
+fn maybe_oprf_blocklist(blocklist: Blocklist) -> Result<Blocklist, String> {
+    let hex = match env::var("POLICY_OPRF_KEY_HEX") {
+        Ok(value) => value,
+        Err(_) => return Ok(blocklist),
+    };
+    let seed = decode_hex(hex.as_str()).map_err(|err| format!("OPRF key hex error: {err}"))?;
+    let key = oprf::derive_key_from_seed(&seed);
+    let mut leaves = Vec::with_capacity(blocklist.len());
+    for entry in blocklist.entries() {
+        let leaf = entry.leaf_bytes();
+        let evaluated = oprf::eval_unblinded(&key, &leaf);
+        leaves.push(evaluated.to_vec());
+    }
+    Ok(Blocklist::from_canonical_bytes(leaves))
+}
+
+fn candidate_policy_labels() -> Vec<String> {
+    let mut labels = Vec::new();
+    if let Ok(label) = env::var("POLICY_LABEL_OPEN") {
+        labels.push(label);
+    }
+    if let Ok(label) = env::var("POLICY_LABEL_PARSE") {
+        labels.push(label);
+    }
+    if let Ok(label) = env::var("POLICY_LABEL_CHECK") {
+        labels.push(label);
+    }
+    if let Ok(base) = env::var("POLICY_LABEL") {
+        labels.push(base.clone());
+        labels.push(format!("{base}-open"));
+        labels.push(format!("{base}-parse"));
+        labels.push(format!("{base}-check"));
+    }
+    labels.push("localnet-demo".to_string());
+    labels.push("localnet-demo-open".to_string());
+    labels.push("localnet-demo-parse".to_string());
+    labels.push("localnet-demo-check".to_string());
+    labels
+}
+
+fn role_from_label(label: &str) -> PolicyRole {
+    if label.ends_with("-open") {
+        return PolicyRole::Open;
+    }
+    if label.ends_with("-parse") {
+        return PolicyRole::Parse;
+    }
+    if label.ends_with("-check") {
+        return PolicyRole::Check;
+    }
+    PolicyRole::Check
 }
 
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {

@@ -53,12 +53,42 @@ impl Circuit for BlocklistCircuit {
     }
 }
 
+#[derive(Clone, Default)]
+struct TargetCircuit {
+    target: BlsScalar,
+}
+
+impl TargetCircuit {
+    fn new(target: BlsScalar) -> Self {
+        Self { target }
+    }
+}
+
+impl Circuit for TargetCircuit {
+    fn circuit<C>(&self, composer: &mut C) -> core::result::Result<(), PlonkError>
+    where
+        C: Composer,
+    {
+        let witness_target = composer.append_witness(self.target);
+        composer.assert_equal_constant(witness_target, BlsScalar::zero(), Some(self.target));
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolicyRole {
+    Open,
+    Parse,
+    Check,
+}
+
 #[derive(Clone)]
 pub struct PlonkPolicy {
     prover: Prover,
     verifier_bytes: Vec<u8>,
     policy_id: PolicyId,
     block_hashes: Vec<BlsScalar>,
+    role: PolicyRole,
 }
 
 impl PlonkPolicy {
@@ -72,15 +102,30 @@ impl PlonkPolicy {
     }
 
     pub fn new_from_blocklist(label: &[u8], blocklist: &crate::policy::Blocklist) -> Result<Self> {
+        Self::new_from_blocklist_with_role(label, blocklist, PolicyRole::Check)
+    }
+
+    pub fn new_from_blocklist_with_role(
+        label: &[u8],
+        blocklist: &crate::policy::Blocklist,
+        role: PolicyRole,
+    ) -> Result<Self> {
         let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
         let capacity = 1 << 8;
         let pp = PublicParameters::setup(capacity, &mut rng).map_err(|_| Error::Crypto)?;
         let block_hashes = blocklist.hashes_as_scalars();
-        let dummy_inverses = vec![BlsScalar::one(); block_hashes.len()];
-        let circuit =
-            BlocklistCircuit::new(BlsScalar::zero(), dummy_inverses, block_hashes.clone());
-        let (prover, verifier) =
-            Compiler::compile_with_circuit(&pp, label, &circuit).map_err(|_| Error::Crypto)?;
+        let (prover, verifier) = match role {
+            PolicyRole::Open | PolicyRole::Parse => {
+                let circuit = TargetCircuit::new(BlsScalar::zero());
+                Compiler::compile_with_circuit(&pp, label, &circuit).map_err(|_| Error::Crypto)?
+            }
+            PolicyRole::Check => {
+                let dummy_inverses = vec![BlsScalar::one(); block_hashes.len()];
+                let circuit =
+                    BlocklistCircuit::new(BlsScalar::zero(), dummy_inverses, block_hashes.clone());
+                Compiler::compile_with_circuit(&pp, label, &circuit).map_err(|_| Error::Crypto)?
+            }
+        };
         let verifier_bytes = verifier.to_bytes();
         let policy_id = compute_policy_id(&verifier_bytes);
         register_verifier(policy_id, &verifier_bytes);
@@ -89,6 +134,7 @@ impl PlonkPolicy {
             verifier_bytes,
             policy_id,
             block_hashes,
+            role,
         })
     }
 
@@ -108,7 +154,19 @@ impl PlonkPolicy {
             verifier_bytes: Vec::new(),
             policy_id,
             block_hashes: hashes,
+            role: PolicyRole::Check,
         })
+    }
+
+    pub fn from_prover_bytes_with_role(
+        policy_id: PolicyId,
+        prover_bytes: &[u8],
+        block_hashes: Vec<[u8; 32]>,
+        role: PolicyRole,
+    ) -> Result<Self> {
+        let mut policy = Self::from_prover_bytes(policy_id, prover_bytes, block_hashes)?;
+        policy.role = role;
+        Ok(policy)
     }
 
     pub fn policy_id(&self) -> &PolicyId {
@@ -138,18 +196,24 @@ impl PlonkPolicy {
 
     pub fn prove_payload(&self, payload: &[u8]) -> Result<PolicyCapsule> {
         let (payload_scalar, commitment_bytes) = payload_commitment(payload);
-        let mut inverses = Vec::with_capacity(self.block_hashes.len());
-        for blocked in &self.block_hashes {
-            let diff = payload_scalar - blocked;
-            let inv = diff.invert().ok_or(Error::PolicyViolation)?;
-            inverses.push(inv);
-        }
-        let circuit = BlocklistCircuit::new(payload_scalar, inverses, self.block_hashes.clone());
         let mut rng = ChaCha20Rng::from_seed(hash_to_seed(payload));
-        let (proof, public_inputs) = self
-            .prover
-            .prove(&mut rng, &circuit)
-            .map_err(|_| Error::Crypto)?;
+        let (proof, public_inputs) = match self.role {
+            PolicyRole::Open | PolicyRole::Parse => {
+                let circuit = TargetCircuit::new(payload_scalar);
+                self.prover.prove(&mut rng, &circuit).map_err(|_| Error::Crypto)?
+            }
+            PolicyRole::Check => {
+                let mut inverses = Vec::with_capacity(self.block_hashes.len());
+                for blocked in &self.block_hashes {
+                    let diff = payload_scalar - blocked;
+                    let inv = diff.invert().ok_or(Error::PolicyViolation)?;
+                    inverses.push(inv);
+                }
+                let circuit =
+                    BlocklistCircuit::new(payload_scalar, inverses, self.block_hashes.clone());
+                self.prover.prove(&mut rng, &circuit).map_err(|_| Error::Crypto)?
+            }
+        };
         if public_inputs.len() != 1 || public_inputs[0] != payload_scalar {
             return Err(Error::Crypto);
         }

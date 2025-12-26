@@ -11,7 +11,7 @@ use hornet::api::prove::{
 use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::oprf;
-use hornet::policy::plonk::{self, PlonkPolicy};
+use hornet::policy::plonk::{self, PlonkPolicy, PolicyRole};
 use hornet::policy::Blocklist;
 use hornet::utils::encode_hex;
 use hornet::utils::decode_hex;
@@ -42,18 +42,35 @@ async fn main() -> io::Result<()> {
 fn init_authority_state() -> io::Result<PolicyAuthorityState> {
     let mut state = PolicyAuthorityState::new();
     let label = policy_label_from_env();
-    let (policy, policy_id, blocklist, oprf_key) =
-        load_policy_with_label(DEFAULT_BLOCKLIST_PATH, &label)?;
-    plonk::register_policy(policy.clone());
-    state.register_policy(policy, HttpHostExtractor::default(), oprf_key, blocklist);
+    if std::env::var("POLICY_LABEL_SPLIT")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        for suffix in ["open", "parse", "check"] {
+            let split_label = format!("{}-{}", label, suffix);
+            let role = role_from_label(&split_label);
+            let (policy, policy_id, blocklist, oprf_key) =
+                load_policy_with_label(DEFAULT_BLOCKLIST_PATH, split_label.as_bytes(), role)?;
+            plonk::register_policy(policy.clone());
+            state.register_policy(policy, HttpHostExtractor::default(), oprf_key, blocklist);
+            println!("registered policy {} ({})", encode_hex(&policy_id), split_label);
+        }
+    } else {
+        let (policy, policy_id, blocklist, oprf_key) =
+            load_policy_with_label(DEFAULT_BLOCKLIST_PATH, label.as_bytes(), PolicyRole::Check)?;
+        plonk::register_policy(policy.clone());
+        state.register_policy(policy, HttpHostExtractor::default(), oprf_key, blocklist);
 
-    println!("registered policy {}", encode_hex(&policy_id));
+        println!("registered policy {}", encode_hex(&policy_id));
+    }
     Ok(state)
 }
 
 fn load_policy_with_label(
     block_list_path: &str,
     label: &[u8],
+    role: PolicyRole,
 ) -> io::Result<(
     Arc<PlonkPolicy>,
     hornet::policy::PolicyId,
@@ -70,7 +87,7 @@ fn load_policy_with_label(
     let oprf_key = oprf_key_from_env_or_label(label)?;
     let oprf_blocklist = oprf_blocklist_from(&blocklist, &oprf_key);
     let policy = Arc::new(
-        PlonkPolicy::new_from_blocklist(label, &oprf_blocklist).map_err(|err| {
+        PlonkPolicy::new_from_blocklist_with_role(label, &oprf_blocklist, role).map_err(|err| {
             io::Error::new(ErrorKind::Other, format!("failed to build policy: {err:?}"))
         })?,
     );
@@ -79,10 +96,23 @@ fn load_policy_with_label(
     Ok((policy, policy_id, oprf_blocklist, oprf_key))
 }
 
-fn policy_label_from_env() -> Vec<u8> {
+fn role_from_label(label: &str) -> PolicyRole {
+    if label.ends_with("-open") {
+        return PolicyRole::Open;
+    }
+    if label.ends_with("-parse") {
+        return PolicyRole::Parse;
+    }
+    if label.ends_with("-check") {
+        return PolicyRole::Check;
+    }
+    PolicyRole::Check
+}
+
+fn policy_label_from_env() -> String {
     match std::env::var("POLICY_LABEL") {
-        Ok(label) if !label.trim().is_empty() => label.into_bytes(),
-        _ => DEFAULT_POLICY_LABEL.to_vec(),
+        Ok(label) if !label.trim().is_empty() => label,
+        _ => String::from_utf8_lossy(DEFAULT_POLICY_LABEL).to_string(),
     }
 }
 

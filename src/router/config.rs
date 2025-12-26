@@ -8,6 +8,7 @@ pub struct RouterConfig {
     pub directory_url: String,
     pub directory_secret: String,
     pub expected_policy_id: Option<[u8; 32]>,
+    pub router_name: Option<String>,
     #[cfg(feature = "std")]
     pub directory_poll_interval: Duration,
     #[cfg(feature = "std")]
@@ -20,6 +21,7 @@ impl RouterConfig {
             directory_url: directory_url.into(),
             directory_secret: directory_secret.into(),
             expected_policy_id: None,
+            router_name: None,
             #[cfg(feature = "std")]
             directory_poll_interval: Duration::from_secs(60),
             #[cfg(feature = "std")]
@@ -47,6 +49,7 @@ impl RouterConfig {
             .unwrap_or(60);
         let storage =
             env::var("HORNET_STORAGE_PATH").unwrap_or_else(|_| "router_state.json".into());
+        let router_name = env::var("HORNET_ROUTER_NAME").ok();
         let expected_policy_id = match env::var("HORNET_POLICY_ID_HEX") {
             Ok(hex) => {
                 let bytes = decode_hex(hex.as_str()).map_err(|_| crate::types::Error::Length)?;
@@ -63,6 +66,7 @@ impl RouterConfig {
         cfg.directory_poll_interval = Duration::from_secs(poll);
         cfg.storage_path = storage;
         cfg.expected_policy_id = expected_policy_id;
+        cfg.router_name = router_name;
         cfg.validate()?;
         Ok(cfg)
     }

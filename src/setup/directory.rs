@@ -13,6 +13,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct DirectoryAnnouncement {
     policy_entries: Vec<PolicyMetadata>,
     route_entries: Vec<RouteAnnouncement>,
+    hop_policies: Vec<HopPolicyAnnouncement>,
 }
 
 impl DirectoryAnnouncement {
@@ -20,6 +21,7 @@ impl DirectoryAnnouncement {
         Self {
             policy_entries: Vec::new(),
             route_entries: Vec::new(),
+            hop_policies: Vec::new(),
         }
     }
 
@@ -27,6 +29,7 @@ impl DirectoryAnnouncement {
         Self {
             policy_entries: vec![meta],
             route_entries: Vec::new(),
+            hop_policies: Vec::new(),
         }
     }
 
@@ -40,6 +43,24 @@ impl DirectoryAnnouncement {
 
     pub fn routes(&self) -> &[RouteAnnouncement] {
         &self.route_entries
+    }
+
+    pub fn hop_policy_for(&self, interface: &str) -> Option<PolicyId> {
+        self.hop_policies
+            .iter()
+            .find(|entry| entry.interface == interface)
+            .map(|entry| entry.policy_id)
+    }
+
+    pub fn hop_policies(&self) -> &[HopPolicyAnnouncement] {
+        &self.hop_policies
+    }
+
+    pub fn push_hop_policy(&mut self, interface: impl Into<String>, policy_id: PolicyId) {
+        self.hop_policies.push(HopPolicyAnnouncement {
+            interface: interface.into(),
+            policy_id,
+        });
     }
 
     pub fn push_route(&mut self, route: RouteAnnouncement) {
@@ -63,6 +84,7 @@ impl DirectoryAnnouncement {
         Ok(Self {
             policy_entries: metas,
             route_entries: Vec::new(),
+            hop_policies: Vec::new(),
         })
     }
 }
@@ -88,6 +110,8 @@ struct DirectoryMessage {
     issued_at: u64,
     policies: Vec<PolicyMetadata>,
     #[serde(default)]
+    hop_policies: Vec<HopPolicyMessage>,
+    #[serde(default)]
     routes: Vec<RouteMessage>,
     signature: String,
 }
@@ -101,6 +125,11 @@ pub fn to_signed_json(
         version: 1,
         issued_at,
         policies: announcement.policy_entries.clone(),
+        hop_policies: announcement
+            .hop_policies
+            .iter()
+            .map(HopPolicyMessage::from_announcement)
+            .collect::<Result<Vec<_>>>()?,
         routes: announcement
             .route_entries
             .iter()
@@ -133,9 +162,15 @@ pub fn from_signed_json(body: &str, secret: &[u8]) -> Result<DirectoryAnnounceme
         .iter()
         .map(RouteMessage::to_announcement)
         .collect::<Result<Vec<_>>>()?;
+    let hop_policies = signed
+        .hop_policies
+        .iter()
+        .map(HopPolicyMessage::to_announcement)
+        .collect::<Result<Vec<_>>>()?;
     Ok(DirectoryAnnouncement {
         policy_entries: signed.policies,
         route_entries: routes,
+        hop_policies,
     })
 }
 
@@ -184,6 +219,40 @@ impl RouteMessage {
             policy_id: id,
             segment: routing::segment_from_elems(&elems),
             interface: self.interface.clone(),
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct HopPolicyAnnouncement {
+    pub interface: String,
+    pub policy_id: PolicyId,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct HopPolicyMessage {
+    interface: String,
+    policy_id: String,
+}
+
+impl HopPolicyMessage {
+    fn from_announcement(entry: &HopPolicyAnnouncement) -> Result<Self> {
+        Ok(Self {
+            interface: entry.interface.clone(),
+            policy_id: hex_encode(&entry.policy_id),
+        })
+    }
+
+    fn to_announcement(&self) -> Result<HopPolicyAnnouncement> {
+        let policy_id = hex_decode(&self.policy_id)?;
+        if policy_id.len() != 32 {
+            return Err(Error::Length);
+        }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&policy_id);
+        Ok(HopPolicyAnnouncement {
+            interface: self.interface.clone(),
+            policy_id: id,
         })
     }
 }
@@ -416,5 +485,31 @@ mod tests {
             1
         );
         assert_eq!(first.interface.as_deref(), Some("wan0"));
+    }
+
+    #[test]
+    fn announcement_with_hop_policies_roundtrip() {
+        let meta = PolicyMetadata {
+            policy_id: [0x20; 32],
+            version: 1,
+            expiry: 77,
+            flags: 0,
+            verifier_blob: vec![0xEE],
+        };
+        let mut directory = DirectoryAnnouncement::with_policy(meta.clone());
+        directory.push_hop_policy("router-entry", [0xA1; 32]);
+        directory.push_hop_policy("router-middle", [0xB2; 32]);
+        let secret = b"hop-secret";
+        let body = to_signed_json(&directory, secret, 55).expect("sign");
+        let parsed = from_signed_json(&body, secret).expect("verify");
+        assert_eq!(parsed.policies()[0], meta);
+        assert_eq!(
+            parsed.hop_policy_for("router-entry"),
+            Some([0xA1; 32])
+        );
+        assert_eq!(
+            parsed.hop_policy_for("router-middle"),
+            Some([0xB2; 32])
+        );
     }
 }

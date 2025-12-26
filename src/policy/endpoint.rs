@@ -5,12 +5,15 @@ pub fn authority_url_from_env(default_url: &str) -> String {
 
 #[cfg(feature = "std")]
 pub fn policy_bundle_url_from_env(authority_url: &str) -> Option<String> {
-    std::env::var("POLICY_BUNDLE_URL")
-        .ok()
-        .or_else(|| {
-            let trimmed = authority_url.trim_end_matches('/');
-            Some(format!("{trimmed}/policy-bundle"))
-        })
+    if let Ok(value) = std::env::var("POLICY_BUNDLE_URL") {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+    let trimmed = authority_url.trim_end_matches('/');
+    Some(format!("{trimmed}/policy-bundle"))
 }
 
 #[cfg(feature = "std")]

@@ -1,4 +1,4 @@
-use hornet::policy::plonk::PlonkPolicy;
+use hornet::policy::plonk::{PlonkPolicy, PolicyRole};
 use hornet::policy::Blocklist;
 use hornet::policy::oprf;
 use hornet::routing::{self, IpAddr, RouteElem};
@@ -32,9 +32,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let policy_label = policy_label_from_env();
     let oprf_key = oprf_key_from_env_or_label(policy_label.as_bytes())?;
     let oprf_blocklist = oprf_blocklist_from(&blocklist, &oprf_key);
-    let policy = PlonkPolicy::new_from_blocklist(policy_label.as_bytes(), &oprf_blocklist)
-        .map_err(|err| format!("policy init failed: {err:?}"))?;
-    let metadata = policy.metadata(900, 0);
+    let (open_meta, parse_meta, check_meta) =
+        build_policies(&policy_label, &oprf_blocklist)?;
     fs::create_dir_all("config/localnet")?;
 
     let routers = [
@@ -68,12 +67,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
+    let hop_policies = vec![
+        ("router-entry".to_string(), open_meta.policy_id),
+        ("router-middle".to_string(), parse_meta.policy_id),
+        ("router-exit".to_string(), check_meta.policy_id),
+    ];
+    let all_meta = vec![open_meta.clone(), parse_meta.clone(), check_meta.clone()];
     for spec in routers.iter() {
-        write_directory(spec, &metadata)?;
+        write_directory(spec, &all_meta, &hop_policies)?;
         write_env(spec)?;
     }
     let policy_info = PolicyInfo {
-        policy_id: encode_hex(&metadata.policy_id),
+        policy_id: encode_hex(&open_meta.policy_id),
+        policy_id_open: Some(encode_hex(&open_meta.policy_id)),
+        policy_id_parse: Some(encode_hex(&parse_meta.policy_id)),
+        policy_id_check: Some(encode_hex(&check_meta.policy_id)),
         directory_secret: LOCAL_SECRET.to_string(),
         routers: routers
             .iter()
@@ -107,6 +115,36 @@ fn policy_label_from_env() -> String {
     env::var("POLICY_LABEL").unwrap_or_else(|_| DEFAULT_POLICY_LABEL.to_string())
 }
 
+fn build_policies(
+    base_label: &str,
+    blocklist: &Blocklist,
+) -> Result<
+    (
+        hornet::policy::PolicyMetadata,
+        hornet::policy::PolicyMetadata,
+        hornet::policy::PolicyMetadata,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let open_label = format!("{base_label}-open");
+    let parse_label = format!("{base_label}-parse");
+    let check_label = format!("{base_label}-check");
+    let open_policy =
+        PlonkPolicy::new_from_blocklist_with_role(open_label.as_bytes(), blocklist, PolicyRole::Open)
+        .map_err(|err| format!("policy init failed (open): {err:?}"))?;
+    let parse_policy =
+        PlonkPolicy::new_from_blocklist_with_role(parse_label.as_bytes(), blocklist, PolicyRole::Parse)
+        .map_err(|err| format!("policy init failed (parse): {err:?}"))?;
+    let check_policy =
+        PlonkPolicy::new_from_blocklist_with_role(check_label.as_bytes(), blocklist, PolicyRole::Check)
+        .map_err(|err| format!("policy init failed (check): {err:?}"))?;
+    Ok((
+        open_policy.metadata(900, 0),
+        parse_policy.metadata(900, 0),
+        check_policy.metadata(900, 0),
+    ))
+}
+
 fn oprf_blocklist_from(
     blocklist: &Blocklist,
     key: &curve25519_dalek::scalar::Scalar,
@@ -122,13 +160,22 @@ fn oprf_blocklist_from(
 
 fn write_directory(
     spec: &RouterSpec,
-    metadata: &hornet::policy::PolicyMetadata,
+    metadata: &[hornet::policy::PolicyMetadata],
+    hop_policies: &[(String, hornet::policy::PolicyId)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut directory = DirectoryAnnouncement::new();
-    directory.push_policy(metadata.clone());
+    for meta in metadata {
+        directory.push_policy(meta.clone());
+    }
+    for (name, policy_id) in hop_policies {
+        directory.push_hop_policy(name.as_str(), *policy_id);
+    }
     let segment = routing::segment_from_elems(&[spec.route.clone()]);
     directory.push_route(RouteAnnouncement {
-        policy_id: metadata.policy_id,
+        policy_id: metadata
+            .first()
+            .ok_or("missing policy metadata")?
+            .policy_id,
         segment,
         interface: Some(spec.name.to_string()),
     });
@@ -144,6 +191,7 @@ fn write_env(spec: &RouterSpec) -> Result<(), Box<dyn std::error::Error>> {
         "HORNET_DIR_URL=https://localnet.invalid/{name}\n\
 HORNET_DIR_SECRET={secret}\n\
 HORNET_ROUTER_BIND={bind}\n\
+HORNET_ROUTER_NAME={name}\n\
 HORNET_STORAGE_PATH={storage}\n\
 HORNET_DIRECTORY_PATH=config/localnet/{name}.directory.json\n\
 HORNET_DIR_INTERVAL=5\n",
@@ -185,6 +233,12 @@ struct RouterInfo {
 #[derive(Serialize)]
 struct PolicyInfo {
     policy_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_id_open: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_id_parse: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_id_check: Option<String>,
     directory_secret: String,
     routers: Vec<RouterInfo>,
 }
