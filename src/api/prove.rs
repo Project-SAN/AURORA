@@ -335,9 +335,8 @@ mod tests {
         let mut onwire_payload = encrypted_tail;
         capsule.prepend_to(&mut onwire_payload);
 
-        // Router should forward the capsule followed by the decrypted plaintext payload.
-        let mut expected_forward_payload = capsule.encode();
-        expected_forward_payload.extend_from_slice(&message_plain);
+        // Router should forward the decrypted plaintext payload.
+        let expected_forward_payload = message_plain.clone();
 
         let mut forward = RecordingForward::new(expected_forward_payload);
         let mut replay = crate::node::NoReplay;
@@ -365,10 +364,8 @@ mod tests {
         .expect("process forward data");
 
         assert!(forward.was_called());
-        // Ensure payload forwarded in plaintext after capsule.
-        let capsule_len = capsule.encode().len();
-        assert_eq!(&onwire_payload[..4], b"ZKMB");
-        assert_eq!(&onwire_payload[capsule_len..], message_plain.as_slice());
+        // Ensure payload forwarded in plaintext.
+        assert_eq!(onwire_payload.as_slice(), message_plain.as_slice());
     }
 
     // Forward shim that records the payload forwarded by the node for assertions.

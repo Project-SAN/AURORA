@@ -25,6 +25,8 @@ pub struct Router {
     expected_policy_id: Option<[u8; 32]>,
 }
 
+const EXPECTED_HOPS: u8 = 3;
+
 impl Router {
     pub fn new() -> Self {
         Self {
@@ -113,6 +115,9 @@ impl Router {
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
     ) -> Result<()> {
+        if chdr.hops != EXPECTED_HOPS {
+            return Err(crate::types::Error::PolicyViolation);
+        }
         use crate::node;
         let policy = self.policy_runtime();
         let mut ctx = node::NodeCtx {
@@ -135,6 +140,9 @@ impl Router {
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
     ) -> Result<()> {
+        if chdr.hops != EXPECTED_HOPS {
+            return Err(crate::types::Error::PolicyViolation);
+        }
         use crate::node;
         let policy = self.policy_runtime();
         let mut ctx = node::NodeCtx {

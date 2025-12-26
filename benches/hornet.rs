@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 
-const HOP_CASES: &[usize] = &[2, 3, 5, 7];
+const HOP_CASES: &[usize] = &[3];
 const PAYLOAD_CASES: &[usize] = &[256, 1024, 4096, 16 * 1024];
 
 fn bench_create_ahdr(c: &mut Criterion) {
