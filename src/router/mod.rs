@@ -1,11 +1,12 @@
-use crate::adapters::plonk::validator::PlonkCapsuleValidator;
 use crate::application::forward::RegistryForwardPipeline;
 use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
-use crate::policy::PolicyRegistry;
+use crate::policy::{CapsuleValidator, PollingCapsuleValidator, PolicyRegistry};
+use crate::adapters::plonk::validator::PlonkCapsuleValidator;
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::types::{Ahdr, Chdr, Result};
 use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 pub mod config;
@@ -19,7 +20,8 @@ pub mod sync;
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {
     registry: PolicyRegistry,
-    validator: PlonkCapsuleValidator,
+    validator: Box<dyn CapsuleValidator>,
+    polling_validator: Option<Box<dyn PollingCapsuleValidator>>,
     forward_pipeline: RegistryForwardPipeline,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
     expected_policy_id: Option<[u8; 32]>,
@@ -32,7 +34,8 @@ impl Router {
     pub fn new() -> Self {
         Self {
             registry: PolicyRegistry::new(),
-            validator: PlonkCapsuleValidator::new(),
+            validator: Box::new(PlonkCapsuleValidator::new()),
+            polling_validator: None,
             forward_pipeline: RegistryForwardPipeline::new(),
             routes: BTreeMap::new(),
             expected_policy_id: None,
@@ -83,7 +86,7 @@ impl Router {
         }
         Some(PolicyRuntime {
             registry: &self.registry,
-            validator: &self.validator,
+            validator: self.validator.as_ref(),
             forward: &self.forward_pipeline,
             expected_policy_id: self.expected_policy_id,
         })
@@ -95,6 +98,21 @@ impl Router {
 
     pub fn set_router_name(&mut self, name: Option<alloc::string::String>) {
         self.router_name = name;
+    }
+
+    pub fn set_validator(&mut self, validator: Box<dyn CapsuleValidator>) {
+        self.validator = validator;
+    }
+
+    pub fn set_polling_validator(&mut self, validator: Box<dyn PollingCapsuleValidator>) {
+        self.polling_validator = Some(validator);
+    }
+
+    pub fn poll_validation(&self, budget: usize) -> usize {
+        self.polling_validator
+            .as_ref()
+            .map(|validator| validator.poll_validation(budget))
+            .unwrap_or(0)
     }
 
     pub fn registry(&self) -> &PolicyRegistry {
