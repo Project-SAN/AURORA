@@ -1,10 +1,12 @@
 pub mod capsule;
 pub mod metadata;
 pub mod registry;
+pub mod queue;
 
 pub use capsule::PolicyCapsule;
 pub use metadata::{PolicyId, PolicyMetadata};
 pub use registry::{CapsuleValidator, PolicyRegistry};
+pub use queue::ValidateQueue;
 
 use crate::types::{Error, Result};
 use alloc::vec::Vec;

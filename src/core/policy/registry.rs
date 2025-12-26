@@ -8,6 +8,11 @@ pub trait CapsuleValidator {
     fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()>;
 }
 
+pub trait PollingCapsuleValidator {
+    /// Poll pending validations. Returns number of jobs processed.
+    fn poll_validation(&self, budget: usize) -> usize;
+}
+
 pub struct PolicyRegistry {
     entries: BTreeMap<PolicyId, PolicyMetadata>,
 }

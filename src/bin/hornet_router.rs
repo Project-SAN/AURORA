@@ -12,6 +12,8 @@ use hornet::router::Router;
 use hornet::setup::wire;
 use hornet::time::SystemTimeProvider;
 use hornet::types::{self, PacketType, Result as HornetResult};
+#[cfg(feature = "std")]
+use hornet::adapters::plonk::validator::AsyncCapsuleValidator;
 use std::env;
 
 fn main() {
@@ -27,6 +29,10 @@ fn main() {
     let mut router = Router::new();
     router.set_expected_policy_id(config.expected_policy_id);
     router.set_router_name(config.router_name.clone());
+    if config.async_validate {
+        #[cfg(feature = "std")]
+        router.set_validator(Box::new(AsyncCapsuleValidator::new()));
+    }
     let secrets = load_state(&storage, &mut router);
     let directory_path =
         env::var("HORNET_DIRECTORY_PATH").unwrap_or_else(|_| "directory.json".into());

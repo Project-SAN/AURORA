@@ -63,6 +63,11 @@ impl<'a> RouterRuntime<'a> {
             ),
         }
     }
+
+    /// Poll queued policy validations (no_std-friendly).
+    pub fn poll_validation(&self, budget: usize) -> usize {
+        self.router.poll_validation(budget)
+    }
 }
 
 pub mod forward {
