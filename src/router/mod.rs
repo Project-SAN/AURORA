@@ -3,13 +3,19 @@ use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
 use crate::policy::{CapsuleValidator, PollingCapsuleValidator, PolicyRegistry};
 use crate::adapters::plonk::validator::PlonkCapsuleValidator;
+#[cfg(not(feature = "std"))]
+use crate::adapters::plonk::validator::QueuedCapsuleValidator;
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::types::{Ahdr, Chdr, Result};
 use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+#[cfg(not(feature = "std"))]
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 pub mod config;
+#[cfg(feature = "std")]
+pub mod config_std;
 #[cfg(feature = "std")]
 pub mod io;
 pub mod runtime;
@@ -20,8 +26,7 @@ pub mod sync;
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {
     registry: PolicyRegistry,
-    validator: Box<dyn CapsuleValidator>,
-    polling_validator: Option<Box<dyn PollingCapsuleValidator>>,
+    validator: ValidatorKind,
     forward_pipeline: RegistryForwardPipeline,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
     expected_policy_id: Option<[u8; 32]>,
@@ -29,13 +34,40 @@ pub struct Router {
 }
 
 const EXPECTED_HOPS: u8 = 3;
+const DEFAULT_VALIDATION_QUEUE: usize = 64;
+
+enum ValidatorKind {
+    Sync(Box<dyn CapsuleValidator>),
+    Polling(Arc<dyn CapsuleValidator + PollingCapsuleValidator>),
+}
+
+impl ValidatorKind {
+    fn validator(&self) -> &dyn CapsuleValidator {
+        match self {
+            Self::Sync(validator) => validator.as_ref(),
+            Self::Polling(validator) => validator.as_ref(),
+        }
+    }
+
+    fn poll(&self, budget: usize) -> usize {
+        match self {
+            Self::Sync(_) => 0,
+            Self::Polling(validator) => validator.poll_validation(budget),
+        }
+    }
+}
 
 impl Router {
     pub fn new() -> Self {
+        #[cfg(not(feature = "std"))]
+        let validator = ValidatorKind::Polling(Arc::new(
+            QueuedCapsuleValidator::<DEFAULT_VALIDATION_QUEUE>::new(),
+        ));
+        #[cfg(feature = "std")]
+        let validator = ValidatorKind::Sync(Box::new(PlonkCapsuleValidator::new()));
         Self {
             registry: PolicyRegistry::new(),
-            validator: Box::new(PlonkCapsuleValidator::new()),
-            polling_validator: None,
+            validator,
             forward_pipeline: RegistryForwardPipeline::new(),
             routes: BTreeMap::new(),
             expected_policy_id: None,
@@ -86,7 +118,7 @@ impl Router {
         }
         Some(PolicyRuntime {
             registry: &self.registry,
-            validator: self.validator.as_ref(),
+            validator: self.validator.validator(),
             forward: &self.forward_pipeline,
             expected_policy_id: self.expected_policy_id,
         })
@@ -101,18 +133,18 @@ impl Router {
     }
 
     pub fn set_validator(&mut self, validator: Box<dyn CapsuleValidator>) {
-        self.validator = validator;
+        self.validator = ValidatorKind::Sync(validator);
     }
 
-    pub fn set_polling_validator(&mut self, validator: Box<dyn PollingCapsuleValidator>) {
-        self.polling_validator = Some(validator);
+    pub fn set_polling_validator(
+        &mut self,
+        validator: Arc<dyn CapsuleValidator + PollingCapsuleValidator>,
+    ) {
+        self.validator = ValidatorKind::Polling(validator);
     }
 
     pub fn poll_validation(&self, budget: usize) -> usize {
-        self.polling_validator
-            .as_ref()
-            .map(|validator| validator.poll_validation(budget))
-            .unwrap_or(0)
+        self.validator.poll(budget)
     }
 
     pub fn registry(&self) -> &PolicyRegistry {
