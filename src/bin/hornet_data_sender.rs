@@ -53,6 +53,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     if info.routers.is_empty() {
         return Err("policy-info has no routers".into());
     }
+    if info.routers.len() != 3 {
+        return Err(format!(
+            "expected 3 routers, got {}",
+            info.routers.len()
+        ));
+    }
     let (policy_open_id, policy_parse_id, policy_check_id) = resolve_policy_ids(&info)?;
     let authority_url = authority_url_from_env("http://127.0.0.1:8080");
     let routers = load_router_states(&info.routers, &policy_open_id)?;

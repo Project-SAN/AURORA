@@ -138,6 +138,9 @@ fn handle_setup_packet(
     if packet.chdr.typ != PacketType::Setup {
         return Err(types::Error::Length);
     }
+    if packet.chdr.hops != 3 {
+        return Err(types::Error::PolicyViolation);
+    }
     let mut setup_packet = wire::decode(
         packet.chdr,
         &packet.ahdr.bytes,

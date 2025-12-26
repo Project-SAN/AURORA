@@ -14,6 +14,7 @@ use std::net::Ipv4Addr;
 const DEFAULT_BLOCKLIST: &str = "config/blocklist.json";
 const LOCAL_SECRET: &str = "localnet-secret";
 const DIRECTORY_EPOCH: u64 = 1_700_000_000;
+const DEFAULT_POLICY_LABEL: &str = "localnet-demo";
 
 fn main() {
     if let Err(err) = run() {
@@ -28,9 +29,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let block_json = fs::read_to_string(&blocklist_path)?;
     let blocklist =
         Blocklist::from_json(&block_json).map_err(|err| format!("blocklist error: {err:?}"))?;
-    let oprf_key = oprf_key_from_env_or_label(b"localnet-demo")?;
+    let policy_label = policy_label_from_env();
+    let oprf_key = oprf_key_from_env_or_label(policy_label.as_bytes())?;
     let oprf_blocklist = oprf_blocklist_from(&blocklist, &oprf_key);
-    let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &oprf_blocklist)
+    let policy = PlonkPolicy::new_from_blocklist(policy_label.as_bytes(), &oprf_blocklist)
         .map_err(|err| format!("policy init failed: {err:?}"))?;
     let metadata = policy.metadata(900, 0);
     fs::create_dir_all("config/localnet")?;
@@ -99,6 +101,10 @@ fn oprf_key_from_env_or_label(label: &[u8]) -> Result<curve25519_dalek::scalar::
         }
         Err(_) => Ok(oprf::derive_key_from_seed(label)),
     }
+}
+
+fn policy_label_from_env() -> String {
+    env::var("POLICY_LABEL").unwrap_or_else(|_| DEFAULT_POLICY_LABEL.to_string())
 }
 
 fn oprf_blocklist_from(

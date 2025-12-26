@@ -39,18 +39,18 @@ pub fn process_data(
     use crate::types::PacketDirection;
 
     let mut iv = chdr.specific;
-    if capsule_len >= payload.len() {
-        // nothing beyond the capsule to decrypt for the next hop
-        chdr.specific = iv;
-        return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward);
+    if capsule_len <= payload.len() {
+        payload.drain(0..capsule_len);
     }
-
-    let tail = &mut payload[capsule_len..];
-    onion::remove_layer(&res.s, &mut iv, tail)?;
+    let prefix_len = capsule_prefix_len(payload);
+    if prefix_len < payload.len() {
+        let tail = &mut payload[prefix_len..];
+        onion::remove_layer(&res.s, &mut iv, tail)?;
+    }
     chdr.specific = iv;
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
         if let Some(RouteElem::ExitTcp { addr, port, .. }) = elems.first() {
-            if let Some((ahdr_bytes, request)) = parse_exit_payload(tail) {
+            if let Some((ahdr_bytes, request)) = parse_exit_payload(&payload[prefix_len..]) {
                 #[cfg(feature = "std")]
                 {
                     return handle_exit_tcp(ctx, chdr, addr, *port, ahdr_bytes, request);
@@ -68,6 +68,252 @@ pub fn process_data(
     }
 
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward)
+}
+
+fn capsule_prefix_len(payload: &[u8]) -> usize {
+    let mut offset = 0usize;
+    while offset < payload.len() {
+        match crate::policy::PolicyCapsule::decode(&payload[offset..]) {
+            Ok((_capsule, consumed)) if consumed > 0 => {
+                offset = offset.saturating_add(consumed);
+            }
+            _ => break,
+        }
+    }
+    offset
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use rand::rngs::SmallRng;
+    use rand::{RngCore, SeedableRng};
+
+    use crate::application::forward::RegistryForwardPipeline;
+    use crate::policy::{CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRegistry};
+    use crate::routing::{self, IpAddr, RouteElem};
+    use crate::types::{Chdr, Nonce, PacketDirection, RoutingSegment};
+
+    struct AllowAllValidator;
+
+    impl CapsuleValidator for AllowAllValidator {
+        fn validate(&self, _capsule: &PolicyCapsule, _metadata: &PolicyMetadata) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FixedTimeProvider {
+        now: u32,
+    }
+
+    impl crate::time::TimeProvider for FixedTimeProvider {
+        fn now_coarse(&self) -> u32 {
+            self.now
+        }
+    }
+
+    struct RecordingForward {
+        expected_policy_id: [u8; 32],
+        expected_message: Vec<u8>,
+        called: bool,
+    }
+
+    impl RecordingForward {
+        fn new(expected_policy_id: [u8; 32], expected_message: Vec<u8>) -> Self {
+            Self {
+                expected_policy_id,
+                expected_message,
+                called: false,
+            }
+        }
+    }
+
+    impl crate::forward::Forward for RecordingForward {
+        fn send(
+            &mut self,
+            _rseg: &RoutingSegment,
+            _chdr: &Chdr,
+            _ahdr: &Ahdr,
+            payload: &mut Vec<u8>,
+            _direction: PacketDirection,
+        ) -> Result<()> {
+            let (capsule, consumed) =
+                PolicyCapsule::decode(payload.as_slice()).expect("capsule decode");
+            assert_eq!(capsule.policy_id, self.expected_policy_id);
+            assert_eq!(&payload[consumed..], self.expected_message.as_slice());
+            self.called = true;
+            Ok(())
+        }
+    }
+
+    struct PanicForward;
+
+    impl crate::forward::Forward for PanicForward {
+        fn send(
+            &mut self,
+            _rseg: &RoutingSegment,
+            _chdr: &Chdr,
+            _ahdr: &Ahdr,
+            _payload: &mut Vec<u8>,
+            _direction: PacketDirection,
+        ) -> Result<()> {
+            panic!("forward should not be called");
+        }
+    }
+
+    fn deliver_route() -> RoutingSegment {
+        routing::segment_from_elems(&[RouteElem::NextHop {
+            addr: IpAddr::V4([127, 0, 0, 1]),
+            port: 9999,
+        }])
+    }
+
+    fn build_single_hop_packet(
+        message_plain: &[u8],
+        exp: crate::types::Exp,
+    ) -> (crate::types::Sv, Ahdr, Chdr, Vec<u8>, crate::types::Si) {
+        let mut rng = SmallRng::seed_from_u64(0xA55A_5AA5);
+        let mut sv_bytes = [0u8; 16];
+        rng.fill_bytes(&mut sv_bytes);
+        let sv = crate::types::Sv(sv_bytes);
+
+        let mut si_bytes = [0u8; 16];
+        rng.fill_bytes(&mut si_bytes);
+        let si = crate::types::Si(si_bytes);
+
+        let route = deliver_route();
+        let fs = crate::packet::core::create(&sv, &si, &route, exp).expect("fs create");
+        let mut rng_ahdr = SmallRng::seed_from_u64(0x1CEB_00DA);
+        let ahdr =
+            crate::packet::ahdr::create_ahdr(&[si], &[fs], crate::types::R_MAX, &mut rng_ahdr)
+                .expect("create ahdr");
+
+        let mut nonce_bytes = [0u8; 16];
+        rng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce(nonce_bytes);
+        let mut chdr = crate::packet::chdr::data_header(1, nonce);
+
+        let mut encrypted_tail = message_plain.to_vec();
+        let mut iv_for_build = nonce;
+        crate::source::build(&mut chdr, &ahdr, &[si], &mut iv_for_build, &mut encrypted_tail)
+            .expect("build payload");
+
+        (sv, Ahdr { bytes: ahdr.bytes }, chdr, encrypted_tail, si)
+    }
+
+    #[test]
+    fn expected_policy_id_mismatch_rejects() {
+        let policy_id = [0x11; 32];
+        let mut registry = PolicyRegistry::new();
+        registry
+            .register(PolicyMetadata {
+                policy_id,
+                version: 1,
+                expiry: 0,
+                flags: 0,
+                verifier_blob: vec![],
+            })
+            .expect("register");
+        let validator = AllowAllValidator;
+        let forward_pipeline = RegistryForwardPipeline::new();
+
+        let exp = crate::types::Exp(1_700_000_600);
+        let (sv, mut ahdr, mut chdr, encrypted_tail, _si) =
+            build_single_hop_packet(b"test", exp);
+        let capsule = PolicyCapsule {
+            policy_id,
+            version: 1,
+            proof: vec![1, 2],
+            commitment: vec![],
+            aux: vec![],
+        };
+        let mut payload = capsule.encode();
+        payload.extend_from_slice(&encrypted_tail);
+
+        let mut forward = PanicForward;
+        let mut replay = crate::node::NoReplay;
+        let time = FixedTimeProvider { now: 1_700_000_000 };
+        let mut ctx = crate::node::NodeCtx {
+            sv,
+            now: &time,
+            forward: &mut forward,
+            replay: &mut replay,
+            policy: Some(crate::node::PolicyRuntime {
+                registry: &registry,
+                validator: &validator,
+                forward: &forward_pipeline,
+                expected_policy_id: Some([0x22; 32]),
+            }),
+        };
+
+        let err = process_data(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
+            .expect_err("expected policy violation");
+        assert!(matches!(err, Error::PolicyViolation));
+    }
+
+    #[test]
+    fn strips_first_capsule_and_preserves_next() {
+        let policy_open = [0x11; 32];
+        let policy_next = [0x22; 32];
+
+        let mut registry = PolicyRegistry::new();
+        registry
+            .register(PolicyMetadata {
+                policy_id: policy_open,
+                version: 1,
+                expiry: 0,
+                flags: 0,
+                verifier_blob: vec![],
+            })
+            .expect("register");
+        let validator = AllowAllValidator;
+        let forward_pipeline = RegistryForwardPipeline::new();
+
+        let message_plain = b"hello-next-hop";
+        let exp = crate::types::Exp(1_700_000_600);
+        let (sv, mut ahdr, mut chdr, encrypted_tail, _si) =
+            build_single_hop_packet(message_plain, exp);
+
+        let capsule_open = PolicyCapsule {
+            policy_id: policy_open,
+            version: 1,
+            proof: vec![0xAA],
+            commitment: vec![],
+            aux: vec![],
+        };
+        let capsule_next = PolicyCapsule {
+            policy_id: policy_next,
+            version: 1,
+            proof: vec![0xBB],
+            commitment: vec![],
+            aux: vec![],
+        };
+
+        let mut payload = capsule_open.encode();
+        payload.extend_from_slice(&capsule_next.encode());
+        payload.extend_from_slice(&encrypted_tail);
+
+        let mut forward = RecordingForward::new(policy_next, message_plain.to_vec());
+        let mut replay = crate::node::NoReplay;
+        let time = FixedTimeProvider { now: 1_700_000_000 };
+        let mut ctx = crate::node::NodeCtx {
+            sv,
+            now: &time,
+            forward: &mut forward,
+            replay: &mut replay,
+            policy: Some(crate::node::PolicyRuntime {
+                registry: &registry,
+                validator: &validator,
+                forward: &forward_pipeline,
+                expected_policy_id: Some(policy_open),
+            }),
+        };
+
+        process_data(&mut ctx, &mut chdr, &mut ahdr, &mut payload)
+            .expect("process forward");
+        assert!(forward.called);
+    }
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

@@ -85,7 +85,7 @@ fn build_single_hop_packet(
     let mut iv0 = [0u8; 16];
     rng.fill_bytes(&mut iv0);
     let nonce = Nonce(iv0);
-    let mut chdr = hornet::packet::chdr::data_header(1, nonce);
+    let mut chdr = hornet::packet::chdr::data_header(3, nonce);
 
     let capsule_len = capsule.len();
     let mut payload = capsule;

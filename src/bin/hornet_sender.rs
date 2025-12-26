@@ -43,6 +43,12 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     if info.routers.is_empty() {
         return Err("policy-info has no routers".into());
     }
+    if info.routers.len() != 3 {
+        return Err(format!(
+            "expected 3 routers, got {}",
+            info.routers.len()
+        ));
+    }
     let entry = &info.routers[0];
     let node_pubs = load_node_pubs(&info.routers)?;
     let directory_body = fs::read_to_string(&entry.directory_path)
