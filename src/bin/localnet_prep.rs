@@ -139,9 +139,9 @@ fn build_policies(
         PlonkPolicy::new_from_blocklist_with_role(check_label.as_bytes(), blocklist, PolicyRole::Check)
         .map_err(|err| format!("policy init failed (check): {err:?}"))?;
     Ok((
-        open_policy.metadata(900, 0),
-        parse_policy.metadata(900, 0),
-        check_policy.metadata(900, 0),
+        open_policy.metadata_for_role(900, PolicyRole::Open),
+        parse_policy.metadata_for_role(900, PolicyRole::Parse),
+        check_policy.metadata_for_role(900, PolicyRole::Check),
     ))
 }
 

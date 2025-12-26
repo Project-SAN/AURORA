@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 
 use crate::core::policy::{CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata};
 use crate::types::{Error, Result};
+use crate::policy::plonk::{POLICY_FLAG_ROLE_OPEN, POLICY_FLAG_ROLE_PARSE};
 use dusk_bytes::Serializable;
 use dusk_plonk::{composer::Verifier as PlonkVerifier, prelude::BlsScalar, proof_system::Proof};
 use spin::Mutex;
@@ -57,6 +58,9 @@ impl PlonkCapsuleValidator {
 
 impl CapsuleValidator for PlonkCapsuleValidator {
     fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()> {
+        if (metadata.flags & (POLICY_FLAG_ROLE_OPEN | POLICY_FLAG_ROLE_PARSE)) != 0 {
+            return Ok(());
+        }
         let Some(verifier) = self.load_verifier(metadata)? else {
             return Ok(());
         };
