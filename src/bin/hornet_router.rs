@@ -13,6 +13,7 @@ use hornet::time::SystemTimeProvider;
 use hornet::types::{self, PacketType, Result as HornetResult};
 use hornet::control::{self, ControlMessage};
 use std::env;
+use std::io::Write;
 use std::net::TcpStream;
 
 fn main() {
@@ -26,7 +27,7 @@ fn main() {
     }
     let storage = FileRouterStorage::new(&config.storage_path);
     let mut router = if env::var("HORNET_PCD").ok().as_deref() == Some("1") {
-        Router::with_forward_pipeline(Box::new(PcdForwardPipeline::new()))
+        Router::with_forward_pipeline(Box::new(pcd_forward_pipeline()))
     } else {
         Router::new()
     };
@@ -52,7 +53,7 @@ fn main() {
                     continue;
                 }
                 let mut runtime = RouterRuntime::new(
-                    &router,
+                    &mut router,
                     &time,
                     move || Box::new(TcpForward::new()),
                     || Box::new(NoReplay),
@@ -98,6 +99,26 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(feature = "pcd-nova")]
+fn pcd_forward_pipeline() -> PcdForwardPipeline {
+    if env::var("HORNET_PCD_BACKEND").ok().as_deref() == Some("nova") {
+        match hornet::pcd::nova::NovaPcdBackend::new() {
+            Ok(backend) => PcdForwardPipeline::with_backend(Box::new(backend)),
+            Err(err) => {
+                eprintln!("pcd: failed to init nova backend ({err:?}), using hash backend");
+                PcdForwardPipeline::new()
+            }
+        }
+    } else {
+        PcdForwardPipeline::new()
+    }
+}
+
+#[cfg(not(feature = "pcd-nova"))]
+fn pcd_forward_pipeline() -> PcdForwardPipeline {
+    PcdForwardPipeline::new()
 }
 
 struct RouterSecrets {

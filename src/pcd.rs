@@ -35,6 +35,13 @@ impl PcdState {
 pub trait PcdBackend {
     fn hash(&self, state: &PcdState) -> [u8; 32];
     fn step(&self, prev: &PcdState) -> PcdState;
+    fn prove_base(&self, initial: &PcdState) -> Result<Vec<u8>, crate::types::Error>;
+    fn prove_step(
+        &self,
+        prev: &PcdState,
+        prev_proof: &[u8],
+    ) -> Result<Vec<u8>, crate::types::Error>;
+    fn verify_step(&self, prev: &PcdState, proof: &[u8]) -> Result<(), crate::types::Error>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -47,6 +54,26 @@ impl PcdBackend for HashPcdBackend {
 
     fn step(&self, prev: &PcdState) -> PcdState {
         prev.next_seq()
+    }
+
+    fn prove_base(&self, _initial: &PcdState) -> Result<Vec<u8>, crate::types::Error> {
+        Ok(Vec::new())
+    }
+
+    fn prove_step(
+        &self,
+        _prev: &PcdState,
+        _prev_proof: &[u8],
+    ) -> Result<Vec<u8>, crate::types::Error> {
+        Ok(Vec::new())
+    }
+
+    fn verify_step(&self, _prev: &PcdState, proof: &[u8]) -> Result<(), crate::types::Error> {
+        if proof.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::types::Error::PolicyViolation)
+        }
     }
 }
 

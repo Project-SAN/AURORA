@@ -18,6 +18,9 @@ pub enum CapsuleExtension {
     PcdRoot([u8; 32]),
     PcdTargetHash([u8; 32]),
     PcdSeq(u64),
+    PcdProof(Vec<u8>),
+    SessionNonce([u8; 32]),
+    RouteId([u8; 32]),
 }
 
 impl CapsuleExtension {
@@ -34,6 +37,9 @@ impl CapsuleExtension {
             CapsuleExtension::PcdRoot(_) => 9,
             CapsuleExtension::PcdTargetHash(_) => 10,
             CapsuleExtension::PcdSeq(_) => 11,
+            CapsuleExtension::PcdProof(_) => 12,
+            CapsuleExtension::SessionNonce(_) => 13,
+            CapsuleExtension::RouteId(_) => 14,
         }
     }
 }
@@ -91,6 +97,19 @@ pub fn encode_extensions(exts: &[CapsuleExtension]) -> Vec<u8> {
             CapsuleExtension::PcdSeq(seq) => {
                 out.extend_from_slice(&8u16.to_be_bytes());
                 out.extend_from_slice(&seq.to_be_bytes());
+            }
+            CapsuleExtension::PcdProof(bytes) => {
+                let len = bytes.len().min(u16::MAX as usize) as u16;
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(&bytes[..len as usize]);
+            }
+            CapsuleExtension::SessionNonce(nonce) => {
+                out.extend_from_slice(&(nonce.len() as u16).to_be_bytes());
+                out.extend_from_slice(nonce);
+            }
+            CapsuleExtension::RouteId(route) => {
+                out.extend_from_slice(&(route.len() as u16).to_be_bytes());
+                out.extend_from_slice(route);
             }
         }
     }
@@ -162,6 +181,17 @@ pub fn decode_extensions(aux: &[u8]) -> Result<Option<Vec<CapsuleExtension>>> {
                 let mut buf = [0u8; 8];
                 buf.copy_from_slice(slice);
                 Some(CapsuleExtension::PcdSeq(u64::from_be_bytes(buf)))
+            }
+            12 => Some(CapsuleExtension::PcdProof(slice.to_vec())),
+            13 if len == 32 => {
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(slice);
+                Some(CapsuleExtension::SessionNonce(buf))
+            }
+            14 if len == 32 => {
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(slice);
+                Some(CapsuleExtension::RouteId(buf))
             }
             _ => None,
         };
