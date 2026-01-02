@@ -1,10 +1,11 @@
+use hornet::core::policy::ProofKind;
+use hornet::pcd::{HashPcdBackend, PcdBackend, PcdState};
+use hornet::core::policy::{encode_extensions, CapsuleExtension};
 use hornet::policy::blocklist;
 use hornet::policy::plonk::PlonkPolicy;
-use hornet::policy::{encode_extensions, Blocklist, CapsuleExtension};
-use hornet::core::policy::ProofKind;
-use hornet::pcd::PcdState;
+use hornet::policy::Blocklist;
+use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
-use hornet::core::policy::ProofKind;
 use hornet::policy::Extractor;
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
@@ -84,17 +85,28 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut capsule = policy
         .prove_payload(&canonical_bytes)
         .map_err(|err| format!("failed to prove payload: {err:?}"))?;
+    let mut rng = SmallRng::seed_from_u64(derive_seed());
     let sequence = current_sequence()?;
     let root = blocklist.merkle_root();
     let htarget = hash_bytes(&canonical_bytes);
-    let hkey = [0u8; 32];
+    let route_id = compute_route_id(&routers, &target_ip, target_port);
+    let mut session_nonce = [0u8; 32];
+    rng.fill_bytes(&mut session_nonce);
+    let mut sender_secret = [0u8; 32];
+    rng.fill_bytes(&mut sender_secret);
+    let k = derive_session_key(&sender_secret, &policy_id, &htarget, &session_nonce, &route_id);
+    let hkey = hash_bytes(&k);
     let init_state = PcdState {
         hkey,
-        seq: 0,
+        seq: 1,
         root,
         htarget,
     };
-    let init_hash = init_state.hash();
+    let backend = pcd_backend_from_env();
+    let init_hash = backend.hash(&init_state);
+    let pcd_proof = backend
+        .prove_base(&init_state)
+        .unwrap_or_else(|_| Vec::new());
     for part in capsule.parts.iter_mut() {
         match part.kind {
             ProofKind::Policy => {
@@ -107,13 +119,18 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
                     CapsuleExtension::PcdTargetHash(init_state.htarget),
                     CapsuleExtension::PcdSeq(init_state.seq),
                     CapsuleExtension::PcdState(init_hash),
+                    CapsuleExtension::PcdProof(pcd_proof.clone()),
                 ]);
             }
-            ProofKind::KeyBinding => {}
+            ProofKind::KeyBinding => {
+                part.aux = encode_extensions(&[
+                    CapsuleExtension::PcdKeyHash(hkey),
+                    CapsuleExtension::SessionNonce(session_nonce),
+                    CapsuleExtension::RouteId(route_id),
+                ]);
+            }
         }
     }
-
-    let mut rng = SmallRng::seed_from_u64(derive_seed());
     let hops = routers.len();
     let rmax = hops;
     let mut keys = Vec::with_capacity(hops);
@@ -291,6 +308,26 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     Ok(())
 }
 
+#[cfg(feature = "pcd-nova")]
+fn pcd_backend_from_env() -> Box<dyn PcdBackend> {
+    if env::var("HORNET_PCD_BACKEND").ok().as_deref() == Some("nova") {
+        match hornet::pcd::nova::NovaPcdBackend::new() {
+            Ok(backend) => Box::new(backend),
+            Err(err) => {
+                eprintln!("pcd: failed to init nova backend ({err:?}), using hash backend");
+                Box::new(HashPcdBackend)
+            }
+        }
+    } else {
+        Box::new(HashPcdBackend)
+    }
+}
+
+#[cfg(not(feature = "pcd-nova"))]
+fn pcd_backend_from_env() -> Box<dyn PcdBackend> {
+    Box::new(HashPcdBackend)
+}
+
 fn spawn_control_listener(info_path: String, host: String, payload: Vec<u8>) -> Option<std::thread::JoinHandle<()>> {
     let bind = env::var("HORNET_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7100".into());
     let listener = TcpListener::bind(&bind).ok()?;
@@ -301,8 +338,10 @@ fn spawn_control_listener(info_path: String, host: String, payload: Vec<u8>) -> 
                 if n > 0 {
                     if let Ok(msg) = hornet::control::decode(&buf[..n]) {
                         println!("control message: {:?}", msg);
-                        if let hornet::control::ControlMessage::ResendRequest { .. } = msg {
-                            let _ = send_data(&info_path, &host, &payload);
+                        match msg {
+                            hornet::control::ControlMessage::ResendRequest { .. } => {
+                                let _ = send_data(&info_path, &host, &payload);
+                            }
                         }
                     }
                 }
@@ -446,6 +485,52 @@ fn derive_seed() -> u64 {
 fn hash_bytes(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn derive_session_key(
+    sender_secret: &[u8; 32],
+    policy_id: &[u8; 32],
+    htarget: &[u8; 32],
+    session_nonce: &[u8; 32],
+    route_id: &[u8; 32],
+) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(None, sender_secret);
+    let mut info = Vec::with_capacity(16 + 32 * 4);
+    info.extend_from_slice(b"ZKMB-HORNET-SESSION");
+    info.extend_from_slice(policy_id);
+    info.extend_from_slice(htarget);
+    info.extend_from_slice(session_nonce);
+    info.extend_from_slice(route_id);
+    let mut out = [0u8; 32];
+    hk.expand(&info, &mut out).expect("HKDF expand");
+    out
+}
+
+fn compute_route_id(
+    routers: &[(StoredState, RouterInfo)],
+    target_ip: &IpAddr,
+    target_port: u16,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for (_state, info) in routers {
+        hasher.update(info.name.as_bytes());
+        hasher.update(info.bind.as_bytes());
+    }
+    match target_ip {
+        IpAddr::V4(ip) => {
+            hasher.update(&[4u8]);
+            hasher.update(ip);
+        }
+        IpAddr::V6(ip) => {
+            hasher.update(&[6u8]);
+            hasher.update(ip);
+        }
+    }
+    hasher.update(&target_port.to_be_bytes());
     let digest = hasher.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);

@@ -1,7 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use crate::core::policy::{CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata, ProofKind};
+use crate::core::policy::{CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata};
 use crate::types::{Error, Result};
 use dusk_bytes::Serializable;
 use dusk_plonk::{composer::Verifier as PlonkVerifier, prelude::BlsScalar, proof_system::Proof};
@@ -38,13 +38,6 @@ impl PlonkCapsuleValidator {
         let verifier = Arc::new(verifier);
         cache.insert((metadata.policy_id, kind), verifier.clone());
         Ok(Some(verifier))
-    }
-
-    fn validate_proof(verifier: &PlonkVerifier, capsule: &PolicyCapsule) -> Result<()> {
-        let Some(policy) = capsule.part(ProofKind::Policy) else {
-            return Err(Error::PolicyViolation);
-        };
-        Self::validate_proof_bytes(verifier, &policy.proof, &policy.commitment)
     }
 
     fn validate_proof_bytes(

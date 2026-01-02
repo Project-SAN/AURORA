@@ -2,6 +2,7 @@ use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
 use hornet::policy::blocklist::BlocklistEntry;
 use hornet::policy::plonk::{self, PlonkPolicy};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
+use hornet::core::policy::ProofKind;
 use hornet::types::{Error, Result};
 use hornet::utils::encode_hex;
 
@@ -24,8 +25,14 @@ fn run_demo() -> Result<()> {
     let safe_leaf = canonical_leaf("safe.example");
     let capsule = policy.prove_payload(&safe_leaf)?;
     println!("Client produced capsule for safe.example");
-    println!("  proof bytes : {}", capsule.proof.len());
-    println!("  commitment  : {}\n", encode_hex(&capsule.commitment));
+    let policy_part = capsule
+        .part(ProofKind::Policy)
+        .ok_or(Error::PolicyViolation)?;
+    println!("  proof bytes : {}", policy_part.proof.len());
+    println!(
+        "  commitment  : {}\n",
+        encode_hex(&policy_part.commitment)
+    );
 
     // Client submits the capsule to the PA for verification before transmission.
     verify_capsule(&metadata, &capsule, &safe_leaf)?;
@@ -85,7 +92,10 @@ fn verify_capsule(
     }
 
     let expected_commit = plonk::payload_commitment_bytes(target_leaf);
-    if expected_commit != decoded.commitment {
+    let policy_part = decoded
+        .part(ProofKind::Policy)
+        .ok_or(Error::PolicyViolation)?;
+    if expected_commit != policy_part.commitment {
         return Err(Error::PolicyViolation);
     }
 

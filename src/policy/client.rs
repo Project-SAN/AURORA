@@ -1,6 +1,6 @@
 use crate::policy::blocklist::{self, Blocklist, BlocklistEntry, MerkleProof};
 use crate::policy::plonk::{self, PlonkPolicy};
-use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue, VerifierEntry};
+use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
 use alloc::collections::BTreeMap;
@@ -610,6 +610,7 @@ mod hex {
 mod tests {
     use super::*;
     use alloc::vec;
+    use crate::policy::VerifierEntry;
 
     #[test]
     fn proof_request_serialises() {

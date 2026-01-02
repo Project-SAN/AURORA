@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 /// Runtime helper that wires Router policy state into node processing loops.
 pub struct RouterRuntime<'a> {
-    router: &'a Router,
+    router: &'a mut Router,
     time: &'a dyn TimeProvider,
     forward_factory: Rc<dyn Fn() -> Box<dyn Forward + 'a> + 'a>,
     replay_factory: Rc<dyn Fn() -> Box<dyn ReplayFilter + 'a> + 'a>,
@@ -15,7 +15,7 @@ pub struct RouterRuntime<'a> {
 
 impl<'a> RouterRuntime<'a> {
     pub fn new<FwdFactory, RepFactory>(
-        router: &'a Router,
+        router: &'a mut Router,
         time: &'a dyn TimeProvider,
         forward_factory: FwdFactory,
         replay_factory: RepFactory,
@@ -130,10 +130,10 @@ pub mod tests {
 
     #[test]
     fn runtime_constructs() {
-        let router = Router::new();
+        let mut router = Router::new();
         let time = FixedTime(0);
         let _runtime = RouterRuntime::new(
-            &router,
+            &mut router,
             &time,
             || Box::new(LoopbackForward::new()),
             || Box::new(NoReplay),

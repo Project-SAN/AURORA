@@ -15,9 +15,8 @@ use crate::application::prove::{
 };
 use crate::policy::extract::{ExtractionError, Extractor};
 use crate::policy::plonk::{self, PlonkPolicy};
-use crate::policy::{
-    encode_extensions, CapsuleExtension, PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry,
-};
+use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
+use crate::core::policy::{encode_extensions, CapsuleExtension};
 use crate::core::policy::ProofKind;
 use crate::types::Error as HornetError;
 use crate::utils::{decode_hex, encode_hex, HexError};
@@ -79,7 +78,14 @@ impl DomainProofPipeline for PolicyAuthorityState {
     }
 
     fn precompute(&self, request: ProveInput<'_>) -> Result<PrecomputeResult, ProofError> {
-        let capsule = self.prove(request)?;
+        let policy_id = request.policy_id;
+        let payload = request.payload.to_vec();
+        let aux = request.aux.to_vec();
+        let capsule = self.prove(ProveInput {
+            policy_id,
+            payload: payload.as_slice(),
+            aux: aux.as_slice(),
+        })?;
         let token = precompute_token(&capsule);
         let policy_part = capsule
             .part(ProofKind::Policy)
@@ -91,16 +97,14 @@ impl DomainProofPipeline for PolicyAuthorityState {
             .insert(
                 token.clone(),
                 PrecomputeEntry {
-                    policy_id: request.policy_id,
-                    payload: request.payload.to_vec(),
+                    policy_id,
+                    payload,
                     precompute_proof: policy_part.proof.clone(),
-                    commitment: policy_part.commitment.clone(),
-                    version: capsule.version,
                 },
             );
         Ok(PrecomputeResult {
             token: PrecomputeToken {
-                policy_id: request.policy_id,
+                policy_id,
                 token,
             },
             commitment,
@@ -133,8 +137,6 @@ struct PrecomputeEntry {
     policy_id: PolicyId,
     payload: Vec<u8>,
     precompute_proof: Vec<u8>,
-    commitment: Vec<u8>,
-    version: u8,
 }
 
 #[cfg(test)]
@@ -641,19 +643,30 @@ pub async fn prove_batch(
     pipeline: web::Data<Arc<ProofPipelineHandle>>,
     request: web::Json<ProveBatchRequest>,
 ) -> Result<impl Responder, ApiError> {
-    let mut inputs = Vec::with_capacity(request.items.len());
+    let mut payloads = Vec::with_capacity(request.items.len());
+    let mut auxes = Vec::with_capacity(request.items.len());
     for item in &request.items {
-        let policy_id = decode_policy_id(item.policy_id.as_str())?;
         let payload = decode_hex(item.payload_hex.as_str())?;
         let aux_bytes = if item.aux_hex.is_empty() {
             Vec::new()
         } else {
             decode_hex(item.aux_hex.as_str())?
         };
+        payloads.push(payload);
+        auxes.push(aux_bytes);
+    }
+    let mut inputs = Vec::with_capacity(request.items.len());
+    for (idx, item) in request.items.iter().enumerate() {
+        let policy_id = decode_policy_id(item.policy_id.as_str())?;
+        let payload_ref = payloads
+            .get(idx)
+            .ok_or(ApiError::ProofFailure)?
+            .as_slice();
+        let aux_ref = auxes.get(idx).ok_or(ApiError::ProofFailure)?.as_slice();
         inputs.push(ProveInput {
             policy_id,
-            payload: payload.as_slice(),
-            aux: aux_bytes.as_slice(),
+            payload: payload_ref,
+            aux: aux_ref,
         });
     }
     let capsules = pipeline
