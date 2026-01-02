@@ -1,7 +1,9 @@
 use crate::policy::blocklist::{self, Blocklist, BlocklistEntry, MerkleProof};
 use crate::policy::plonk::{self, PlonkPolicy};
-use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
+use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue, VerifierEntry};
+use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -142,6 +144,98 @@ where
 
 pub trait ProofService {
     fn obtain_proof(&self, request: &ProofRequest<'_>) -> Result<PolicyCapsule>;
+
+    fn obtain_batch(&self, requests: &[ProofRequest<'_>]) -> Result<Vec<PolicyCapsule>> {
+        let mut out = Vec::with_capacity(requests.len());
+        for request in requests {
+            out.push(self.obtain_proof(request)?);
+        }
+        Ok(out)
+    }
+
+    fn precompute(&self, _request: &ProofRequest<'_>) -> Result<PrecomputeToken> {
+        Err(Error::Crypto)
+    }
+
+    fn obtain_precomputed(&self, _token: &PrecomputeToken) -> Result<PolicyCapsule> {
+        Err(Error::Crypto)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PrecomputeToken {
+    pub policy_id: [u8; 32],
+    pub token: String,
+}
+
+#[derive(Default)]
+pub struct ProofCache {
+    entries: BTreeMap<[u8; 32], PolicyCapsule>,
+}
+
+impl ProofCache {
+    pub fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, payload: &[u8], capsule: PolicyCapsule) {
+        let key = payload_hash(payload);
+        self.entries.insert(key, capsule);
+    }
+
+    pub fn get(&self, payload: &[u8]) -> Option<PolicyCapsule> {
+        let key = payload_hash(payload);
+        self.entries.get(&key).cloned()
+    }
+}
+
+pub struct CachedProofService<S> {
+    inner: S,
+    cache: ProofCache,
+}
+
+impl<S> CachedProofService<S> {
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            cache: ProofCache::new(),
+        }
+    }
+
+    pub fn precompute(&mut self, request: &ProofRequest<'_>) -> Result<()> 
+    where
+        S: ProofService,
+    {
+        let capsule = self.inner.obtain_proof(request)?;
+        self.cache.insert(request.payload, capsule);
+        Ok(())
+    }
+}
+
+impl<S> ProofService for CachedProofService<S>
+where
+    S: ProofService,
+{
+    fn obtain_proof(&self, request: &ProofRequest<'_>) -> Result<PolicyCapsule> {
+        if let Some(capsule) = self.cache.get(request.payload) {
+            return Ok(capsule);
+        }
+        self.inner.obtain_proof(request)
+    }
+
+    fn obtain_batch(&self, requests: &[ProofRequest<'_>]) -> Result<Vec<PolicyCapsule>> {
+        let mut out = Vec::with_capacity(requests.len());
+        for request in requests {
+            if let Some(capsule) = self.cache.get(request.payload) {
+                out.push(capsule);
+            } else {
+                out.push(self.inner.obtain_proof(request)?);
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +250,16 @@ impl HttpProofService {
         Self {
             endpoint: endpoint.into(),
             agent,
+        }
+    }
+
+    fn endpoint_for(&self, suffix: &str) -> String {
+        let trimmed = self.endpoint.trim_end_matches('/');
+        if trimmed.ends_with("/prove") {
+            let base = trimmed.trim_end_matches("/prove");
+            format!("{base}/{suffix}")
+        } else {
+            format!("{trimmed}/{suffix}")
         }
     }
 
@@ -186,6 +290,63 @@ impl ProofService for HttpProofService {
             .map_err(|_| Error::Crypto)?;
         let parsed: ProofServiceResponse = response.into_json().map_err(|_| Error::Crypto)?;
         parsed.into_capsule(&request.policy.policy_id)
+    }
+
+    fn obtain_batch(&self, requests: &[ProofRequest<'_>]) -> Result<Vec<PolicyCapsule>> {
+        let items: Vec<ProofServiceRequest> = requests
+            .iter()
+            .map(ProofServiceRequest::from_request)
+            .collect();
+        let body = ProofServiceBatchRequest { items };
+        let json = serde_json::to_string(&body).map_err(|_| Error::Crypto)?;
+        let response = self
+            .agent
+            .post(self.endpoint_for("prove_batch").as_str())
+            .set("content-type", "application/json")
+            .send_string(&json)
+            .map_err(|_| Error::Crypto)?;
+        let parsed: ProofServiceBatchResponse = response.into_json().map_err(|_| Error::Crypto)?;
+        if parsed.items.len() != requests.len() {
+            return Err(Error::Crypto);
+        }
+        parsed
+            .items
+            .into_iter()
+            .zip(requests.iter())
+            .map(|(item, req)| item.into_capsule(&req.policy.policy_id))
+            .collect()
+    }
+
+    fn precompute(&self, request: &ProofRequest<'_>) -> Result<PrecomputeToken> {
+        let body = ProofServiceRequest::from_request(request);
+        let json = serde_json::to_string(&body).map_err(|_| Error::Crypto)?;
+        let response = self
+            .agent
+            .post(self.endpoint_for("precompute").as_str())
+            .set("content-type", "application/json")
+            .send_string(&json)
+            .map_err(|_| Error::Crypto)?;
+        let parsed: PrecomputeResponse = response.into_json().map_err(|_| Error::Crypto)?;
+        Ok(PrecomputeToken {
+            policy_id: request.policy.policy_id,
+            token: parsed.precompute_id,
+        })
+    }
+
+    fn obtain_precomputed(&self, token: &PrecomputeToken) -> Result<PolicyCapsule> {
+        let body = ProvePrecomputedRequest {
+            policy_id: hex::encode(&token.policy_id),
+            precompute_id: token.token.clone(),
+        };
+        let json = serde_json::to_string(&body).map_err(|_| Error::Crypto)?;
+        let response = self
+            .agent
+            .post(self.endpoint_for("prove_precomputed").as_str())
+            .set("content-type", "application/json")
+            .send_string(&json)
+            .map_err(|_| Error::Crypto)?;
+        let parsed: ProofServiceResponse = response.into_json().map_err(|_| Error::Crypto)?;
+        parsed.into_capsule(&token.policy_id)
     }
 }
 
@@ -263,6 +424,27 @@ struct ProofServiceResponse {
     version: Option<u8>,
 }
 
+#[derive(Serialize)]
+struct ProofServiceBatchRequest {
+    items: Vec<ProofServiceRequest>,
+}
+
+#[derive(Deserialize)]
+struct ProofServiceBatchResponse {
+    items: Vec<ProofServiceResponse>,
+}
+
+#[derive(Deserialize)]
+struct PrecomputeResponse {
+    precompute_id: String,
+}
+
+#[derive(Serialize)]
+struct ProvePrecomputedRequest {
+    policy_id: String,
+    precompute_id: String,
+}
+
 impl ProofServiceResponse {
     fn into_capsule(self, policy_id: &[u8; 32]) -> Result<PolicyCapsule> {
         let proof = hex::decode(self.proof_hex).map_err(|_| Error::Crypto)?;
@@ -275,12 +457,30 @@ impl ProofServiceResponse {
         if proof.is_empty() || commitment.is_empty() {
             return Err(Error::Crypto);
         }
+        let parts = vec![
+            ProofPart {
+                kind: ProofKind::KeyBinding,
+                proof: proof.clone(),
+                commitment: commitment.clone(),
+                aux: aux.clone(),
+            },
+            ProofPart {
+                kind: ProofKind::Consistency,
+                proof: proof.clone(),
+                commitment: commitment.clone(),
+                aux: aux.clone(),
+            },
+            ProofPart {
+                kind: ProofKind::Policy,
+                proof,
+                commitment,
+                aux,
+            },
+        ];
         Ok(PolicyCapsule {
             policy_id: *policy_id,
             version: self.version.unwrap_or(1),
-            proof,
-            commitment,
-            aux,
+            parts,
         })
     }
 }
@@ -339,6 +539,15 @@ impl<E: Extractor + Send + Sync + 'static> ProofService for PlonkProofService<E>
         let bytes = entry.leaf_bytes();
         self.policy.prove_payload(&bytes)
     }
+}
+
+fn payload_hash(payload: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
 }
 
 mod hex {
@@ -409,7 +618,10 @@ mod tests {
             version: 1,
             expiry: 42,
             flags: 0,
-            verifier_blob: vec![],
+            verifiers: vec![VerifierEntry {
+                kind: ProofKind::Policy as u8,
+                verifier_blob: vec![],
+            }],
         };
         let req = ProofRequest {
             policy: &meta,
@@ -430,7 +642,10 @@ mod tests {
             version: 1,
             expiry: 100,
             flags: 0,
-            verifier_blob: vec![],
+            verifiers: vec![VerifierEntry {
+                kind: ProofKind::Policy as u8,
+                verifier_blob: vec![],
+            }],
         };
         let blocklist = Blocklist::from_canonical_bytes(vec![b"aaa".to_vec(), b"ccc".to_vec()]);
         let witness = NonMembershipWitness::from_canonical_leaf(&blocklist, b"bbb".to_vec())
@@ -456,7 +671,10 @@ mod tests {
             version: 1,
             expiry: 0,
             flags: 0,
-            verifier_blob: vec![],
+            verifiers: vec![VerifierEntry {
+                kind: ProofKind::Policy as u8,
+                verifier_blob: vec![],
+            }],
         };
         let blocked_leaf =
             crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
@@ -497,7 +715,10 @@ mod tests {
         let cap = resp.into_capsule(&[0x44; 32]).expect("capsule");
         assert_eq!(cap.version, 7);
         assert_eq!(cap.policy_id, [0x44; 32]);
-        assert_eq!(cap.proof, vec![0xAA, 0xBB]);
+        let part = cap
+            .part(ProofKind::Policy)
+            .expect("policy part");
+        assert_eq!(part.proof, vec![0xAA, 0xBB]);
     }
 
     #[test]
@@ -507,7 +728,10 @@ mod tests {
             version: 1,
             expiry: 0,
             flags: 0,
-            verifier_blob: vec![],
+            verifiers: vec![VerifierEntry {
+                kind: ProofKind::Policy as u8,
+                verifier_blob: vec![],
+            }],
         };
         let req = ProofRequest {
             policy: &meta,
@@ -519,13 +743,19 @@ mod tests {
             Ok(PolicyCapsule {
                 policy_id: [0x33; 32],
                 version: 1,
-                proof: vec![1, 2, 3],
-                commitment: vec![4, 5],
-                aux: vec![],
+                parts: vec![ProofPart {
+                    kind: ProofKind::Policy,
+                    proof: vec![1, 2, 3],
+                    commitment: vec![4, 5],
+                    aux: vec![],
+                }],
             })
         });
         let capsule = service.obtain_proof(&req).expect("capsule");
-        assert_eq!(capsule.proof, vec![1, 2, 3]);
+        let part = capsule
+            .part(ProofKind::Policy)
+            .expect("policy part");
+        assert_eq!(part.proof, vec![1, 2, 3]);
     }
 
     #[test]

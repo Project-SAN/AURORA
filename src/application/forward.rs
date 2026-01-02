@@ -13,6 +13,29 @@ pub trait ForwardPipeline {
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
     ) -> Result<Option<(PolicyCapsule, usize)>>;
+
+    fn enforce_batch(
+        &self,
+        registry: &PolicyRegistry,
+        payloads: &mut [Vec<u8>],
+        validator: &dyn CapsuleValidator,
+    ) -> Result<Vec<Option<(PolicyCapsule, usize)>>> {
+        let mut out = Vec::with_capacity(payloads.len());
+        for payload in payloads.iter_mut() {
+            out.push(self.enforce(registry, payload, validator)?);
+        }
+        Ok(out)
+    }
+
+    fn drain_pending(
+        &self,
+        _registry: &PolicyRegistry,
+        _validator: &dyn CapsuleValidator,
+    ) -> Result<Vec<PolicyCapsule>> {
+        Ok(Vec::new())
+    }
+
+    fn block_policy(&self, _policy_id: &crate::policy::PolicyId) {}
 }
 
 #[derive(Clone, Copy, Default)]

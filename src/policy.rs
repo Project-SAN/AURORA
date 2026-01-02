@@ -3,6 +3,8 @@ pub mod blocklist;
 pub mod client;
 pub mod extract;
 pub mod plonk;
+#[cfg(feature = "regex-policy")]
+pub mod regex;
 pub mod registry {
     pub use crate::core::policy::registry::*;
 }
@@ -16,10 +18,12 @@ pub mod metadata {
 }
 
 pub use blocklist::Blocklist;
-pub use capsule::PolicyCapsule;
+pub use capsule::{PolicyCapsule, ProofKind, ProofPart};
 pub use extract::{ExtractionError, Extractor, TargetValue};
-pub use metadata::{PolicyId, PolicyMetadata};
+pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
 pub use registry::PolicyRegistry;
+#[cfg(feature = "regex-policy")]
+pub use regex::RegexPolicy;
 
 pub use crate::core::policy::{
     decode_metadata_tlv, encode_metadata_tlv, CapsuleValidator, POLICY_METADATA_TLV,

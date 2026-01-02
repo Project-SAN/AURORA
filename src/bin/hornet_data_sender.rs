@@ -1,6 +1,10 @@
 use hornet::policy::blocklist;
 use hornet::policy::plonk::PlonkPolicy;
-use hornet::policy::Blocklist;
+use hornet::policy::{encode_extensions, Blocklist, CapsuleExtension};
+use hornet::core::policy::ProofKind;
+use hornet::pcd::PcdState;
+use sha2::{Digest, Sha256};
+use hornet::core::policy::ProofKind;
 use hornet::policy::Extractor;
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
@@ -14,6 +18,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
@@ -35,6 +40,7 @@ fn run() -> Result<(), String> {
     let message = args
         .next()
         .unwrap_or_else(|| "hello from hornet_data_sender".into());
+    let _control = spawn_control_listener(info_path.to_string(), host.to_string(), message.as_bytes().to_vec());
     send_data(&info_path, &host, message.as_bytes())
 }
 
@@ -75,9 +81,37 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let entry = blocklist::entry_from_target(&target)
         .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
     let canonical_bytes = entry.leaf_bytes();
-    let capsule = policy
+    let mut capsule = policy
         .prove_payload(&canonical_bytes)
         .map_err(|err| format!("failed to prove payload: {err:?}"))?;
+    let sequence = current_sequence()?;
+    let root = blocklist.merkle_root();
+    let htarget = hash_bytes(&canonical_bytes);
+    let hkey = [0u8; 32];
+    let init_state = PcdState {
+        hkey,
+        seq: 0,
+        root,
+        htarget,
+    };
+    let init_hash = init_state.hash();
+    for part in capsule.parts.iter_mut() {
+        match part.kind {
+            ProofKind::Policy => {
+                part.aux = encode_extensions(&[CapsuleExtension::Sequence(sequence)]);
+            }
+            ProofKind::Consistency => {
+                part.aux = encode_extensions(&[
+                    CapsuleExtension::PcdKeyHash(init_state.hkey),
+                    CapsuleExtension::PcdRoot(init_state.root),
+                    CapsuleExtension::PcdTargetHash(init_state.htarget),
+                    CapsuleExtension::PcdSeq(init_state.seq),
+                    CapsuleExtension::PcdState(init_hash),
+                ]);
+            }
+            ProofKind::KeyBinding => {}
+        }
+    }
 
     let mut rng = SmallRng::seed_from_u64(derive_seed());
     let hops = routers.len();
@@ -257,6 +291,26 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     Ok(())
 }
 
+fn spawn_control_listener(info_path: String, host: String, payload: Vec<u8>) -> Option<std::thread::JoinHandle<()>> {
+    let bind = env::var("HORNET_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7100".into());
+    let listener = TcpListener::bind(&bind).ok()?;
+    Some(thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 128];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 {
+                    if let Ok(msg) = hornet::control::decode(&buf[..n]) {
+                        println!("control message: {:?}", msg);
+                        if let hornet::control::ControlMessage::ResendRequest { .. } = msg {
+                            let _ = send_data(&info_path, &host, &payload);
+                        }
+                    }
+                }
+            }
+        }
+    }))
+}
+
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
     let addr: std::net::Ipv4Addr = ip.parse().map_err(|_| "invalid ipv4")?;
     Ok(addr.octets())
@@ -387,6 +441,23 @@ fn derive_seed() -> u64 {
         .unwrap_or_default()
         .as_nanos();
     (nanos ^ (std::process::id() as u128)) as u64
+}
+
+fn hash_bytes(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn current_sequence() -> Result<u64, String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "time went backwards".to_string())?
+        .as_nanos();
+    Ok((nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64)
 }
 
 #[derive(Clone, Deserialize)]

@@ -44,6 +44,18 @@ impl PolicyRegistry {
         Ok((capsule, consumed))
     }
 
+    pub fn enforce_batch<V: CapsuleValidator + ?Sized>(
+        &self,
+        payloads: &mut [Vec<u8>],
+        validator: &V,
+    ) -> Result<Vec<(PolicyCapsule, usize)>> {
+        let mut results = Vec::with_capacity(payloads.len());
+        for payload in payloads.iter_mut() {
+            results.push(self.enforce(payload, validator)?);
+        }
+        Ok(results)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

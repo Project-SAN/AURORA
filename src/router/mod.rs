@@ -1,5 +1,5 @@
 use crate::adapters::plonk::validator::PlonkCapsuleValidator;
-use crate::application::forward::RegistryForwardPipeline;
+use crate::application::forward::{ForwardPipeline, RegistryForwardPipeline};
 use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
 use crate::policy::PolicyRegistry;
@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 pub mod config;
 #[cfg(feature = "std")]
 pub mod io;
+pub mod penalty;
 pub mod runtime;
 #[cfg(feature = "std")]
 pub mod storage;
@@ -20,8 +21,9 @@ pub mod sync;
 pub struct Router {
     registry: PolicyRegistry,
     validator: PlonkCapsuleValidator,
-    forward_pipeline: RegistryForwardPipeline,
+    forward_pipeline: Box<dyn ForwardPipeline>,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
+    penalty: penalty::PenaltyBox,
 }
 
 impl Router {
@@ -29,9 +31,25 @@ impl Router {
         Self {
             registry: PolicyRegistry::new(),
             validator: PlonkCapsuleValidator::new(),
-            forward_pipeline: RegistryForwardPipeline::new(),
+            forward_pipeline: Box::new(RegistryForwardPipeline::new()),
             routes: BTreeMap::new(),
+            penalty: penalty::PenaltyBox::new(3),
         }
+    }
+
+    pub fn with_forward_pipeline(pipeline: Box<dyn ForwardPipeline>) -> Self {
+        Self {
+            registry: PolicyRegistry::new(),
+            validator: PlonkCapsuleValidator::new(),
+            forward_pipeline: pipeline,
+            routes: BTreeMap::new(),
+            penalty: penalty::PenaltyBox::new(3),
+        }
+    }
+
+    pub fn with_penalty_threshold(mut self, threshold: u32) -> Self {
+        self.penalty = penalty::PenaltyBox::new(threshold.max(1));
+        self
     }
 
     /// Install all policy metadata entries contained in a directory announcement.
@@ -72,7 +90,7 @@ impl Router {
         Some(PolicyRuntime {
             registry: &self.registry,
             validator: &self.validator,
-            forward: &self.forward_pipeline,
+            forward: self.forward_pipeline.as_ref(),
         })
     }
 
@@ -94,6 +112,43 @@ impl Router {
 
     pub fn route_for_policy(&self, policy: &[u8; 32]) -> Option<&RouteAnnouncement> {
         self.routes.get(policy)
+    }
+
+    pub fn drain_pending(&self) -> Result<Vec<crate::policy::PolicyCapsule>> {
+        let Some(policy) = self.policy_runtime() else {
+            return Ok(Vec::new());
+        };
+        policy
+            .forward
+            .drain_pending(policy.registry, policy.validator)
+    }
+
+    pub fn handle_async_violations(&mut self) -> Result<penalty::AsyncActions> {
+        let violations = self.drain_pending()?;
+        let mut resend = Vec::new();
+        for capsule in &violations {
+            if self.penalty.record_violation(&capsule.policy_id) {
+                self.forward_pipeline.block_policy(&capsule.policy_id);
+            }
+            let mut sequence = None;
+            if let Ok(Some(exts)) = capsule.extensions() {
+                for ext in exts {
+                    if let crate::core::policy::CapsuleExtension::Sequence(seq) = ext {
+                        sequence = Some(seq);
+                        break;
+                    }
+                }
+            }
+            resend.push(penalty::ResendRequest {
+                policy_id: capsule.policy_id,
+                sequence,
+            });
+        }
+        Ok(penalty::AsyncActions {
+            violations,
+            resend,
+            blocked: self.penalty.blocked_policies(),
+        })
     }
 
     pub fn process_forward_packet(
@@ -159,7 +214,10 @@ mod tests {
             version: 1,
             expiry: 1_700_000_000,
             flags: 0,
-            verifier_blob: alloc::vec![0xAA, 0xBB, 0xCC],
+            verifiers: alloc::vec![crate::policy::VerifierEntry {
+                kind: crate::core::policy::ProofKind::Policy as u8,
+                verifier_blob: alloc::vec![0xAA, 0xBB, 0xCC],
+            }],
         }
     }
 
