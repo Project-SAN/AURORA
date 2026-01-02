@@ -3,6 +3,7 @@ pub mod blocklist;
 pub mod client;
 pub mod extract;
 pub mod plonk;
+pub mod sha256_circuit;
 #[cfg(feature = "regex-policy")]
 pub mod regex;
 pub mod registry {

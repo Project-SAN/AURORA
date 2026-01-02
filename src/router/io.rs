@@ -112,6 +112,13 @@ impl Forward for TcpForward {
         match hop {
             RouteElem::NextHop { addr, port } => {
                 let addr_str = format_ip(addr, *port);
+                eprintln!(
+                    "[FORWARD] send {:?} -> {} (payload={}, ahdr={})",
+                    direction,
+                    addr_str,
+                    payload.len(),
+                    ahdr.bytes.len()
+                );
                 let mut stream = TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
                 stream.write_all(&frame).map_err(|_| Error::Crypto)
@@ -119,6 +126,13 @@ impl Forward for TcpForward {
             RouteElem::ExitTcp { addr, port, .. } => {
                 // In benchmarks we don't expect structured exit payloads; forward the frame.
                 let addr_str = format_ip(addr, *port);
+                eprintln!(
+                    "[FORWARD] send {:?} -> {} (payload={}, ahdr={})",
+                    direction,
+                    addr_str,
+                    payload.len(),
+                    ahdr.bytes.len()
+                );
                 let mut stream = TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
                 stream.write_all(&frame).map_err(|_| Error::Crypto)
