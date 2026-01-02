@@ -2,9 +2,8 @@ use hornet::core::policy::ProofKind;
 use hornet::pcd::{HashPcdBackend, PcdBackend, PcdState};
 use hornet::core::policy::{encode_extensions, CapsuleExtension};
 use hornet::policy::blocklist;
-use hornet::policy::plonk::PlonkPolicy;
+use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::Blocklist;
-use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use hornet::policy::Extractor;
 use hornet::router::storage::StoredState;
@@ -20,7 +19,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
     if let Err(err) = run() {
@@ -82,20 +81,30 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let entry = blocklist::entry_from_target(&target)
         .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
     let canonical_bytes = entry.leaf_bytes();
-    let mut capsule = policy
-        .prove_payload(&canonical_bytes)
-        .map_err(|err| format!("failed to prove payload: {err:?}"))?;
     let mut rng = SmallRng::seed_from_u64(derive_seed());
+    let mut sender_secret = [0u8; 32];
+    let mut session_nonce = [0u8; 32];
+    rng.fill_bytes(&mut sender_secret);
+    rng.fill_bytes(&mut session_nonce);
+    let route_id = compute_route_id(&routers, &target_ip, target_port);
+    let htarget = hash_bytes(&canonical_bytes);
+    let mut capsule = policy
+        .prove_payload_with_keybinding(
+            &canonical_bytes,
+            Some(KeyBindingInputs {
+                sender_secret,
+                htarget,
+                session_nonce,
+                route_id,
+            }),
+        )
+        .map_err(|err| format!("failed to prove payload: {err:?}"))?;
     let sequence = current_sequence()?;
     let root = blocklist.merkle_root();
-    let htarget = hash_bytes(&canonical_bytes);
-    let route_id = compute_route_id(&routers, &target_ip, target_port);
-    let mut session_nonce = [0u8; 32];
-    rng.fill_bytes(&mut session_nonce);
-    let mut sender_secret = [0u8; 32];
-    rng.fill_bytes(&mut sender_secret);
-    let k = derive_session_key(&sender_secret, &policy_id, &htarget, &session_nonce, &route_id);
-    let hkey = hash_bytes(&k);
+    let hkey = capsule
+        .part(ProofKind::KeyBinding)
+        .and_then(|part| part.commitment.as_slice().try_into().ok())
+        .unwrap_or([0u8; 32]);
     let init_state = PcdState {
         hkey,
         seq: 1,
@@ -257,9 +266,31 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         hops
     );
 
-    // Listen for response
+    // Listen for response with timeout
     println!("Waiting for response...");
-    let (mut stream, addr) = listener.accept().map_err(|e| format!("accept failed: {e}"))?;
+    let timeout_secs: u64 = env::var("HORNET_RESPONSE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("set nonblocking failed: {e}"))?;
+    let start = Instant::now();
+    let (mut stream, addr) = loop {
+        match listener.accept() {
+            Ok(pair) => break pair,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() > Duration::from_secs(timeout_secs) {
+                    return Err(format!(
+                        "response timeout after {}s (no backward packet)",
+                        timeout_secs
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => return Err(format!("accept failed: {err}")),
+        }
+    };
     println!("Connection from {}", addr);
     
     // Read response frame
@@ -488,25 +519,6 @@ fn hash_bytes(data: &[u8]) -> [u8; 32] {
     let digest = hasher.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
-    out
-}
-
-fn derive_session_key(
-    sender_secret: &[u8; 32],
-    policy_id: &[u8; 32],
-    htarget: &[u8; 32],
-    session_nonce: &[u8; 32],
-    route_id: &[u8; 32],
-) -> [u8; 32] {
-    let hk = Hkdf::<Sha256>::new(None, sender_secret);
-    let mut info = Vec::with_capacity(16 + 32 * 4);
-    info.extend_from_slice(b"ZKMB-HORNET-SESSION");
-    info.extend_from_slice(policy_id);
-    info.extend_from_slice(htarget);
-    info.extend_from_slice(session_nonce);
-    info.extend_from_slice(route_id);
-    let mut out = [0u8; 32];
-    hk.expand(&info, &mut out).expect("HKDF expand");
     out
 }
 
