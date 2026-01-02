@@ -357,7 +357,10 @@ mod tests {
             version: 1,
             expiry: 123,
             flags: 0,
-            verifier_blob: vec![0x10, 0x20],
+            verifiers: vec![crate::policy::VerifierEntry {
+                kind: crate::core::policy::ProofKind::Policy as u8,
+                verifier_blob: vec![0x10, 0x20],
+            }],
         };
         let directory = DirectoryAnnouncement::with_policy(meta.clone());
         let tlvs = directory.to_tlvs();
@@ -374,7 +377,10 @@ mod tests {
             version: 1,
             expiry: 99,
             flags: 0,
-            verifier_blob: vec![0xAA],
+            verifiers: vec![crate::policy::VerifierEntry {
+                kind: crate::core::policy::ProofKind::Policy as u8,
+                verifier_blob: vec![0xAA],
+            }],
         };
         let directory = DirectoryAnnouncement::with_policy(meta.clone());
         let secret = b"directory-shared-secret";
@@ -391,7 +397,10 @@ mod tests {
             version: 1,
             expiry: 42,
             flags: 0,
-            verifier_blob: vec![0x01, 0x02],
+            verifiers: vec![crate::policy::VerifierEntry {
+                kind: crate::core::policy::ProofKind::Policy as u8,
+                verifier_blob: vec![0x01, 0x02],
+            }],
         };
         let route_elem = RouteElem::NextHop {
             addr: routing::IpAddr::V4([192, 0, 2, 1]),

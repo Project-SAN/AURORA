@@ -10,21 +10,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::adapters::plonk::validator::PlonkCapsuleValidator;
-use crate::application::prove::{ProofError, ProofPipeline as DomainProofPipeline, ProveInput};
+use crate::application::prove::{
+    PrecomputeResult, PrecomputeToken, ProofError, ProofPipeline as DomainProofPipeline, ProveInput,
+};
 use crate::policy::extract::{ExtractionError, Extractor};
 use crate::policy::plonk::{self, PlonkPolicy};
-use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
+use crate::policy::{
+    encode_extensions, CapsuleExtension, PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry,
+};
+use crate::core::policy::ProofKind;
 use crate::types::Error as HornetError;
 use crate::utils::{decode_hex, encode_hex, HexError};
+use sha2::{Digest, Sha256};
+use spin::Mutex;
 
 pub struct PolicyAuthorityState {
     policies: BTreeMap<PolicyId, PolicyAuthorityEntry>,
+    precompute_cache: Mutex<BTreeMap<String, PrecomputeEntry>>,
 }
 
 impl PolicyAuthorityState {
     pub fn new() -> Self {
         Self {
             policies: BTreeMap::new(),
+            precompute_cache: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -56,6 +65,76 @@ impl DomainProofPipeline for PolicyAuthorityState {
             .ok_or(ProofError::PolicyNotFound)?;
         entry.prove(request.payload)
     }
+
+    fn prove_batch(&self, requests: &[ProveInput<'_>]) -> Result<Vec<PolicyCapsule>, ProofError> {
+        let mut out = Vec::with_capacity(requests.len());
+        for request in requests {
+            out.push(self.prove(ProveInput {
+                policy_id: request.policy_id,
+                payload: request.payload,
+                aux: request.aux,
+            })?);
+        }
+        Ok(out)
+    }
+
+    fn precompute(&self, request: ProveInput<'_>) -> Result<PrecomputeResult, ProofError> {
+        let capsule = self.prove(request)?;
+        let token = precompute_token(&capsule);
+        let policy_part = capsule
+            .part(ProofKind::Policy)
+            .ok_or(ProofError::Prover(HornetError::Crypto))?;
+        let commitment = policy_part.commitment.clone();
+        let version = capsule.version;
+        self.precompute_cache
+            .lock()
+            .insert(
+                token.clone(),
+                PrecomputeEntry {
+                    policy_id: request.policy_id,
+                    payload: request.payload.to_vec(),
+                    precompute_proof: policy_part.proof.clone(),
+                    commitment: policy_part.commitment.clone(),
+                    version: capsule.version,
+                },
+            );
+        Ok(PrecomputeResult {
+            token: PrecomputeToken {
+                policy_id: request.policy_id,
+                token,
+            },
+            commitment,
+            version,
+        })
+    }
+
+    fn prove_precomputed(&self, token: &PrecomputeToken) -> Result<PolicyCapsule, ProofError> {
+        let mut cache = self.precompute_cache.lock();
+        let entry = cache
+            .remove(&token.token)
+            .ok_or(ProofError::PolicyNotFound)?;
+        let policy = self
+            .get(&entry.policy_id)
+            .ok_or(ProofError::PolicyNotFound)?;
+        let mut capsule = policy.prove(entry.payload.as_slice())?;
+        let ext = CapsuleExtension::PrecomputeProof(entry.precompute_proof);
+        if let Some(policy_part) = capsule
+            .parts
+            .iter_mut()
+            .find(|part| part.kind == ProofKind::Policy)
+        {
+            policy_part.aux = encode_extensions(&[ext]);
+        }
+        Ok(capsule)
+    }
+}
+
+struct PrecomputeEntry {
+    policy_id: PolicyId,
+    payload: Vec<u8>,
+    precompute_proof: Vec<u8>,
+    commitment: Vec<u8>,
+    version: u8,
 }
 
 #[cfg(test)]
@@ -202,9 +281,12 @@ mod tests {
         let capsule = PolicyCapsule {
             policy_id,
             version: parsed.version,
-            proof: proof_bytes,
-            commitment: commit_bytes,
-            aux: aux_bytes,
+            parts: vec![crate::core::policy::ProofPart {
+                kind: ProofKind::Policy,
+                proof: proof_bytes,
+                commitment: commit_bytes,
+                aux: aux_bytes,
+            }],
         };
 
         let mut forward_payload = capsule.encode();
@@ -265,9 +347,12 @@ mod tests {
         let capsule = PolicyCapsule {
             policy_id,
             version: parsed.version,
-            proof: proof_bytes,
-            commitment: commit_bytes,
-            aux: aux_bytes,
+            parts: vec![crate::core::policy::ProofPart {
+                kind: ProofKind::Policy,
+                proof: proof_bytes,
+                commitment: commit_bytes,
+                aux: aux_bytes,
+            }],
         };
 
         // Construct a single-hop packet for the router.
@@ -442,8 +527,48 @@ pub struct ProveRequest {
     pub aux_hex: String,
 }
 
+#[derive(Deserialize)]
+pub struct ProveBatchRequest {
+    pub items: Vec<ProveRequest>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ProveResponse {
+    pub proof_hex: String,
+    pub commitment_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aux_hex: Option<String>,
+    pub version: u8,
+}
+
+#[derive(Serialize)]
+pub struct ProveBatchResponse {
+    pub items: Vec<ProveResponse>,
+}
+
+#[derive(Deserialize)]
+pub struct PrecomputeRequest {
+    pub policy_id: String,
+    pub payload_hex: String,
+    #[serde(default)]
+    pub aux_hex: String,
+}
+
+#[derive(Serialize)]
+pub struct PrecomputeResponse {
+    pub precompute_id: String,
+    pub commitment_hex: String,
+    pub version: u8,
+}
+
+#[derive(Deserialize)]
+pub struct ProvePrecomputedRequest {
+    pub policy_id: String,
+    pub precompute_id: String,
+}
+
+#[derive(Serialize)]
+pub struct ProvePrecomputedResponse {
     pub proof_hex: String,
     pub commitment_hex: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -490,8 +615,11 @@ pub async fn prove(
         .map_err(|err| ApiError::from_proof(err, request.policy_id.as_str()))?;
 
     // Optional aux passthrough: if caller supplied aux data, echo it back when proof is empty.
-    let aux = if !capsule.aux.is_empty() {
-        Some(encode_hex(&capsule.aux))
+    let policy_part = capsule
+        .part(ProofKind::Policy)
+        .ok_or(ApiError::ProofFailure)?;
+    let aux = if !policy_part.aux.is_empty() {
+        Some(encode_hex(&policy_part.aux))
     } else if !request.aux_hex.is_empty() {
         Some(request.aux_hex.clone())
     } else {
@@ -499,12 +627,118 @@ pub async fn prove(
     };
 
     let response = ProveResponse {
-        proof_hex: encode_hex(&capsule.proof),
-        commitment_hex: encode_hex(&capsule.commitment),
+        proof_hex: encode_hex(&policy_part.proof),
+        commitment_hex: encode_hex(&policy_part.commitment),
         aux_hex: aux,
         version: capsule.version,
     };
 
+    Ok(web::Json(response))
+}
+
+#[post("/prove_batch")]
+pub async fn prove_batch(
+    pipeline: web::Data<Arc<ProofPipelineHandle>>,
+    request: web::Json<ProveBatchRequest>,
+) -> Result<impl Responder, ApiError> {
+    let mut inputs = Vec::with_capacity(request.items.len());
+    for item in &request.items {
+        let policy_id = decode_policy_id(item.policy_id.as_str())?;
+        let payload = decode_hex(item.payload_hex.as_str())?;
+        let aux_bytes = if item.aux_hex.is_empty() {
+            Vec::new()
+        } else {
+            decode_hex(item.aux_hex.as_str())?
+        };
+        inputs.push(ProveInput {
+            policy_id,
+            payload: payload.as_slice(),
+            aux: aux_bytes.as_slice(),
+        });
+    }
+    let capsules = pipeline
+        .prove_batch(inputs.as_slice())
+        .map_err(|err| ApiError::from_proof(err, "batch"))?;
+    let items = capsules
+        .into_iter()
+        .zip(request.items.iter())
+        .map(|(capsule, req_item)| {
+            let policy_part = capsule
+                .part(ProofKind::Policy)
+                .ok_or(ApiError::ProofFailure)?;
+            let aux = if !policy_part.aux.is_empty() {
+                Some(encode_hex(&policy_part.aux))
+            } else if !req_item.aux_hex.is_empty() {
+                Some(req_item.aux_hex.clone())
+            } else {
+                None
+            };
+            Ok(ProveResponse {
+                proof_hex: encode_hex(&policy_part.proof),
+                commitment_hex: encode_hex(&policy_part.commitment),
+                aux_hex: aux,
+                version: capsule.version,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(web::Json(ProveBatchResponse { items }))
+}
+
+#[post("/precompute")]
+pub async fn precompute(
+    pipeline: web::Data<Arc<ProofPipelineHandle>>,
+    request: web::Json<PrecomputeRequest>,
+) -> Result<impl Responder, ApiError> {
+    let policy_id = decode_policy_id(request.policy_id.as_str())?;
+    let payload = decode_hex(request.payload_hex.as_str())?;
+    let aux_bytes = if request.aux_hex.is_empty() {
+        Vec::new()
+    } else {
+        decode_hex(request.aux_hex.as_str())?
+    };
+    let input = ProveInput {
+        policy_id,
+        payload: payload.as_slice(),
+        aux: aux_bytes.as_slice(),
+    };
+    let result = pipeline
+        .precompute(input)
+        .map_err(|err| ApiError::from_proof(err, request.policy_id.as_str()))?;
+    let response = PrecomputeResponse {
+        precompute_id: result.token.token,
+        commitment_hex: encode_hex(&result.commitment),
+        version: result.version,
+    };
+    Ok(web::Json(response))
+}
+
+#[post("/prove_precomputed")]
+pub async fn prove_precomputed(
+    pipeline: web::Data<Arc<ProofPipelineHandle>>,
+    request: web::Json<ProvePrecomputedRequest>,
+) -> Result<impl Responder, ApiError> {
+    let policy_id = decode_policy_id(request.policy_id.as_str())?;
+    let token = PrecomputeToken {
+        policy_id,
+        token: request.precompute_id.clone(),
+    };
+    let capsule = pipeline
+        .prove_precomputed(&token)
+        .map_err(|err| ApiError::from_proof(err, request.policy_id.as_str()))?;
+    let policy_part = capsule
+        .part(ProofKind::Policy)
+        .ok_or(ApiError::ProofFailure)?;
+    let aux = if !policy_part.aux.is_empty() {
+        Some(encode_hex(&policy_part.aux))
+    } else {
+        None
+    };
+    let response = ProvePrecomputedResponse {
+        proof_hex: encode_hex(&policy_part.proof),
+        commitment_hex: encode_hex(&policy_part.commitment),
+        aux_hex: aux,
+        version: capsule.version,
+    };
     Ok(web::Json(response))
 }
 
@@ -539,7 +773,10 @@ pub async fn verify(
     }
 
     let expected_commit = plonk::payload_commitment_bytes(&payload);
-    if expected_commit != capsule.commitment {
+    let policy_part = capsule
+        .part(ProofKind::Policy)
+        .ok_or(ApiError::ProofFailure)?;
+    if expected_commit != policy_part.commitment {
         return Err(ApiError::PolicyViolation);
     }
 
@@ -560,6 +797,19 @@ fn decode_policy_id(hex: &str) -> Result<PolicyId, ApiError> {
     Ok(id)
 }
 
+fn precompute_token(capsule: &PolicyCapsule) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(&capsule.policy_id);
+    for part in &capsule.parts {
+        hasher.update(&[part.kind as u8]);
+        hasher.update(&part.proof);
+        hasher.update(&part.commitment);
+        hasher.update(&part.aux);
+    }
+    let digest = hasher.finalize();
+    encode_hex(&digest)
+}
+
 #[derive(Debug)]
 pub enum ApiError {
     InvalidHex(String),
@@ -568,6 +818,7 @@ pub enum ApiError {
     PayloadExtraction(String),
     PolicyViolation,
     ProofFailure,
+    Unsupported,
 }
 
 impl ApiError {
@@ -587,6 +838,7 @@ impl ApiError {
             ProofError::PolicyNotFound => ApiError::PolicyNotFound(policy_ref.to_string()),
             ProofError::Extraction(inner) => ApiError::from_extraction(inner),
             ProofError::Prover(inner) => ApiError::from_prover(inner),
+            ProofError::Unsupported => ApiError::Unsupported,
         }
     }
 
@@ -598,6 +850,7 @@ impl ApiError {
             ApiError::PayloadExtraction(msg) => format!("unable to extract payload target: {msg}"),
             ApiError::PolicyViolation => "requested payload violates policy".into(),
             ApiError::ProofFailure => "failed to produce zero-knowledge proof".into(),
+            ApiError::Unsupported => "operation not supported by proof backend".into(),
         }
     }
 }
@@ -626,6 +879,7 @@ impl ResponseError for ApiError {
             ApiError::PolicyNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::PolicyViolation => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::ProofFailure => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Unsupported => StatusCode::NOT_IMPLEMENTED,
         }
     }
 

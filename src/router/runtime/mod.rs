@@ -63,6 +63,14 @@ impl<'a> RouterRuntime<'a> {
             ),
         }
     }
+
+    pub fn drain_pending(&mut self) -> Result<Vec<crate::policy::PolicyCapsule>> {
+        self.router.drain_pending()
+    }
+
+    pub fn handle_async_violations(&mut self) -> Result<crate::router::penalty::AsyncActions> {
+        self.router.handle_async_violations()
+    }
 }
 
 pub mod forward {

@@ -1,4 +1,6 @@
-use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry};
+use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry, VerifierEntry};
+use crate::core::policy::{ProofKind, ProofPart};
+use crate::core::policy::metadata::POLICY_FLAG_PCD;
 use crate::types::{Error, Result};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -59,6 +61,7 @@ pub struct PlonkPolicy {
     verifier_bytes: Vec<u8>,
     policy_id: PolicyId,
     block_hashes: Vec<BlsScalar>,
+    flags: u16,
 }
 
 impl PlonkPolicy {
@@ -89,7 +92,25 @@ impl PlonkPolicy {
             verifier_bytes,
             policy_id,
             block_hashes,
+            flags: 0,
         })
+    }
+
+    #[cfg(feature = "regex-policy")]
+    pub fn new_from_regex_literals(label: &[u8], patterns: &[alloc::string::String]) -> Result<Self> {
+        use crate::policy::blocklist::BlocklistEntry;
+        use crate::policy::regex::exact_literals;
+        use crate::core::policy::metadata::POLICY_FLAG_REGEX;
+
+        let literals = exact_literals(patterns)?;
+        let entries: Vec<BlocklistEntry> = literals
+            .into_iter()
+            .map(BlocklistEntry::Exact)
+            .collect();
+        let blocklist = crate::policy::Blocklist::new(entries);
+        let mut policy = Self::new_from_blocklist(label, &blocklist)?;
+        policy.flags |= POLICY_FLAG_REGEX;
+        Ok(policy)
     }
 
     pub fn policy_id(&self) -> &PolicyId {
@@ -101,8 +122,21 @@ impl PlonkPolicy {
             policy_id: self.policy_id,
             version: 1,
             expiry,
-            flags,
-            verifier_blob: self.verifier_bytes.clone(),
+            flags: flags | self.flags | POLICY_FLAG_PCD,
+            verifiers: vec![
+                VerifierEntry {
+                    kind: ProofKind::KeyBinding as u8,
+                    verifier_blob: self.verifier_bytes.clone(),
+                },
+                VerifierEntry {
+                    kind: ProofKind::Consistency as u8,
+                    verifier_blob: self.verifier_bytes.clone(),
+                },
+                VerifierEntry {
+                    kind: ProofKind::Policy as u8,
+                    verifier_blob: self.verifier_bytes.clone(),
+                },
+            ],
         }
     }
 
@@ -124,12 +158,28 @@ impl PlonkPolicy {
             return Err(Error::Crypto);
         }
         let proof_bytes = proof.to_bytes().to_vec();
-        Ok(PolicyCapsule {
-            policy_id: self.policy_id,
-            version: 1,
+        let part = ProofPart {
+            kind: ProofKind::Policy,
+            proof: proof_bytes.clone(),
+            commitment: commitment_bytes.clone(),
+            aux: Vec::new(),
+        };
+        let key_part = ProofPart {
+            kind: ProofKind::KeyBinding,
+            proof: proof_bytes.clone(),
+            commitment: commitment_bytes.clone(),
+            aux: Vec::new(),
+        };
+        let consistency_part = ProofPart {
+            kind: ProofKind::Consistency,
             proof: proof_bytes,
             commitment: commitment_bytes,
             aux: Vec::new(),
+        };
+        Ok(PolicyCapsule {
+            policy_id: self.policy_id,
+            version: 1,
+            parts: vec![key_part, consistency_part, part],
         })
     }
 }
@@ -192,7 +242,9 @@ pub fn ensure_registry(registry: &mut PolicyRegistry, metadata: &PolicyMetadata)
     }
     if let Some(bytes) = VERIFIER_STORE.lock().get(&metadata.policy_id).cloned() {
         let mut cloned = metadata.clone();
-        cloned.verifier_blob = bytes;
+        for entry in cloned.verifiers.iter_mut() {
+            entry.verifier_blob = bytes.clone();
+        }
         registry.register(cloned)
     } else {
         registry.register(metadata.clone())

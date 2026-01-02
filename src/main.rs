@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use actix_web::{web, App, HttpServer};
 use hornet::api::hello::{hello, manual_hello};
-use hornet::api::prove::{prove, verify, PolicyAuthorityState, ProofPipelineHandle};
+use hornet::api::prove::{
+    precompute, prove, prove_batch, prove_precomputed, verify, PolicyAuthorityState,
+    ProofPipelineHandle,
+};
 use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::{self, PlonkPolicy};
@@ -24,6 +27,9 @@ async fn main() -> io::Result<()> {
             .app_data(pipeline_data.clone())
             .service(hello)
             .service(prove)
+            .service(prove_batch)
+            .service(precompute)
+            .service(prove_precomputed)
             .service(verify)
             .route("/hey", web::get().to(manual_hello))
     })

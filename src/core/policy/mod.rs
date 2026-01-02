@@ -1,9 +1,11 @@
 pub mod capsule;
+pub mod extensions;
 pub mod metadata;
 pub mod registry;
 
-pub use capsule::PolicyCapsule;
-pub use metadata::{PolicyId, PolicyMetadata};
+pub use capsule::{PolicyCapsule, ProofKind, ProofPart};
+pub use extensions::{decode_extensions, encode_extensions, CapsuleExtension};
+pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
 pub use registry::{CapsuleValidator, PolicyRegistry};
 
 use crate::types::{Error, Result};

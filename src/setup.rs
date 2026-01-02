@@ -239,7 +239,10 @@ mod tests {
             version: 1,
             expiry: exp.0,
             flags: 0,
-            verifier_blob: alloc::vec![0xAA, 0xBB],
+            verifiers: alloc::vec![crate::policy::VerifierEntry {
+                kind: crate::core::policy::ProofKind::Policy as u8,
+                verifier_blob: alloc::vec![0xAA, 0xBB],
+            }],
         };
         st.attach_policy_metadata(&policy);
         assert_eq!(st.packet.tlvs.len(), 1);

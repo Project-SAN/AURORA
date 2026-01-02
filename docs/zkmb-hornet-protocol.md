@@ -1,17 +1,63 @@
-# ZKMB-HORNET Protocol Specification (Draft)
+# Zombie-based ZKMB-HORNET Protocol (Draft)
 
-## Overview
-ZKMB-HORNET extends HORNET routing with third-party-issued zero-knowledge proof capsules so that policy enforcement happens without disclosing the underlying policy to relays. The source attaches a `PolicyCapsule` that proves policy compliance, and each forwarding node verifies the capsule using `PolicyMetadata` delivered during setup. Packets that violate the policy are dropped without revealing the secret rules.
+## Purpose
+This document rewrites the AURORA/HORNET ZKMB protocol using **Zombie: Middleboxes that Don’t Snoop (NSDI 2024)** as the primary reference. Zombie itself builds on **Zero-Knowledge Middleboxes (ZKMBs, USENIX Security 2022)** and refines the architecture with precomputation, asynchronous verification, and batching. This draft adapts Zombie’s protocol phases to the current AURORA codebase, and explicitly notes where the implementation diverges from Zombie’s TLS-focused design.
+
+## High-level Mapping (Zombie → AURORA)
+Zombie is defined around TLS 1.3 and a single middlebox. AURORA is onion routing with per-hop enforcement. The mapping is:
+- **Zombie client** → AURORA sender + policy client (`src/bin/hornet_sender.rs`, `src/policy/client.rs`)
+- **Zombie middlebox** → AURORA forwarding node (`src/node/forward.rs`, `src/router/*`)
+- **Zombie policy distribution** → AURORA directory/setup TLV (`src/setup/directory.rs`, `src/setup.rs`)
+- **Zombie proof verifier** → `PolicyRegistry` + `CapsuleValidator` (`src/core/policy/registry.rs`, `src/adapters/plonk/validator.rs`)
+- **Zombie proof service / authority** → `PolicyAuthorityState` + HTTP API (`src/api/prove.rs`, `src/main.rs`)
+- **Zombie TLS key-commitment** → *No direct equivalent* in AURORA (see “Architectural differences”)
 
 ## Actors
-- **Policy Authority (PA)**: Compiles the policy circuit to a Plonk-like SNARK and exposes an API for proof generation and metadata distribution.
-- **Source Client**: Extracts policy-relevant data from plaintext traffic, obtains a proof capsule from the PA (or a local prover), and prepends it to outgoing payloads.
-- **Forwarding Nodes**: HORNET relays that receive `PolicyMetadata` during setup and verify capsules on the data plane.
-- **Destination**: The final hop that receives the decrypted payload after the capsule has been stripped.
+- **Policy Authority (PA)**: Defines policy circuits and produces `PolicyMetadata` (verifier data). In AURORA this is the `/prove` service and policy registry in `src/api/prove.rs`.
+- **Source Client**: Extracts policy-relevant data from plaintext and obtains a `PolicyCapsule` proof before sending (or in a future asynchronous mode, soon after sending).
+- **Forwarding Nodes (Middleboxes)**: Verify capsules on the data plane; drop on failure.
+- **Destination**: Receives payload after the capsule is stripped by the last hop.
 
-## Data Structures
-### PolicyMetadata TLV
-Encoded inside the AHDR as TLV type `0xA1`.
+## Zombie Protocol Phases (Adapted)
+Zombie organizes ZKMBs into three phases. We keep the same terminology and align each phase to AURORA.
+
+### 1) Policy setup (Zombie: SP distribution)
+**Zombie**: The middlebox sends the policy computation SP to clients when they join the network. This lets clients form proofs bound to the policy.
+
+**AURORA adaptation**:
+- The source fetches a directory announcement containing `PolicyMetadata`.
+- Metadata is embedded in the AHDR as a TLV (`POLICY_METADATA_TLV`), and forwarding nodes register `policy_id → verifier` during setup.
+
+Relevant code:
+- `src/setup/directory.rs` (directory announcement, TLV encode/decode)
+- `src/setup.rs` (attach/install policy TLVs)
+- `src/core/policy/metadata.rs` (binary format)
+
+### 2) Session/key setup (Zombie: SE.1 commit)
+**Zombie**: The client commits to a TLS session key `K` and proves correctness of that commitment, enabling later proofs about ciphertext.
+
+**AURORA divergence**:
+- There is **no TLS key-commitment phase** in AURORA.
+- Instead, the `PolicyCapsule` is attached directly to each payload, and verification is done per-packet without referencing a TLS handshake transcript.
+- Any “session” assumptions must be encoded as public inputs inside the capsule, if needed.
+
+### 3) Per-packet enforcement (Zombie: SE.2 + SP)
+**Zombie**: For each ciphertext `C_i`, the client sends `C_i` and a proof `π_i` that the plaintext both decrypts under `K` and satisfies policy `SP`.
+
+**AURORA adaptation**:
+- The sender prepends a `PolicyCapsule` to the payload.
+- Forwarding nodes parse the capsule, look up `policy_id`, and verify it with the installed verifier.
+- On success, the capsule bytes are stripped and the remaining payload continues.
+
+Relevant code:
+- `src/core/policy/capsule.rs` (decode/peel)
+- `src/core/policy/registry.rs` (enforce)
+- `src/node/forward.rs` (data-plane policy check)
+
+## Data Structures (AURORA wire format)
+AURORA keeps compact on-wire structures; these are the current formats.
+
+### PolicyMetadata TLV (AHDR)
 ```
 u8  tlv_type   = 0xA1
 u16 tlv_len    = |payload|
@@ -24,12 +70,10 @@ payload = struct PolicyMetadataPayload {
     verifier_blob: [u8; verifier_blob_len],
 }
 ```
-- `policy_id`: identifies the circuit and version.
-- `verifier_blob`: raw bytes from `dusk-plonk`’s `composer::Verifier::to_bytes()` (verification key, openings, public input layout, transcript type).
-- `expiry`: UNIX timestamp (seconds). Nodes should request re-setup when expired.
+- `policy_id`: identifies a policy circuit and version.
+- `verifier_blob`: backend-specific verifier bytes (currently Plonk).
 
-### PolicyCapsule Payload
-Prepend this structure to the application payload:
+### PolicyCapsule (payload prefix)
 ```
 struct PolicyCapsule {
     magic: [u8; 4] = "ZKMB",
@@ -44,205 +88,64 @@ struct PolicyCapsule {
     aux_data: [u8; aux_len],
 }
 ```
-- `proof`: Plonk proof (hundreds of bytes to 1 KB).
-- `commitment`: commitment of the plaintext or TLS transcript (Poseidon/BLAKE3, etc.).
-- `aux_data`: additional public inputs, e.g., session IDs or time nonces.
-The capsule is followed immediately by the actual application payload.
+- The capsule is followed immediately by application payload bytes.
+- `commitment` and `aux_data` are public inputs used by the verifier.
 
-## Protocol Flow
-1. **Setup**
-   - The source fetches routing data and `PolicyMetadata` from the directory.
-   - During AHDR construction, it embeds the metadata TLV. Each node parses the TLV while decrypting AHDR, then registers `policy_id → verifier`.
+## Zombie Enhancements and AURORA Status
+Zombie introduces three performance techniques. The AURORA codebase does **not** implement these yet; they are included here as design targets.
 
-2. **Proof Generation**
-   - The source extracts the policy-relevant field (e.g., HTTP Host) from the payload, hashes it, and feeds it into the circuit.
-   - The client calls the proof API (`POLICY_PROOF_URL`) with `{policy_id, payload_hex, aux_hex}` and receives proof/commitment JSON, or locally runs the same Plonk prover (`policy-plonk` + `policy-client`).
-   - The PA returns the Plonk proof; on error it responds with HTTP 4xx and `non_compliant`.
+### Precomputation
+**Zombie**: Split encryption proof into `SE.2a` (pad/commitment) and `SE.2b` (message-dependent), allowing the expensive part to be computed during idle time.
 
-3. **Data Transmission**
-   - The source builds the `PolicyCapsule` and prepends it to the payload.
-   - `hornet::source::build_data_packet` assembles AHDR/CHDR and dispatches the onion packet.
+**AURORA status**: Not implemented.
+- Potential adaptation: precompute a commitment/proof on a fixed-size payload prefix (or encrypted payload structure), then combine with per-message proof.
 
-4. **Forwarding Node**
-   - `process_data_forward` removes an onion layer, decodes the capsule, and looks up the verifier via `policy_id`.
-   - It runs `verify(proof, [commitment, aux])`.
-   - Success: drop the capsule bytes and forward the remaining payload.
-   - Failure: return `Error::PolicyViolation`, drop the packet, and log only `policy_id` + result.
+### Asynchronous verification
+**Zombie**: Middlebox forwards ciphertext immediately and verifies the proof later; invalid proofs trigger policy actions.
 
-5. **Destination**
-   - The last hop receives only the application payload and handles it per normal HORNET delivery rules.
+**AURORA status**: Not implemented.
+- Would require buffering and replay/penalty logic in routers (`src/router/*`) and changes to forward pipeline semantics.
 
-## PA API
-```
-POST /plonk/prove
-Headers:
-  Authorization: Bearer <token>
-Body (JSON/CBOR):
-{
-  "policy_id": "base64",
-  "commit": "base64",
-  "aux": "base64",
-  "payload_hint": "ciphertext hash"
-}
-Response:
-{
-  "policy_id": "...",
-  "proof": "base64",
-  "commit_confirm": "base64",
-  "aux_hash": "base64",
-  "expiry": <u64>
-}
-```
-- Proofs are only returned on success; failures use HTTP 4xx with `non_compliant`.
-- Apply rate limiting and auditing to prevent policy probing.
+### Batching
+**Zombie**: Client batches multiple proofs into a single proof, amortizing verifier cost.
 
-## Error Handling
-- `Error::PolicyViolation`: missing capsule, policy mismatch, or proof failure.
-- `Error::Expired`: metadata expired.
-- PI collection: log `policy_id`, peer, timestamp only (no plaintext reason).
+**AURORA status**: Not implemented.
+- Would require protocol changes to allow capsules to reference a batch proof and to map packets to batch members.
 
-## Security Requirements
-- Plonk proofs rely on a universal SRS (single trusted setup).
-- Rotate `policy_id` when updating circuits; stop issuing proofs for old IDs.
-- Clients must authenticate to the API; unauthenticated clients cannot send traffic.
-- Nodes must not allow capsule verification to be disabled; packets without proofs must be dropped.
+## Policy Classes: Regex-based policies
+Zombie contributes a compiler pipeline for regular-expression policies over payloads (e.g., DLP). This is a major feature vs. the earlier ZKMB work.
 
-## Implementation Roadmap
-1. Implement `PolicyCapsule`/`PolicyMetadata` types + codecs.
-2. Embed metadata TLVs into AHDR; implement node registry.
-3. Hook capsule extraction/verification into `process_data_forward`.
-4. Integrate Plonk verifier (possibly via FFI) and proof service API.
-5. Testing: capsule parsing, success/failure paths, expiry handling.
+**AURORA status**:
+- The current implementation focuses on blocklist-style policies and hostname extraction (see `src/policy/blocklist.rs`, `src/policy/extract.rs`).
+- Regex-based policies are not implemented; adding them would require a policy compiler stage and a proof backend that matches Zombie’s regex arithmetization.
 
-## Use Cases
-- Privacy-preserving filtering of illegal/phishing content.
-- Controlled access to B2B portals or enterprise APIs.
-- Remote compliance (e.g., TLS transcript inspections).
+## Protocol Flow (AURORA, today)
+1. **Directory fetch**: client receives `PolicyMetadata` from the directory announcement.
+2. **Setup**: metadata TLV is embedded in AHDR; nodes install verifier blobs while decrypting AHDR.
+3. **Proof generation**: client extracts policy-relevant data and obtains a `PolicyCapsule` (local Plonk or via PA HTTP).
+4. **Data**: client prepends the capsule to payload and sends the packet.
+5. **Forwarding**: nodes verify capsule; on failure return `Error::PolicyViolation` and drop.
 
-## Open Questions
-- Viable Plonk verifier for `no_std`.
-- API SLAs/NFRs (latency, availability).
-- Capsule chaining for multiple simultaneous policies.
-- Rate limiting / auditing to withstand failure-oracle attacks.
+## PA API (current implementation)
+AURORA exposes HTTP endpoints under the `api` feature. The key flow is:
+- `POST /prove`: client sends `{policy_id, payload_hex, aux_hex}` and receives `{policy_id, proof, commitment, aux}` (exact JSON shape in `src/api/prove.rs`).
+ - `POST /prove_batch`: client sends `{items: [{policy_id, payload_hex, aux_hex}, ...]}` and receives an array of proofs.
+ - `POST /precompute`: client sends the same payload as `/prove` and receives a `precompute_id` that can be used later.
+ - `POST /prove_precomputed`: client sends `{policy_id, precompute_id}` and receives the stored proof.
 
-## Implementation Architecture (hornet crate)
-The Rust implementation follows a functional domain modeling style and is split into three layers—`core`, `application`, and `adapters`. This keeps the reusable library surface (`no_std + alloc`) independent from I/O-heavy components such as Actix or Plonk backends.
+## Architectural Differences from Zombie
+These differences are intentional and should be kept in mind when implementing Zombie-inspired features:
+- **Transport**: Zombie targets TLS 1.3 and leverages TLS internals; AURORA is onion routing and does not track TLS sessions.
+- **Per-hop enforcement**: Zombie has a single middlebox; AURORA verifies at each forwarding node.
+- **Key commitment**: Zombie binds proofs to TLS key material; AURORA binds proofs to payload/aux inputs only.
+- **Asynchrony**: Zombie’s async mode assumes local middlebox control; AURORA would need node coordination and storage guarantees.
 
-### Core layer (`src/core`)
-- Pure domain layer that depends only on `alloc`. It owns `PolicyCapsule`, `PolicyMetadata`, TLV codecs, and `PolicyRegistry`.
-- `PolicyRegistry` keeps the `policy_id → PolicyMetadata` map and delegates validation to the `CapsuleValidator` trait. `enforce(payload, validator)` returns `(PolicyCapsule, consumed_len)` while preserving determinism.
-- All functions are side-effect free and return `crate::types::Error::{Length, PolicyViolation}` for callers to handle.
+## Open Tasks (Zombie-aligned roadmap)
+1. Define how to represent Zombie-style key commitments in AURORA (if needed at all).
+2. Extend `PolicyCapsule` to support asynchronous/batched proofs (new fields, or a companion control plane).
+3. Design a regex policy compiler pipeline (likely in `src/policy/` with a new backend).
+4. Add router buffering/state to support asynchronous verification safely.
 
-### Application layer (`src/application`)
-- **SetupPipeline** orchestrates how metadata TLVs are installed. `RegistrySetupPipeline` reuses `policy::plonk::ensure_registry()` to hydrate verifier blobs, and `setup::node_process_with_policy()` accepts any pipeline implementation.
-- **ProofPipeline** transforms `ProveInput { policy_id, payload, aux }` into a `PolicyCapsule`, surfacing `ProofError::{PolicyNotFound, Extraction, Prover}`. `PolicyAuthorityState` (Plonk policy + extractor) implements the trait and is injected as `Arc<dyn ProofPipeline + Send + Sync>`.
-- **ForwardPipeline** abstracts enforcement on the data plane. `RegistryForwardPipeline` delegates to `PolicyRegistry::enforce()` and returns `Option<(PolicyCapsule, usize)>`, allowing capsule-free flows to pass through unchanged.
-
-### Adapters layer (`src/adapters`)
-- **plonk::validator** provides `PlonkCapsuleValidator`, caching per-policy `PlonkVerifier` instances (in a `BTreeMap`) and checking proof/commitment lengths (`Proof::SIZE`, `BlsScalar::SIZE`).
-- **actix** wires HTTP handlers (feature `api`). `POST /prove` decodes `payload_hex` into `ProveInput` and calls the injected `ProofPipeline`; `POST /verify` derives metadata, populates a fresh `PolicyRegistry`, and validates capsules via `PlonkCapsuleValidator`.
-- **CLI/bin** (`src/main.rs`) shares `PolicyAuthorityState` via `Arc`, registering both `web::Data<PolicyAuthorityState>` (directory access) and `web::Data<Arc<ProofPipelineHandle>>` (proof generation) so binaries and libraries use the same pipeline.
-
-### Node/Runtime
-- `NodeCtx` carries an optional `PolicyRuntime { registry, validator, forward }`; both forward/backward paths call `ForwardPipeline::enforce()` and fall back to `PolicyCapsule::decode()` when no registry is configured.
-- `setup::install_policy_metadata()` parses TLVs and pushes them through `SetupPipeline`, keeping the TLV format reusable even if the verifier backend changes.
-- Validators only need to implement `CapsuleValidator`, making them pluggable across setup/proof/forward flows.
-- Experimental router runtime (`src/router`) now includes:
-  - `router::runtime::RouterRuntime`: wires policy state + time provider + replay/forward factories into packet processing loops.
-  - `router::io::TcpPacketListener` / `TcpForward`: reference TCP transport that consumes/produces fixed-length frames and resolves next hops from `routing::RouteElem` TLVs.
-  - `router::storage::FileRouterStorage`: persists `PolicyMetadata` and node secrets (`Sv`) as JSON so routers can restore policy state on restart.
-  - `router::sync::client`: pluggable directory client (`ureq` HTTP or local file) that fetches signed announcements and applies them to the `Router`.
-
-### Testing and mocks
-- Shared mocks live under `tests/suppert/`. `tests/pipeline.rs` uses them to exercise setup/install and forward enforcement flows independently of Actix/Plonk internals.
-- End-to-end tests in `src/api/prove.rs` rely on the same dependency injection (WebData + `ProofPipeline`) as production.
-
-## Appendix: Privacy-Preserving Remote Proof Protocol
-The current `POST /prove` endpoint requires the client to submit plaintext targets (search terms, HTTP Host headers) to the PA, exposing them to operators. The revised proposal satisfies:
-1. Clients never reveal plaintext targets to the PA.
-2. The PA remains responsible for proving non-membership against the blocklist.
-3. Forwarding nodes continue to enforce policies via `PolicyCapsule` verification only.
-4. Extra crypto is confined to the client side, enabling lightweight implementations (e.g., browser extensions).
-
-TEE-based attestation and Verifiable Oblivious PRF (VOPRF) are combined so that operators cannot observe targets while the PA proves policy compliance.
-
-### New Components
-- **Attested TEE**: The `/prove` endpoint runs inside an enclave; clients verify quotes/binary measurements before proceeding.
-- **VOPRF key pair**: The PA evaluates `y = F_k(x)` without learning the input.
-- **Hashed blocklist**: Precompute `F_k(b_i)` for each blocklist entry and commit via a Merkle tree.
-- **Payload commitments**: Clients commit to payload-derived values (Poseidon/BLAKE3) and include a nonce.
-
-### Revised workflow
-1. **Directory access**
-   - `GET /@hornet/directory` returns `{policy_id, prove_url, verify_url, voprf params, tee_quote, binary_measurement, merkle_root}`.
-   - Clients verify the TEE quote, measurement, and public parameters before trust is established.
-
-2. **VOPRF evaluation**
-   - Client blinds `x` to obtain `α = Blind(x)` and sends it to `POST /@hornet/oprf`.
-   - TEE returns `β = Evaluate_k(α)`.
-   - Client derives `y = Finalize(x, β)`; the PA never learns `x`.
-
-3. **Privacy-preserving proof request**
-   - Client sends:
-     ```json
-     {
-       "policy_id": "<hex>",
-       "payload_commitment": "<poseidon(x || nonce)>",
-       "payload_hint": "<hashed HTTP metadata>",
-       "oprf_output": "<hex(y)>",
-       "nonce_commitment": "<blake3(nonce)>"
-     }
-     ```
-   - Plaintext payload and `x` are never transmitted; the nonce thwarts dictionary attacks.
-
-4. **TEE proof generation**
-   - The enclave proves:
-     1. `oprf_output == F_k(x)` (re-evaluated inside the TEE).
-     2. `payload_commitment` matches `x` reconstructed from payload/nonce.
-     3. `y` is not in the Merkle-committed blocklist.
-   - Outputs: `proof`, `commitment`, `aux`, and the new public inputs (`oprf_output`, `nonce_commitment`) concatenated into the capsule.
-
-5. **Capsule verification**
-   - Nodes verify the extended capsule by checking the proof against the new public inputs and recomputing `payload_commitment` from the packet.
-   - Optionally, they compare `nonce_commitment` with encrypted payload hints.
-   - Success guarantees the target is not blocklisted, without exposing `x` to PA operators.
-
-### Additional endpoints
-| Method | Path                  | Description                                           |
-|--------|----------------------|-------------------------------------------------------|
-| GET    | `/@hornet/directory` | Returns metadata plus TEE attestation artifacts        |
-| POST   | `/@hornet/oprf`      | Evaluates blinded inputs inside the TEE               |
-| POST   | `/@hornet/prove_privacy` | Issues proofs without revealing payload plaintext |
-| POST   | `/@hornet/verify`    | Verifies capsules given the new public inputs         |
-
-### Operational notes
-- **Attestation**: Clients must validate the quote signer and whitelist binary measurements; otherwise they abort.
-- **Dictionary resistance**: Blind OPRF plus nonce commitments prevent the PA from precomputing popular targets.
-- **Verifier updates**: The existing verification path is extended with the additional public inputs but still relies on Plonk.
-- **Fail-safe**: Errors at any step (attestation, OPRF, proof) cause the connection to abort and notify the user.
-
-### Suggested roadmap
-1. Implement VOPRF and rebuild the blocklist as `F_k(b_i)` Merkle roots.
-2. Ship TEE binaries with attestation verification tooling.
-3. Extend the Plonk circuit for commitment consistency + non-inclusion proofs.
-4. Extend `PolicyCapsule` and verifier formats with the new public inputs.
-5. Update clients/browser extensions to follow the new flow while keeping a backward-compatible mode.
-
-### Outstanding Engineering Tasks
-The current Rust prototype ships an experimental router runtime (directory sync + TCP forwarding + persistence). To reach a production-ready HORNET router, the following work remains:
-
-1. **Setup Packet Handling & Key Management**
-   - Implement full `setup::node_process_with_policy` integration inside the router so setup packets update `Si/Fs/CHDR` state, and persist those secrets (not just `Sv`) via `router::storage`.
-   - Restore the complete setup state (policy registry + node keys) on restart.
-2. **Secure Networking**
-   - Replace the current plaintext TCP frame with an authenticated/ encrypted transport (e.g., TLS or Noise) and support multiple concurrent connections with backpressure.
-   - Add node-to-node handshake/identity verification to prevent spoofing or replay.
-3. **Observability & Control Plane**
-   - Scheduled directory sync with exponential backoff, structured logging, and metrics (policy violations, replay drops, forward success rates).
-   - CLI/configuration for network bindings, storage paths, and security parameters.
-4. **Routing Integration**
-   - Use real routing descriptors (multiple `RouteElem`s per segment), maintain per-hop position, and update routing tables dynamically rather than assuming a single next-hop segment.
-5. **Testing**
-   - End-to-end integration tests covering setup→data flow across multiple nodes, persistence across restarts, and error conditions (expired metadata, invalid proofs, replay attacks).
-
-These tasks are tracked in the Rust repo and should be completed before treating the router as production-ready.
+## References
+- Collin Zhang et al., **Zombie: Middleboxes that Don’t Snoop**, NSDI 2024.
+- Paul Grubbs et al., **Zero-Knowledge Middleboxes**, USENIX Security 2022.

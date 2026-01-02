@@ -7,10 +7,13 @@ use hornet::router::runtime::RouterRuntime;
 use hornet::router::storage::{FileRouterStorage, RouterStorage, StoredState};
 use hornet::router::sync::client::{sync_once, DirectoryClient};
 use hornet::router::Router;
+use hornet::application::forward_pcd::PcdForwardPipeline;
 use hornet::setup::wire;
 use hornet::time::SystemTimeProvider;
 use hornet::types::{self, PacketType, Result as HornetResult};
+use hornet::control::{self, ControlMessage};
 use std::env;
+use std::net::TcpStream;
 
 fn main() {
     let config = RouterConfig::from_env().unwrap_or_else(|err| {
@@ -22,7 +25,11 @@ fn main() {
         std::process::exit(1);
     }
     let storage = FileRouterStorage::new(&config.storage_path);
-    let mut router = Router::new();
+    let mut router = if env::var("HORNET_PCD").ok().as_deref() == Some("1") {
+        Router::with_forward_pipeline(Box::new(PcdForwardPipeline::new()))
+    } else {
+        Router::new()
+    };
     let secrets = load_state(&storage, &mut router);
     let directory_path =
         env::var("HORNET_DIRECTORY_PATH").unwrap_or_else(|_| "directory.json".into());
@@ -61,6 +68,28 @@ fn main() {
                     eprintln!("  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}", 
                               packet.direction, packet.chdr.hops, 
                               packet.ahdr.bytes.len(), packet.payload.len());
+                } else {
+                    if let Ok(actions) = runtime.handle_async_violations() {
+                        for req in actions.resend {
+                            if let Some(seq) = req.sequence {
+                                eprintln!("async violation: resend requested for policy {:x?} seq {}", req.policy_id, seq);
+                            } else {
+                                eprintln!("async violation: resend requested for policy {:x?}", req.policy_id);
+                            }
+                            if let Ok(addr) = control_target() {
+                                let msg = ControlMessage::ResendRequest {
+                                    policy_id: req.policy_id,
+                                    sequence: req.sequence,
+                                };
+                                let bytes = control::encode(&msg);
+                                let _ = TcpStream::connect(addr)
+                                    .and_then(|mut stream| stream.write_all(&bytes));
+                            }
+                        }
+                        if !actions.blocked.is_empty() {
+                            eprintln!("async violations exceeded threshold; blocked policies: {:?}", actions.blocked);
+                        }
+                    }
                 }
             }
             Err(err) => {
@@ -150,6 +179,10 @@ fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
     None
 }
 
+fn control_target() -> Result<String, String> {
+    env::var("HORNET_CONTROL_ADDR").map_err(|_| "HORNET_CONTROL_ADDR not set".into())
+}
+
 struct LocalFileClient {
     path: String,
 }
@@ -209,7 +242,10 @@ mod tests {
             version: 1,
             expiry: 1_700_000_000,
             flags: 0,
-            verifier_blob: vec![0xAA, 0xBB],
+            verifiers: vec![hornet::policy::VerifierEntry {
+                kind: hornet::core::policy::ProofKind::Policy as u8,
+                verifier_blob: vec![0xAA, 0xBB],
+            }],
         };
         let route = RouteAnnouncement {
             policy_id: policy.policy_id,

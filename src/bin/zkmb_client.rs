@@ -2,16 +2,17 @@ use std::env;
 use std::fs;
 use std::process;
 
-use hornet::config::{DEFAULT_AUTHORITY_URL, DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
+use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::blocklist;
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
 use hornet::policy::Extractor;
+use hornet::policy::PolicyRegistry;
+use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
+use hornet::core::policy::ProofKind;
 use hornet::types::Error as HornetError;
 use hornet::utils::encode_hex;
-use serde::Deserialize;
-use serde_json::Value;
 
 fn main() {
     if let Err(err) = run() {
@@ -27,8 +28,6 @@ fn run() -> Result<(), String> {
         .next()
         .ok_or_else(|| format!("usage: {program} <hostname>"))?;
 
-    let authority_url =
-        env::var("POLICY_AUTHORITY_URL").unwrap_or_else(|_| DEFAULT_AUTHORITY_URL.into());
     let blocklist_path =
         env::var("POLICY_BLOCKLIST_JSON").unwrap_or_else(|_| DEFAULT_BLOCKLIST_PATH.into());
 
@@ -57,64 +56,34 @@ fn run() -> Result<(), String> {
     let capsule_bytes = capsule.encode();
 
     let policy_hex = encode_hex(policy.policy_id());
-    let capsule_hex = encode_hex(&capsule_bytes);
-    let payload_hex = encode_hex(&canonical_bytes);
+    let expected_commit = hornet::policy::plonk::payload_commitment_bytes(&canonical_bytes);
 
-    let verify_url = format!("{}/verify", authority_url.trim_end_matches('/'));
-    let agent = ureq::AgentBuilder::new().build();
-
-    let body = serde_json::json!({
-        "policy_id": policy_hex,
-        "capsule_hex": capsule_hex,
-        "payload_hex": payload_hex,
-    });
-
-    let response = agent
-        .post(&verify_url)
-        .set("content-type", "application/json")
-        .send_string(&body.to_string());
-
-    let response = match response {
-        Ok(resp) => resp,
-        Err(ureq::Error::Status(code, resp)) => {
-            let message = extract_error(resp);
-            return Err(format!(
-                "policy authority rejected proof (status {code}): {message}"
-            ));
-        }
-        Err(err) => {
-            return Err(format!("failed to contact policy authority: {err}"));
-        }
-    };
-
-    let verify: VerifyResponse = response
-        .into_json()
-        .map_err(|err| format!("unable to decode verification response: {err}"))?;
-
-    if !verify.valid {
-        return Err("policy authority reported invalid proof".into());
+    let mut registry = PolicyRegistry::new();
+    let metadata = policy.metadata(600, 0);
+    registry
+        .register(metadata)
+        .map_err(|_| "failed to register policy metadata".to_string())?;
+    let validator = PlonkCapsuleValidator::new();
+    let mut payload = capsule_bytes.clone();
+    payload.extend_from_slice(&canonical_bytes);
+    let (verified, consumed) = registry
+        .enforce(&mut payload, &validator)
+        .map_err(|_| "local verification failed".to_string())?;
+    if consumed != capsule_bytes.len() {
+        return Err("capsule length mismatch".into());
+    }
+    let policy_part = verified
+        .part(ProofKind::Policy)
+        .ok_or("missing policy proof".to_string())?;
+    if policy_part.commitment != expected_commit {
+        return Err("commitment mismatch".into());
     }
 
-    println!("verification succeeded for host '{host}'");
+    println!("local verification succeeded for host '{host}'");
     println!("policy_id: {policy_hex}");
-    println!("commitment: {}", verify.commitment_hex);
+    println!("commitment: {}", encode_hex(&expected_commit));
 
     Ok(())
 }
 
-fn extract_error(response: ureq::Response) -> String {
-    match response.into_json::<Value>() {
-        Ok(value) => value
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error")
-            .to_owned(),
-        Err(_) => "unknown error".into(),
-    }
-}
-
-#[derive(Deserialize)]
-struct VerifyResponse {
-    valid: bool,
-    commitment_hex: String,
-}
+// Remote verification removed: zkmb_client now runs fully locally.
