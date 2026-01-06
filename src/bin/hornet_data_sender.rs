@@ -88,6 +88,8 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     rng.fill_bytes(&mut session_nonce);
     let route_id = compute_route_id(&routers, &target_ip, target_port);
     let htarget = hash_bytes(&canonical_bytes);
+    println!("Generating keybinding+policy proof...");
+    let proof_start = Instant::now();
     let mut capsule = policy
         .prove_payload_with_keybinding(
             &canonical_bytes,
@@ -99,6 +101,10 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             }),
         )
         .map_err(|err| format!("failed to prove payload: {err:?}"))?;
+    println!(
+        "Proof generated in {:.2?}",
+        proof_start.elapsed()
+    );
     let sequence = current_sequence()?;
     let root = blocklist.merkle_root();
     let hkey = capsule
@@ -258,6 +264,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     payload.extend_from_slice(&encrypted_tail);
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
+    println!("Sending frame to entry {}", entry.bind);
     send_frame(entry, &frame)?;
     println!(
         "データ送信完了: {} へ {} バイト (hops={})",
