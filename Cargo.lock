@@ -277,6 +277,7 @@ dependencies = [
  "generic-array 1.3.3",
  "hkdf",
  "hmac",
+ "libc",
  "nova-snark",
  "num-bigint 0.4.6",
  "rand 0.8.5",

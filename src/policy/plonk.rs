@@ -1,5 +1,7 @@
 use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry, VerifierEntry};
-use crate::policy::sha256_circuit::{Byte, enforce_bytes_as_public_scalar, hkdf_sha256};
+use crate::policy::poseidon::poseidon_hash2;
+use crate::policy::poseidon_circuit::poseidon_hash2_circuit;
+use crate::policy::sha256_circuit::{hkdf_sha256, Byte, enforce_bytes_as_public_scalar};
 use crate::core::policy::{ProofKind, ProofPart};
 use crate::core::policy::metadata::POLICY_FLAG_PCD;
 use crate::types::{Error, Result};
@@ -21,6 +23,8 @@ use spin::Mutex;
 use std::fs;
 #[cfg(feature = "std")]
 use std::path::Path;
+#[cfg(feature = "std")]
+use std::path::PathBuf;
 
 #[derive(Clone, Default)]
 struct BlocklistCircuit {
@@ -67,15 +71,23 @@ struct KeyBindingCircuit {
     salt_bytes: [u8; 32],
     salt: BlsScalar,
     hkey: BlsScalar,
+    use_poseidon: bool,
 }
 
 impl KeyBindingCircuit {
-    fn new(secret: [u8; 32], salt_bytes: [u8; 32], salt: BlsScalar, hkey: BlsScalar) -> Self {
+    fn new(
+        secret: [u8; 32],
+        salt_bytes: [u8; 32],
+        salt: BlsScalar,
+        hkey: BlsScalar,
+        use_poseidon: bool,
+    ) -> Self {
         Self {
             secret,
             salt_bytes,
             salt,
             hkey,
+            use_poseidon,
         }
     }
 }
@@ -90,6 +102,10 @@ impl Circuit for KeyBindingCircuit {
         for i in 0..32 {
             secret[i] = Byte::witness(composer, self.secret[i]);
             salt[i] = Byte::witness(composer, self.salt_bytes[i]);
+        }
+        if self.use_poseidon {
+            poseidon_hash2_circuit(composer, salt, secret, self.salt, self.hkey);
+            return Ok(());
         }
         // Public input 0: salt (as bytes)
         enforce_bytes_as_public_scalar(composer, &salt, self.salt);
@@ -123,16 +139,32 @@ impl PlonkPolicy {
     }
 
     pub fn new_from_blocklist(label: &[u8], blocklist: &crate::policy::Blocklist) -> Result<Self> {
-        let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
-        let capacity = 1 << 8;
-        let pp = PublicParameters::setup(capacity, &mut rng).map_err(|_| Error::Crypto)?;
         let block_hashes = blocklist.hashes_as_scalars();
         let dummy_inverses = vec![BlsScalar::one(); block_hashes.len()];
         let circuit =
             BlocklistCircuit::new(BlsScalar::zero(), dummy_inverses, block_hashes.clone());
-        let (prover, verifier) =
-            Compiler::compile_with_circuit(&pp, label, &circuit).map_err(|_| Error::Crypto)?;
-        let verifier_bytes = verifier.to_bytes();
+        let capacities = blocklist_capacities(block_hashes.len());
+        let mut compiled: Option<(Prover, Vec<u8>)> = None;
+        for capacity in capacities {
+            let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
+            let pp = match PublicParameters::setup(capacity, &mut rng) {
+                Ok(pp) => pp,
+                Err(err) => {
+                    eprintln!("blocklist setup failed (capacity={}): {:?}", capacity, err);
+                    continue;
+                }
+            };
+            match Compiler::compile_with_circuit(&pp, label, &circuit) {
+                Ok((prover, verifier)) => {
+                    compiled = Some((prover, verifier.to_bytes()));
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("blocklist compile failed (capacity={}): {:?}", capacity, err);
+                }
+            }
+        }
+        let (prover, verifier_bytes) = compiled.ok_or(Error::Crypto)?;
 
         let policy_id = compute_policy_id(&verifier_bytes);
         register_verifier(
@@ -253,11 +285,17 @@ impl PlonkPolicy {
         };
         let key_part = if let Some(input) = keybinding {
             self.ensure_keybinding()?;
-            let salt = keybinding_salt(&self.policy_id, &input.htarget, &input.session_nonce, &input.route_id);
+            let salt =
+                keybinding_salt(&self.policy_id, &input.htarget, &input.session_nonce, &input.route_id);
             let salt_bytes = salt.to_bytes();
-            let hkey_bytes = hkdf_sha256_bytes(&salt_bytes, &input.sender_secret);
-            let hkey = bytes_to_scalar_le(&hkey_bytes);
-            let circuit = KeyBindingCircuit::new(input.sender_secret, salt_bytes, salt, hkey);
+            let hkey = keybinding_hash_scalar(salt, &salt_bytes, &input.sender_secret);
+            let circuit = KeyBindingCircuit::new(
+                input.sender_secret,
+                salt_bytes,
+                salt,
+                hkey,
+                keybinding_mode().is_poseidon(),
+            );
             let mut rng = ChaCha20Rng::from_seed(hash_to_seed(&input.sender_secret));
             let prover = self
                 .keybinding_prover
@@ -267,7 +305,14 @@ impl PlonkPolicy {
                 .ok_or(Error::Crypto)?;
             let (proof, public_inputs) = prover
                 .prove(&mut rng, &circuit)
-                .map_err(|_| Error::Crypto)?;
+                .map_err(|err| {
+                    eprintln!("keybinding prove error: {:?}", err);
+                    Error::Crypto
+                })?;
+            eprintln!(
+                "keybinding proof public_inputs: {:?}",
+                public_inputs.iter().map(|v| v.to_bytes()).collect::<Vec<_>>()
+            );
             if public_inputs.len() != 2 || public_inputs[0] != salt || public_inputs[1] != hkey {
                 return Err(Error::Crypto);
             }
@@ -364,6 +409,23 @@ fn hkdf_sha256_bytes(salt: &[u8; 32], ikm: &[u8; 32]) -> [u8; 32] {
     okm
 }
 
+fn keybinding_hash_scalar(
+    salt: BlsScalar,
+    salt_bytes: &[u8; 32],
+    ikm: &[u8; 32],
+) -> BlsScalar {
+    match keybinding_mode() {
+        KeyBindingMode::Poseidon => {
+            let secret = bytes_to_scalar_le(ikm);
+            poseidon_hash2([salt, secret])
+        }
+        KeyBindingMode::Hkdf => {
+            let hkey_bytes = hkdf_sha256_bytes(salt_bytes, ikm);
+            bytes_to_scalar_le(&hkey_bytes)
+        }
+    }
+}
+
 fn bytes_to_scalar_le(bytes: &[u8; 32]) -> BlsScalar {
     let mut acc = BlsScalar::zero();
     let base = BlsScalar::from(256u64);
@@ -400,30 +462,106 @@ fn hash_to_seed(data: &[u8]) -> [u8; 32] {
 static POLICY_STORE: Mutex<BTreeMap<PolicyId, Arc<PlonkPolicy>>> = Mutex::new(BTreeMap::new());
 static VERIFIER_STORE: Mutex<BTreeMap<PolicyId, Vec<VerifierEntry>>> = Mutex::new(BTreeMap::new());
 static KEYBINDING_CACHE: Mutex<Option<(Prover, Vec<u8>)>> = Mutex::new(None);
-const KEYBINDING_VERIFIER_PATH: &str = "target/keybinding-verifier.bin";
 
 fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
     if let Some((prover, verifier)) = KEYBINDING_CACHE.lock().as_ref() {
         return Ok((prover.clone(), verifier.clone()));
     }
-    let label = b"hornet-keybinding";
-    let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
-    let capacity = 1 << 17;
-    let pp = PublicParameters::setup(capacity, &mut rng).map_err(|_| Error::Crypto)?;
-    let keybinding_circuit =
-        KeyBindingCircuit::new([0u8; 32], [0u8; 32], BlsScalar::zero(), BlsScalar::zero());
-    let (prover, verifier) =
-        Compiler::compile_with_circuit(&pp, label, &keybinding_circuit)
-            .map_err(|_| Error::Crypto)?;
-    let verifier_bytes = verifier.to_bytes();
+    let mode = keybinding_mode();
+    let label: &[u8] = match mode {
+        KeyBindingMode::Poseidon => b"hornet-keybinding-poseidon",
+        KeyBindingMode::Hkdf => b"hornet-keybinding",
+    };
+    let keybinding_circuit = KeyBindingCircuit::new(
+        [0u8; 32],
+        [0u8; 32],
+        BlsScalar::zero(),
+        BlsScalar::zero(),
+        mode.is_poseidon(),
+    );
+    let capacities = keybinding_capacities();
+    eprintln!("keybinding capacities: {:?}", capacities);
+    let mut compiled: Option<(Prover, Vec<u8>)> = None;
+    for capacity in capacities {
+        let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
+        let pp = match PublicParameters::setup(capacity, &mut rng) {
+            Ok(pp) => pp,
+            Err(err) => {
+                eprintln!("keybinding setup failed (capacity={}): {:?}", capacity, err);
+                continue;
+            }
+        };
+        match Compiler::compile_with_circuit(&pp, label, &keybinding_circuit) {
+            Ok((prover, verifier)) => {
+                compiled = Some((prover, verifier.to_bytes()));
+                break;
+            }
+            Err(err) => {
+                eprintln!("keybinding compile failed (capacity={}): {:?}", capacity, err);
+            }
+        }
+    }
+    let (prover, verifier_bytes) = match compiled {
+        Some(value) => value,
+        None => {
+            eprintln!("keybinding compile failed for all capacities");
+            return Err(Error::Crypto);
+        }
+    };
     save_keybinding_verifier(&verifier_bytes);
     *KEYBINDING_CACHE.lock() = Some((prover.clone(), verifier_bytes.clone()));
     Ok((prover, verifier_bytes))
 }
 
+fn keybinding_capacities() -> Vec<usize> {
+    let mode = keybinding_mode();
+    #[cfg(feature = "std")]
+    {
+        if let Ok(raw) = std::env::var("HORNET_KEYBINDING_LOG2") {
+            if let Ok(log2) = raw.parse::<usize>() {
+                return vec![1usize << log2];
+            }
+        }
+        if let Ok(raw) = std::env::var("HORNET_KEYBINDING_CAPACITY") {
+            if let Ok(capacity) = raw.parse::<usize>() {
+                return vec![capacity];
+            }
+        }
+    }
+    if mode.is_poseidon() {
+        vec![1 << 15, 1 << 16]
+    } else {
+        vec![1 << 18, 1 << 19]
+    }
+}
+
+fn blocklist_capacities(len: usize) -> Vec<usize> {
+    if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_LOG2") {
+        if let Ok(log2) = raw.parse::<u32>() {
+            return vec![1usize << log2];
+        }
+    }
+    if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_CAPACITY") {
+        if let Ok(capacity) = raw.parse::<usize>() {
+            return vec![capacity];
+        }
+    }
+    let mut capacities = Vec::new();
+    let mut cap = 1usize << 8;
+    let target = len.saturating_mul(8).max(256);
+    while cap < target {
+        cap <<= 1;
+    }
+    for _ in 0..4 {
+        capacities.push(cap);
+        cap <<= 1;
+    }
+    capacities
+}
+
 #[cfg(feature = "std")]
 fn load_keybinding_verifier() -> Option<Vec<u8>> {
-    let path = Path::new(KEYBINDING_VERIFIER_PATH);
+    let path = keybinding_verifier_path();
     fs::read(path).ok()
 }
 
@@ -434,7 +572,7 @@ fn load_keybinding_verifier() -> Option<Vec<u8>> {
 
 #[cfg(feature = "std")]
 fn save_keybinding_verifier(bytes: &[u8]) {
-    let path = Path::new(KEYBINDING_VERIFIER_PATH);
+    let path = keybinding_verifier_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -443,6 +581,42 @@ fn save_keybinding_verifier(bytes: &[u8]) {
 
 #[cfg(not(feature = "std"))]
 fn save_keybinding_verifier(_bytes: &[u8]) {}
+
+#[derive(Clone, Copy)]
+enum KeyBindingMode {
+    Poseidon,
+    Hkdf,
+}
+
+impl KeyBindingMode {
+    fn is_poseidon(self) -> bool {
+        matches!(self, KeyBindingMode::Poseidon)
+    }
+}
+
+fn keybinding_mode() -> KeyBindingMode {
+    #[cfg(feature = "std")]
+    {
+        if let Ok(raw) = std::env::var("HORNET_KEYBINDING_HASH") {
+            match raw.to_lowercase().as_str() {
+                "hkdf" | "hkdf-sha256" | "sha256" => return KeyBindingMode::Hkdf,
+                "poseidon" | "pos" => return KeyBindingMode::Poseidon,
+                _ => {}
+            }
+        }
+    }
+    KeyBindingMode::Poseidon
+}
+
+#[cfg(feature = "std")]
+fn keybinding_verifier_path() -> PathBuf {
+    let filename = match keybinding_mode() {
+        KeyBindingMode::Poseidon => "keybinding-verifier-poseidon.bin",
+        KeyBindingMode::Hkdf => "keybinding-verifier.bin",
+    };
+    Path::new("target").join(filename)
+}
+
 
 fn register_verifier(id: PolicyId, entries: &[VerifierEntry]) {
     VERIFIER_STORE.lock().insert(id, entries.to_vec());

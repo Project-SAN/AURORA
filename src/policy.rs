@@ -3,6 +3,8 @@ pub mod blocklist;
 pub mod client;
 pub mod extract;
 pub mod plonk;
+pub mod poseidon;
+pub mod poseidon_circuit;
 pub mod sha256_circuit;
 #[cfg(feature = "regex-policy")]
 pub mod regex;
