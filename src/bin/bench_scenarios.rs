@@ -84,7 +84,6 @@ fn deliver_route() -> RoutingSegment {
 }
 
 struct ForwardFixture {
-    hops: usize,
     now: u32,
     svs: Vec<hornet::types::Sv>,
     keys: Vec<hornet::types::Si>,
@@ -133,7 +132,6 @@ impl ForwardFixture {
         let iv0 = Nonce(iv0_bytes);
 
         Self {
-            hops,
             now,
             svs,
             keys,
