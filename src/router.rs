@@ -131,12 +131,15 @@ impl Router {
                 self.forward_pipeline.block_policy(&capsule.policy_id);
             }
             let mut sequence = None;
-            if let Ok(Some(exts)) = capsule.extensions_for(crate::core::policy::ProofKind::Policy)
-            {
-                for ext in exts {
-                    if let crate::core::policy::CapsuleExtension::Sequence(seq) = ext {
-                        sequence = Some(seq);
-                        break;
+            if let Some(part) = capsule.part(crate::core::policy::ProofKind::Policy) {
+                if let Ok(Some(bytes)) = crate::core::policy::find_extension(
+                    part.aux(),
+                    crate::core::policy::EXT_TAG_SEQUENCE,
+                ) {
+                    if bytes.len() == 8 {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(bytes);
+                        sequence = Some(u64::from_be_bytes(buf));
                     }
                 }
             }

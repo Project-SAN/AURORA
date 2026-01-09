@@ -1,6 +1,10 @@
 use hornet::core::policy::ProofKind;
 use hornet::pcd::{HashPcdBackend, PcdBackend, PcdState};
-use hornet::core::policy::{encode_extensions, CapsuleExtension};
+use hornet::core::policy::{
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF,
+    EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
+    EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE, MAX_CAPSULE_LEN,
+};
 use hornet::policy::blocklist;
 use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::Blocklist;
@@ -87,12 +91,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     rng.fill_bytes(&mut sender_secret);
     rng.fill_bytes(&mut session_nonce);
     let route_id = compute_route_id(&routers, &target_ip, target_port);
-    let htarget = hash_bytes(&canonical_bytes);
+    let htarget = hash_bytes(canonical_bytes.as_slice());
     println!("Generating keybinding+policy proof...");
     let proof_start = Instant::now();
     let mut capsule = policy
         .prove_payload_with_keybinding(
-            &canonical_bytes,
+            canonical_bytes.as_slice(),
             Some(KeyBindingInputs {
                 sender_secret,
                 htarget,
@@ -106,10 +110,11 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         proof_start.elapsed()
     );
     let sequence = current_sequence()?;
-    let root = blocklist.merkle_root();
+    let mut workspace = blocklist::MerkleWorkspace::new();
+    let root = blocklist.merkle_root_in_workspace(&mut workspace);
     let hkey = capsule
         .part(ProofKind::KeyBinding)
-        .and_then(|part| part.commitment.as_slice().try_into().ok())
+        .map(|part| part.commitment)
         .unwrap_or([0u8; 32]);
     let init_state = PcdState {
         hkey,
@@ -122,27 +127,78 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let pcd_proof = backend
         .prove_base(&init_state)
         .unwrap_or_else(|_| Vec::new());
-    for part in capsule.parts.iter_mut() {
+    for part in capsule
+        .parts
+        .iter_mut()
+        .take(capsule.part_count as usize)
+    {
         match part.kind {
             ProofKind::Policy => {
-                part.aux = encode_extensions(&[CapsuleExtension::Sequence(sequence)]);
+                let seq_buf = sequence.to_be_bytes();
+                let exts = [CapsuleExtensionRef {
+                    tag: EXT_TAG_SEQUENCE,
+                    data: &seq_buf,
+                }];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                    .map_err(|_| "failed to encode policy extensions")?;
+                part.set_aux(&aux_buf[..aux_len])
+                    .map_err(|_| "failed to set policy extensions")?;
             }
             ProofKind::Consistency => {
-                part.aux = encode_extensions(&[
-                    CapsuleExtension::PcdKeyHash(init_state.hkey),
-                    CapsuleExtension::PcdRoot(init_state.root),
-                    CapsuleExtension::PcdTargetHash(init_state.htarget),
-                    CapsuleExtension::PcdSeq(init_state.seq),
-                    CapsuleExtension::PcdState(init_hash),
-                    CapsuleExtension::PcdProof(pcd_proof.clone()),
-                ]);
+                let seq_buf = init_state.seq.to_be_bytes();
+                let exts = [
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_KEY_HASH,
+                        data: &init_state.hkey,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_ROOT,
+                        data: &init_state.root,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_TARGET_HASH,
+                        data: &init_state.htarget,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_SEQ,
+                        data: &seq_buf,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_STATE,
+                        data: &init_hash,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_PROOF,
+                        data: &pcd_proof,
+                    },
+                ];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                    .map_err(|_| "failed to encode consistency extensions")?;
+                part.set_aux(&aux_buf[..aux_len])
+                    .map_err(|_| "failed to set consistency extensions")?;
             }
             ProofKind::KeyBinding => {
-                part.aux = encode_extensions(&[
-                    CapsuleExtension::PcdKeyHash(hkey),
-                    CapsuleExtension::SessionNonce(session_nonce),
-                    CapsuleExtension::RouteId(route_id),
-                ]);
+                let exts = [
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_KEY_HASH,
+                        data: &hkey,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_SESSION_NONCE,
+                        data: &session_nonce,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_ROUTE_ID,
+                        data: &route_id,
+                    },
+                ];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                    .map_err(|_| "failed to encode keybinding extensions")?;
+                part.set_aux(&aux_buf[..aux_len])
+                    .map_err(|_| "failed to set keybinding extensions")?;
             }
         }
     }
@@ -254,13 +310,17 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     full_payload.extend_from_slice(&ahdr_b.bytes);
     full_payload.extend_from_slice(&request_payload);
 
-    let capsule_bytes = capsule.encode();
+    let mut capsule_buf = [0u8; MAX_CAPSULE_LEN];
+    let capsule_len = capsule
+        .encode_into(&mut capsule_buf)
+        .map_err(|_| "failed to encode capsule")?;
     let mut encrypted_tail = Vec::new();
-    encrypted_tail.extend_from_slice(&canonical_bytes);
+    encrypted_tail.extend_from_slice(canonical_bytes.as_slice());
     encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
     hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
-    let mut payload = capsule_bytes;
+    let mut payload = Vec::with_capacity(capsule_len + encrypted_tail.len());
+    payload.extend_from_slice(&capsule_buf[..capsule_len]);
     payload.extend_from_slice(&encrypted_tail);
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;

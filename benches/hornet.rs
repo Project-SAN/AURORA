@@ -178,7 +178,16 @@ fn bench_end_to_end_user_to_router_network(c: &mut Criterion) {
     let mut group = c.benchmark_group("end_to_end_network/user_to_exit");
     for &hops in HOP_CASES {
         for &payload_len in PAYLOAD_CASES {
-            let mut harness = NetworkHarness::new(hops, payload_len).expect("network harness init");
+            let mut harness = match NetworkHarness::new(hops, payload_len) {
+                Ok(harness) => harness,
+                Err(err) => {
+                    eprintln!(
+                        "skipping network harness benchmark (hops={hops}, payload={payload_len}): {err}"
+                    );
+                    group.finish();
+                    return;
+                }
+            };
             let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
             group.bench_function(id, |b| {
                 b.iter(|| {
@@ -253,6 +262,7 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "http-client")]
 criterion_group!(
     benches,
     bench_create_ahdr,

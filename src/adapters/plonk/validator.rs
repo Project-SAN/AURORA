@@ -1,7 +1,10 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use crate::core::policy::{CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata, ProofKind};
+use crate::core::policy::{
+    find_extension, CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata, ProofKind,
+    EXT_TAG_PCD_TARGET_HASH, EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
+};
 use crate::types::{Error, Result};
 use dusk_bytes::Serializable;
 use dusk_plonk::{composer::Verifier as PlonkVerifier, prelude::BlsScalar, proof_system::Proof};
@@ -61,7 +64,7 @@ impl PlonkCapsuleValidator {
 
 impl CapsuleValidator for PlonkCapsuleValidator {
     fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()> {
-        for part in &capsule.parts {
+        for part in capsule.parts[..(capsule.part_count as usize)].iter() {
             let Some(verifier) = self.load_verifier(metadata, part.kind as u8)? else {
                 continue;
             };
@@ -76,13 +79,9 @@ impl CapsuleValidator for PlonkCapsuleValidator {
                 let inputs = parse_commitment_scalar(&part.commitment)?;
                 Self::validate_proof_bytes(&verifier, &part.proof, &[inputs])?;
             }
-            if let Ok(Some(exts)) = capsule.extensions_for(part.kind) {
-                for ext in exts {
-                    if let crate::core::policy::CapsuleExtension::PrecomputeProof(bytes) = ext {
-                        let inputs = parse_commitment_scalar(&part.commitment)?;
-                        Self::validate_proof_bytes(&verifier, bytes.as_slice(), &[inputs])?;
-                    }
-                }
+            if let Ok(Some(bytes)) = find_extension(part.aux(), EXT_TAG_PRECOMPUTE_PROOF) {
+                let inputs = parse_commitment_scalar(&part.commitment)?;
+                Self::validate_proof_bytes(&verifier, bytes, &[inputs])?;
             }
         }
         Ok(())
@@ -99,32 +98,29 @@ fn parse_commitment_scalar(commitment: &[u8]) -> Result<BlsScalar> {
 }
 
 fn keybinding_public_inputs(capsule: &PolicyCapsule) -> Option<Vec<BlsScalar>> {
-    let key_exts = capsule.extensions_for(ProofKind::KeyBinding).ok()??;
-    let mut session_nonce = None;
-    let mut route_id = None;
-    for ext in key_exts {
-        match ext {
-            crate::core::policy::CapsuleExtension::SessionNonce(value) => {
-                session_nonce = Some(value)
-            }
-            crate::core::policy::CapsuleExtension::RouteId(value) => route_id = Some(value),
-            _ => {}
-        }
-    }
-    let cons_exts = capsule.extensions_for(ProofKind::Consistency).ok()??;
-    let mut htarget = None;
-    for ext in cons_exts {
-        if let crate::core::policy::CapsuleExtension::PcdTargetHash(value) = ext {
-            htarget = Some(value);
-            break;
-        }
-    }
-    let (session_nonce, route_id, htarget) =
-        (session_nonce?, route_id?, htarget?);
+    let key_part = capsule.part(ProofKind::KeyBinding)?;
+    let key_aux = key_part.aux();
+    let session_nonce = find_ext_32(key_aux, EXT_TAG_SESSION_NONCE)?;
+    let route_id = find_ext_32(key_aux, EXT_TAG_ROUTE_ID)?;
+
+    let cons_part = capsule.part(ProofKind::Consistency)?;
+    let cons_aux = cons_part.aux();
+    let htarget = find_ext_32(cons_aux, EXT_TAG_PCD_TARGET_HASH)?;
+
     let key_part = capsule.part(ProofKind::KeyBinding)?;
     let hkey = parse_commitment_scalar(&key_part.commitment).ok()?;
     let salt = keybinding_salt(&capsule.policy_id, &htarget, &session_nonce, &route_id);
     Some(vec![salt, hkey])
+}
+
+fn find_ext_32(aux: &[u8], tag: u8) -> Option<[u8; 32]> {
+    let bytes = find_extension(aux, tag).ok()??;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(bytes);
+    Some(out)
 }
 
 fn keybinding_salt(

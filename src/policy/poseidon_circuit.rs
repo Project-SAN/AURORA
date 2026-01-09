@@ -1,7 +1,7 @@
 use dusk_plonk::prelude::{BlsScalar, Composer, Constraint, Witness};
 
 use crate::policy::poseidon::{poseidon_params, PoseidonParams, WIDTH};
-use crate::policy::sha256_circuit::Byte;
+use crate::policy::bytes::Byte;
 
 #[derive(Clone, Copy)]
 struct FieldElem {

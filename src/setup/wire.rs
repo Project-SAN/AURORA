@@ -181,7 +181,8 @@ mod tests {
         }
         let header = sphinx::Header {
             alpha: [0xAA; sphinx::GROUP_LEN],
-            beta: vec![0u8; (2 * 1 + 1) * sphinx::KAPPA_BYTES],
+            beta: sphinx::InlineBytes::new(&vec![0u8; (2 * 1 + 1) * sphinx::KAPPA_BYTES])
+                .expect("beta"),
             gamma: [0xBB; sphinx::MU_LEN],
             rmax: 1,
             hops: 1,

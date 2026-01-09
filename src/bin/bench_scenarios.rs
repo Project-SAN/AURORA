@@ -1,10 +1,14 @@
 use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
 use hornet::application::forward::RegistryForwardPipeline;
 use hornet::node::{NodeCtx, PolicyRuntime};
-use hornet::policy::blocklist::BlocklistEntry;
+use hornet::policy::blocklist::{BlocklistEntry, LeafBytes, ValueBytes};
 use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
-use hornet::core::policy::{encode_extensions, CapsuleExtension, ProofKind};
+use hornet::core::policy::{
+    encode_extensions_into, CapsuleExtensionRef, ProofKind, AUX_MAX, EXT_TAG_PCD_KEY_HASH,
+    EXT_TAG_PCD_TARGET_HASH, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
+    MAX_CAPSULE_LEN,
+};
 use hornet::types::{Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment};
 use rand::rngs::SmallRng;
 use rand::{RngCore, SeedableRng};
@@ -169,13 +173,17 @@ fn run_forward_chain(
     Ok(())
 }
 
-fn canonical_leaf(host: &str) -> Vec<u8> {
-    BlocklistEntry::Exact(host.to_ascii_lowercase()).leaf_bytes()
+fn canonical_leaf(host: &str) -> LeafBytes {
+    let lower = host.to_ascii_lowercase();
+    BlocklistEntry::Exact(ValueBytes::new(lower.as_bytes()).unwrap()).leaf_bytes()
 }
 
-fn build_blocklist(n: usize) -> Vec<Vec<u8>> {
+fn build_blocklist(n: usize) -> Vec<LeafBytes> {
     (0..n)
-        .map(|i| BlocklistEntry::Exact(format!("blocked{idx}.example", idx = i)).leaf_bytes())
+        .map(|i| {
+            let value = format!("blocked{idx}.example", idx = i);
+            BlocklistEntry::Exact(ValueBytes::new(value.as_bytes()).unwrap()).leaf_bytes()
+        })
         .collect()
 }
 
@@ -203,26 +211,53 @@ fn attach_keybinding_extensions(
 ) -> Result<()> {
     let hkey = capsule
         .part(ProofKind::KeyBinding)
-        .and_then(|part| part.commitment.as_slice().try_into().ok())
+        .map(|part| part.commitment)
         .unwrap_or([0u8; 32]);
-    for part in capsule.parts.iter_mut() {
-        match part.kind {
-            ProofKind::Consistency => {
-                part.aux = encode_extensions(&[
-                    CapsuleExtension::PcdKeyHash(hkey),
-                    CapsuleExtension::PcdTargetHash(keybinding.htarget),
-                ]);
+        for part in capsule
+            .parts
+            .iter_mut()
+            .take(capsule.part_count as usize)
+        {
+            match part.kind {
+                ProofKind::Consistency => {
+                    let exts = [
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_KEY_HASH,
+                            data: &hkey,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_TARGET_HASH,
+                            data: &keybinding.htarget,
+                        },
+                    ];
+                    let mut aux_buf = [0u8; AUX_MAX];
+                    let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                        .expect("encode consistency exts");
+                    part.set_aux(&aux_buf[..aux_len]).expect("set aux");
+                }
+                ProofKind::KeyBinding => {
+                    let exts = [
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_KEY_HASH,
+                            data: &hkey,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_SESSION_NONCE,
+                            data: &keybinding.session_nonce,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_ROUTE_ID,
+                            data: &keybinding.route_id,
+                        },
+                    ];
+                    let mut aux_buf = [0u8; AUX_MAX];
+                    let aux_len =
+                        encode_extensions_into(&exts, &mut aux_buf).expect("encode key exts");
+                    part.set_aux(&aux_buf[..aux_len]).expect("set aux");
+                }
+                _ => {}
             }
-            ProofKind::KeyBinding => {
-                part.aux = encode_extensions(&[
-                    CapsuleExtension::PcdKeyHash(hkey),
-                    CapsuleExtension::SessionNonce(keybinding.session_nonce),
-                    CapsuleExtension::RouteId(keybinding.route_id),
-                ]);
-            }
-            _ => {}
         }
-    }
     Ok(())
 }
 
@@ -233,7 +268,10 @@ fn verify_capsule(
     registry: &PolicyRegistry,
     validator: &PlonkCapsuleValidator,
 ) -> Result<()> {
-    let mut capsule_bytes = capsule.encode();
+    let mut capsule_buf = [0u8; MAX_CAPSULE_LEN];
+    let capsule_len = capsule.encode_into(&mut capsule_buf).expect("encode");
+    let mut capsule_bytes = Vec::with_capacity(capsule_len);
+    capsule_bytes.extend_from_slice(&capsule_buf[..capsule_len]);
     let (decoded, consumed) = registry.enforce(&mut capsule_bytes, validator)?;
     if consumed != capsule_bytes.len() {
         return Err(hornet::types::Error::PolicyViolation);
@@ -313,11 +351,11 @@ fn main() -> Result<()> {
         let mut registry = PolicyRegistry::new();
 
         // Warm-up to populate caches.
-        if let Err(err) = policy.prove_payload(&leaf) {
+        if let Err(err) = policy.prove_payload(leaf.as_slice()) {
             eprintln!("policy-only prove failed: {err:?}");
             return Err(err);
         }
-        if let Err(err) = policy.prove_payload_with_keybinding(&leaf, Some(keybinding)) {
+        if let Err(err) = policy.prove_payload_with_keybinding(leaf.as_slice(), Some(keybinding)) {
             eprintln!("keybinding prove failed: {err:?}");
             return Err(err);
         }
@@ -329,7 +367,7 @@ fn main() -> Result<()> {
         let prove_iters = 5usize;
         let (prove_wall, prove_cpu) = bench_loop("prove_payload_with_keybinding", prove_iters, || {
             let _ = policy
-                .prove_payload_with_keybinding(&leaf, Some(keybinding))
+                .prove_payload_with_keybinding(leaf.as_slice(), Some(keybinding))
                 .expect("prove");
         });
         let prove_avg_ms = prove_wall.as_secs_f64() * 1e3 / prove_iters as f64;
@@ -339,12 +377,12 @@ fn main() -> Result<()> {
             prove_avg_ms, prove_cpu_ms
         );
 
-        let capsule = policy.prove_payload_with_keybinding(&leaf, Some(keybinding))?;
+        let capsule = policy.prove_payload_with_keybinding(leaf.as_slice(), Some(keybinding))?;
         let mut capsule = capsule;
         attach_keybinding_extensions(&mut capsule, &keybinding)?;
         let verify_iters = 20usize;
         let (verify_wall, verify_cpu) = bench_loop("verify_capsule", verify_iters, || {
-            verify_capsule(&metadata, &capsule, &leaf, &registry, &validator)
+            verify_capsule(&metadata, &capsule, leaf.as_slice(), &registry, &validator)
                 .expect("verify");
         });
         let verify_avg_ms = verify_wall.as_secs_f64() * 1e3 / verify_iters as f64;
@@ -368,7 +406,10 @@ fn main() -> Result<()> {
                 let mut iv = fixture.iv0;
                 hornet::source::build(&mut chdr, &ahdr, &fixture.keys, &mut iv, &mut encrypted_tail)
                     .expect("build");
-                let mut payload = capsule.encode();
+                let mut cap_buf = [0u8; MAX_CAPSULE_LEN];
+                let cap_len = capsule.encode_into(&mut cap_buf).expect("encode");
+                let mut payload = Vec::with_capacity(cap_len);
+                payload.extend_from_slice(&cap_buf[..cap_len]);
                 payload.extend_from_slice(&encrypted_tail);
                 let policy_rt = PolicyRuntime {
                     registry: &registry,

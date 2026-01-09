@@ -1,4 +1,6 @@
-use crate::policy::blocklist::{self, Blocklist, BlocklistEntry, MerkleProof};
+use crate::policy::blocklist::{
+    self, Blocklist, BlocklistEntry, LeafBytes, MerkleProof, MerkleWorkspace,
+};
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
 use crate::core::policy::{ProofKind, ProofPart};
@@ -20,7 +22,7 @@ pub struct ProofRequest<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NonMembershipWitness {
-    pub target_leaf: Vec<u8>,
+    pub target_leaf: LeafBytes,
     pub target_hash: [u8; 32],
     pub blocklist_root: [u8; 32],
     pub gap_index: usize,
@@ -29,46 +31,53 @@ pub struct NonMembershipWitness {
 }
 
 impl NonMembershipWitness {
-    pub fn from_canonical_leaf(blocklist: &Blocklist, leaf: Vec<u8>) -> Result<Self> {
-        let leaves = blocklist.canonical_leaves();
-        match leaves.binary_search(&leaf) {
-            Ok(_) => Err(Error::PolicyViolation),
-            Err(index) => {
-                let blocklist_root = blocklist.merkle_root();
-                let left = if index > 0 {
-                    blocklist.merkle_proof(index - 1)
-                } else {
-                    None
-                };
-                let right = if index < blocklist.len() {
-                    blocklist.merkle_proof(index)
-                } else {
-                    None
-                };
-                let mut hasher = Sha256::new();
-                hasher.update(&leaf);
-                let digest = hasher.finalize();
-                let mut target_hash = [0u8; 32];
-                target_hash.copy_from_slice(&digest);
-                Ok(Self {
-                    target_leaf: leaf,
-                    target_hash,
-                    blocklist_root,
-                    gap_index: index,
-                    left,
-                    right,
-                })
-            }
-        }
+    pub fn from_canonical_leaf_with_workspace(
+        blocklist: &Blocklist,
+        leaf: LeafBytes,
+        workspace: &mut MerkleWorkspace,
+    ) -> Result<Self> {
+        let index = blocklist.insertion_index(&leaf)?;
+        let blocklist_root = blocklist.merkle_root_in_workspace(workspace);
+        let left = if index > 0 {
+            blocklist.merkle_proof_in_workspace(workspace, index - 1)
+        } else {
+            None
+        };
+        let right = if index < blocklist.len() {
+            blocklist.merkle_proof_in_workspace(workspace, index)
+        } else {
+            None
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(leaf.as_slice());
+        let digest = hasher.finalize();
+        let mut target_hash = [0u8; 32];
+        target_hash.copy_from_slice(&digest);
+        Ok(Self {
+            target_leaf: leaf,
+            target_hash,
+            blocklist_root,
+            gap_index: index,
+            left,
+            right,
+        })
     }
 
-    pub fn from_entry(blocklist: &Blocklist, entry: &BlocklistEntry) -> Result<Self> {
-        Self::from_canonical_leaf(blocklist, entry.leaf_bytes())
+    pub fn from_entry_with_workspace(
+        blocklist: &Blocklist,
+        entry: &BlocklistEntry,
+        workspace: &mut MerkleWorkspace,
+    ) -> Result<Self> {
+        Self::from_canonical_leaf_with_workspace(blocklist, entry.leaf_bytes(), workspace)
     }
 
-    pub fn from_target(blocklist: &Blocklist, target: &TargetValue) -> Result<Self> {
+    pub fn from_target_with_workspace(
+        blocklist: &Blocklist,
+        target: &TargetValue,
+        workspace: &mut MerkleWorkspace,
+    ) -> Result<Self> {
         let entry = blocklist::entry_from_target(target)?;
-        Self::from_entry(blocklist, &entry)
+        Self::from_entry_with_workspace(blocklist, &entry, workspace)
     }
 }
 
@@ -76,6 +85,7 @@ pub struct ProofPreprocessor<E> {
     extractor: E,
     blocklist: Arc<Blocklist>,
     fail_open: bool,
+    workspace: MerkleWorkspace,
 }
 
 impl<E> ProofPreprocessor<E>
@@ -87,6 +97,7 @@ where
             extractor,
             blocklist: Arc::new(blocklist),
             fail_open: false,
+            workspace: MerkleWorkspace::new(),
         }
     }
 
@@ -95,6 +106,7 @@ where
             extractor,
             blocklist,
             fail_open: false,
+            workspace: MerkleWorkspace::new(),
         }
     }
 
@@ -104,7 +116,7 @@ where
     }
 
     pub fn prepare<'a>(
-        &self,
+        &mut self,
         policy: &'a PolicyMetadata,
         payload: &'a [u8],
         aux: &'a [u8],
@@ -113,7 +125,11 @@ where
             .extractor
             .extract(payload)
             .map_err(|_| Error::PolicyViolation)?;
-        match NonMembershipWitness::from_target(&self.blocklist, &target) {
+        match NonMembershipWitness::from_target_with_workspace(
+            &self.blocklist,
+            &target,
+            &mut self.workspace,
+        ) {
             Ok(witness) => Ok(ProofRequest {
                 policy,
                 payload,
@@ -265,7 +281,7 @@ impl HttpProofService {
 
     pub fn obtain_with_preprocessor<E>(
         &self,
-        preprocessor: &ProofPreprocessor<E>,
+        preprocessor: &mut ProofPreprocessor<E>,
         policy: &PolicyMetadata,
         payload: &[u8],
         aux: &[u8],
@@ -387,7 +403,7 @@ struct NonMembershipRequest {
 impl NonMembershipRequest {
     fn from_witness(witness: &NonMembershipWitness) -> Self {
         Self {
-            target_leaf_hex: hex::encode(&witness.target_leaf),
+            target_leaf_hex: hex::encode(witness.target_leaf.as_slice()),
             target_hash_hex: hex::encode(&witness.target_hash),
             root_hex: hex::encode(&witness.blocklist_root),
             gap_index: witness.gap_index as u64,
@@ -409,9 +425,12 @@ impl MerkleProofRequest {
     fn from_proof(proof: &MerkleProof) -> Self {
         Self {
             index: proof.index as u64,
-            leaf_hex: hex::encode(&proof.leaf_bytes),
+            leaf_hex: hex::encode(proof.leaf_bytes.as_slice()),
             leaf_hash_hex: hex::encode(&proof.leaf_hash),
-            siblings_hex: proof.siblings.iter().map(|sib| hex::encode(sib)).collect(),
+            siblings_hex: proof.siblings[..proof.siblings_len as usize]
+                .iter()
+                .map(|sib| hex::encode(sib))
+                .collect(),
         }
     }
 }
@@ -454,33 +473,45 @@ impl ProofServiceResponse {
         } else {
             Vec::new()
         };
-        if proof.is_empty() || commitment.is_empty() {
+        if proof.len() != crate::core::policy::PROOF_LEN
+            || commitment.len() != crate::core::policy::COMMIT_LEN
+            || aux.len() > crate::core::policy::AUX_MAX
+        {
             return Err(Error::Crypto);
         }
-        let parts = vec![
-            ProofPart {
-                kind: ProofKind::KeyBinding,
-                proof: proof.clone(),
-                commitment: commitment.clone(),
-                aux: aux.clone(),
-            },
-            ProofPart {
-                kind: ProofKind::Consistency,
-                proof: proof.clone(),
-                commitment: commitment.clone(),
-                aux: aux.clone(),
-            },
-            ProofPart {
-                kind: ProofKind::Policy,
-                proof,
-                commitment,
-                aux,
-            },
-        ];
+        let mut proof_buf = [0u8; crate::core::policy::PROOF_LEN];
+        proof_buf.copy_from_slice(&proof);
+        let mut commit_buf = [0u8; crate::core::policy::COMMIT_LEN];
+        commit_buf.copy_from_slice(&commitment);
+        let mut part0 = ProofPart {
+            kind: ProofKind::KeyBinding,
+            proof: proof_buf,
+            commitment: commit_buf,
+            aux_len: 0,
+            aux: [0u8; crate::core::policy::AUX_MAX],
+        };
+        part0.set_aux(&aux)?;
+        let mut part1 = ProofPart {
+            kind: ProofKind::Consistency,
+            proof: proof_buf,
+            commitment: commit_buf,
+            aux_len: 0,
+            aux: [0u8; crate::core::policy::AUX_MAX],
+        };
+        part1.set_aux(&aux)?;
+        let mut part2 = ProofPart {
+            kind: ProofKind::Policy,
+            proof: proof_buf,
+            commitment: commit_buf,
+            aux_len: 0,
+            aux: [0u8; crate::core::policy::AUX_MAX],
+        };
+        part2.set_aux(&aux)?;
         Ok(PolicyCapsule {
             policy_id: *policy_id,
             version: self.version.unwrap_or(1),
-            parts,
+            part_count: 3,
+            parts: [part0, part1, part2, ProofPart::default()],
         })
     }
 }
@@ -516,7 +547,7 @@ pub struct PlonkProofService<E: Extractor + Send + Sync + 'static> {
 }
 
 impl<E: Extractor + Send + Sync + 'static> PlonkProofService<E> {
-    pub fn new(label: &[u8], blocklist: Vec<Vec<u8>>, extractor: E) -> Result<Self> {
+    pub fn new(label: &[u8], blocklist: Vec<LeafBytes>, extractor: E) -> Result<Self> {
         let policy = Arc::new(
             PlonkPolicy::new_with_blocklist(label, &blocklist).map_err(|_| Error::Crypto)?,
         );
@@ -537,7 +568,7 @@ impl<E: Extractor + Send + Sync + 'static> ProofService for PlonkProofService<E>
             .map_err(|_| Error::PolicyViolation)?;
         let entry = blocklist::entry_from_target(&target)?;
         let bytes = entry.leaf_bytes();
-        self.policy.prove_payload(&bytes)
+        self.policy.prove_payload(bytes.as_slice())
     }
 }
 
@@ -610,6 +641,7 @@ mod hex {
 mod tests {
     use super::*;
     use alloc::vec;
+    use crate::policy::blocklist::ValueBytes;
     use crate::policy::VerifierEntry;
 
     #[test]
@@ -648,9 +680,18 @@ mod tests {
                 verifier_blob: vec![],
             }],
         };
-        let blocklist = Blocklist::from_canonical_bytes(vec![b"aaa".to_vec(), b"ccc".to_vec()]);
-        let witness = NonMembershipWitness::from_canonical_leaf(&blocklist, b"bbb".to_vec())
-            .expect("witness");
+        let blocklist = Blocklist::from_canonical_bytes(vec![
+            LeafBytes::new(b"aaa").unwrap(),
+            LeafBytes::new(b"ccc").unwrap(),
+        ])
+        .unwrap();
+        let mut workspace = MerkleWorkspace::new();
+        let witness = NonMembershipWitness::from_canonical_leaf_with_workspace(
+            &blocklist,
+            LeafBytes::new(b"bbb").unwrap(),
+            &mut workspace,
+        )
+        .expect("witness");
         let req = ProofRequest {
             policy: &meta,
             payload: b"payload",
@@ -678,38 +719,45 @@ mod tests {
             }],
         };
         let blocked_leaf =
-            crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
-        let blocklist = Blocklist::from_canonical_bytes(vec![blocked_leaf]);
-        let preprocessor = ProofPreprocessor::new(HttpHostExtractor::default(), blocklist);
+            crate::policy::blocklist::BlocklistEntry::Exact(ValueBytes::new(b"blocked.example").unwrap())
+                .leaf_bytes();
+        let blocklist = Blocklist::from_canonical_bytes(vec![blocked_leaf]).unwrap();
+        let mut preprocessor = ProofPreprocessor::new(HttpHostExtractor::default(), blocklist);
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
         let request = preprocessor.prepare(&meta, payload, b"").expect("prepared");
         let witness = request.non_membership.as_ref().expect("witness present");
         assert_eq!(witness.blocklist_root.len(), 32);
-        assert_eq!(witness.target_leaf[0], 0x01); // TAG_EXACT from blocklist encoding
+        assert_eq!(witness.target_leaf.as_slice()[0], 0x01); // TAG_EXACT from blocklist encoding
     }
 
     #[test]
     fn witness_from_ipv4_target() {
         let blocklist = Blocklist::new(vec![
             BlocklistEntry::Range {
-                start: vec![0, 0, 0, 0],
-                end: vec![10, 0, 0, 0],
+                start: ValueBytes::new(&[0, 0, 0, 0]).unwrap(),
+                end: ValueBytes::new(&[10, 0, 0, 0]).unwrap(),
             },
             BlocklistEntry::Range {
-                start: vec![192, 168, 0, 0],
-                end: vec![192, 168, 255, 255],
+                start: ValueBytes::new(&[192, 168, 0, 0]).unwrap(),
+                end: ValueBytes::new(&[192, 168, 255, 255]).unwrap(),
             },
-        ]);
+        ])
+        .unwrap();
         let target = TargetValue::Ipv4([11, 0, 0, 1]);
-        let witness = NonMembershipWitness::from_target(&blocklist, &target).expect("ipv4 witness");
-        assert_eq!(witness.target_leaf[0], 0x04); // TAG_RANGE from blocklist encoding
+        let mut workspace = MerkleWorkspace::new();
+        let witness =
+            NonMembershipWitness::from_target_with_workspace(&blocklist, &target, &mut workspace)
+                .expect("ipv4 witness");
+        assert_eq!(witness.target_leaf.as_slice()[0], 0x04); // TAG_RANGE from blocklist encoding
     }
 
     #[test]
     fn response_to_capsule() {
+        let proof = vec![0xAA; crate::core::policy::PROOF_LEN];
+        let commitment = vec![0xCC; crate::core::policy::COMMIT_LEN];
         let resp = ProofServiceResponse {
-            proof_hex: "aabb".into(),
-            commitment_hex: "ccdd".into(),
+            proof_hex: crate::utils::encode_hex(&proof),
+            commitment_hex: crate::utils::encode_hex(&commitment),
             aux_hex: None,
             version: Some(7),
         };
@@ -719,7 +767,7 @@ mod tests {
         let part = cap
             .part(ProofKind::Policy)
             .expect("policy part");
-        assert_eq!(part.proof, vec![0xAA, 0xBB]);
+        assert_eq!(&part.proof[..2], &[0xAA, 0xAA]);
     }
 
     #[test]
@@ -741,29 +789,36 @@ mod tests {
             non_membership: None,
         };
         let service = MockProofService::new(|_| {
+            let mut part = ProofPart {
+                kind: ProofKind::Policy,
+                proof: [0u8; crate::core::policy::PROOF_LEN],
+                commitment: [0u8; crate::core::policy::COMMIT_LEN],
+                aux_len: 0,
+                aux: [0u8; crate::core::policy::AUX_MAX],
+            };
+            part.proof[..3].copy_from_slice(&[1, 2, 3]);
+            part.commitment[..2].copy_from_slice(&[4, 5]);
             Ok(PolicyCapsule {
                 policy_id: [0x33; 32],
                 version: 1,
-                parts: vec![ProofPart {
-                    kind: ProofKind::Policy,
-                    proof: vec![1, 2, 3],
-                    commitment: vec![4, 5],
-                    aux: vec![],
-                }],
+                part_count: 1,
+                parts: [part, ProofPart::default(), ProofPart::default(), ProofPart::default()],
             })
         });
         let capsule = service.obtain_proof(&req).expect("capsule");
         let part = capsule
             .part(ProofKind::Policy)
             .expect("policy part");
-        assert_eq!(part.proof, vec![1, 2, 3]);
+        assert_eq!(&part.proof[..3], &[1, 2, 3]);
     }
 
     #[test]
     fn plonk_service_generates_proof() {
         use crate::policy::extract::HttpHostExtractor;
-        let blocked_leaf =
-            crate::policy::blocklist::BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
+        let blocked_leaf = crate::policy::blocklist::BlocklistEntry::Exact(
+            ValueBytes::new(b"blocked.example").unwrap(),
+        )
+        .leaf_bytes();
         let blocklist = vec![blocked_leaf];
         let service = PlonkProofService::new(b"test", blocklist, HttpHostExtractor::default())
             .expect("plonk service");

@@ -1,7 +1,10 @@
 use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry, VerifierEntry};
+use crate::policy::blocklist::{LeafBytes, MAX_BLOCKLIST_ENTRIES};
+#[cfg(feature = "regex-policy")]
+use crate::policy::blocklist::ValueBytes;
 use crate::policy::poseidon::poseidon_hash2;
 use crate::policy::poseidon_circuit::poseidon_hash2_circuit;
-use crate::policy::sha256_circuit::{hkdf_sha256, Byte, enforce_bytes_as_public_scalar};
+use crate::policy::bytes::Byte;
 use crate::core::policy::{ProofKind, ProofPart};
 use crate::core::policy::metadata::POLICY_FLAG_PCD;
 use crate::types::{Error, Result};
@@ -17,7 +20,6 @@ use dusk_plonk::prelude::{
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256, Sha512};
-use hkdf::Hkdf;
 use spin::Mutex;
 #[cfg(feature = "std")]
 use std::fs;
@@ -71,7 +73,6 @@ struct KeyBindingCircuit {
     salt_bytes: [u8; 32],
     salt: BlsScalar,
     hkey: BlsScalar,
-    use_poseidon: bool,
 }
 
 impl KeyBindingCircuit {
@@ -80,14 +81,12 @@ impl KeyBindingCircuit {
         salt_bytes: [u8; 32],
         salt: BlsScalar,
         hkey: BlsScalar,
-        use_poseidon: bool,
     ) -> Self {
         Self {
             secret,
             salt_bytes,
             salt,
             hkey,
-            use_poseidon,
         }
     }
 }
@@ -103,16 +102,7 @@ impl Circuit for KeyBindingCircuit {
             secret[i] = Byte::witness(composer, self.secret[i]);
             salt[i] = Byte::witness(composer, self.salt_bytes[i]);
         }
-        if self.use_poseidon {
-            poseidon_hash2_circuit(composer, salt, secret, self.salt, self.hkey);
-            return Ok(());
-        }
-        // Public input 0: salt (as bytes)
-        enforce_bytes_as_public_scalar(composer, &salt, self.salt);
-        // Compute HKDF-SHA256 and bind to public hkey.
-        let hkey_bytes = hkdf_sha256(composer, &salt, &secret);
-        // Public input 1: hkey (as bytes)
-        enforce_bytes_as_public_scalar(composer, &hkey_bytes, self.hkey);
+        poseidon_hash2_circuit(composer, salt, secret, self.salt, self.hkey);
         Ok(())
     }
 }
@@ -133,13 +123,15 @@ impl PlonkPolicy {
         Self::new_with_blocklist(label, &[])
     }
 
-    pub fn new_with_blocklist(label: &[u8], blocklist: &[Vec<u8>]) -> Result<Self> {
-        let blocklist = crate::policy::Blocklist::from_canonical_bytes(blocklist.to_vec());
+    pub fn new_with_blocklist(label: &[u8], blocklist: &[LeafBytes]) -> Result<Self> {
+        let blocklist = crate::policy::Blocklist::from_canonical_bytes(blocklist.to_vec())?;
         Self::new_from_blocklist(label, &blocklist)
     }
 
     pub fn new_from_blocklist(label: &[u8], blocklist: &crate::policy::Blocklist) -> Result<Self> {
-        let block_hashes = blocklist.hashes_as_scalars();
+        let mut block_hashes_buf = [BlsScalar::zero(); MAX_BLOCKLIST_ENTRIES];
+        let block_hashes_len = blocklist.hashes_as_scalars_into(&mut block_hashes_buf)?;
+        let block_hashes = block_hashes_buf[..block_hashes_len].to_vec();
         let dummy_inverses = vec![BlsScalar::one(); block_hashes.len()];
         let circuit =
             BlocklistCircuit::new(BlsScalar::zero(), dummy_inverses, block_hashes.clone());
@@ -200,9 +192,9 @@ impl PlonkPolicy {
         let literals = exact_literals(patterns)?;
         let entries: Vec<BlocklistEntry> = literals
             .into_iter()
-            .map(BlocklistEntry::Exact)
-            .collect();
-        let blocklist = crate::policy::Blocklist::new(entries);
+            .map(|literal| ValueBytes::new(literal.as_bytes()).map(BlocklistEntry::Exact))
+            .collect::<crate::types::Result<_>>()?;
+        let blocklist = crate::policy::Blocklist::new(entries)?;
         let mut policy = Self::new_from_blocklist(label, &blocklist)?;
         policy.flags |= POLICY_FLAG_REGEX;
         Ok(policy)
@@ -276,25 +268,25 @@ impl PlonkPolicy {
         if public_inputs.len() != 1 || public_inputs[0] != payload_scalar {
             return Err(Error::Crypto);
         }
-        let proof_bytes = proof.to_bytes().to_vec();
+        let proof_bytes = proof.to_bytes();
         let part = ProofPart {
             kind: ProofKind::Policy,
-            proof: proof_bytes.clone(),
-            commitment: commitment_bytes.clone(),
-            aux: Vec::new(),
+            proof: proof_bytes,
+            commitment: commitment_bytes,
+            aux_len: 0,
+            aux: [0u8; crate::core::policy::AUX_MAX],
         };
         let key_part = if let Some(input) = keybinding {
             self.ensure_keybinding()?;
             let salt =
                 keybinding_salt(&self.policy_id, &input.htarget, &input.session_nonce, &input.route_id);
             let salt_bytes = salt.to_bytes();
-            let hkey = keybinding_hash_scalar(salt, &salt_bytes, &input.sender_secret);
+            let hkey = keybinding_hash_scalar(salt, &input.sender_secret);
             let circuit = KeyBindingCircuit::new(
                 input.sender_secret,
                 salt_bytes,
                 salt,
                 hkey,
-                keybinding_mode().is_poseidon(),
             );
             let mut rng = ChaCha20Rng::from_seed(hash_to_seed(&input.sender_secret));
             let prover = self
@@ -318,9 +310,10 @@ impl PlonkPolicy {
             }
             Some(ProofPart {
                 kind: ProofKind::KeyBinding,
-                proof: proof.to_bytes().to_vec(),
-                commitment: hkey.to_bytes().to_vec(),
-                aux: Vec::new(),
+                proof: proof.to_bytes(),
+                commitment: hkey.to_bytes(),
+                aux_len: 0,
+                aux: [0u8; crate::core::policy::AUX_MAX],
             })
         } else {
             None
@@ -329,17 +322,23 @@ impl PlonkPolicy {
             kind: ProofKind::Consistency,
             proof: proof_bytes,
             commitment: commitment_bytes,
-            aux: Vec::new(),
+            aux_len: 0,
+            aux: [0u8; crate::core::policy::AUX_MAX],
         };
-        let mut parts = Vec::new();
+        let mut parts = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
+        let mut count = 0usize;
         if let Some(key_part) = key_part {
-            parts.push(key_part);
+            parts[count] = key_part;
+            count += 1;
         }
-        parts.push(consistency_part);
-        parts.push(part);
+        parts[count] = consistency_part;
+        count += 1;
+        parts[count] = part;
+        count += 1;
         Ok(PolicyCapsule {
             policy_id: self.policy_id,
             version: 1,
+            part_count: count as u8,
             parts,
         })
     }
@@ -362,15 +361,15 @@ impl PlonkPolicy {
     }
 }
 
-fn payload_commitment(payload: &[u8]) -> (BlsScalar, Vec<u8>) {
+fn payload_commitment(payload: &[u8]) -> (BlsScalar, [u8; crate::core::policy::COMMIT_LEN]) {
     let scalar = hash_to_scalar(payload);
-    let bytes = scalar.to_bytes().to_vec();
+    let bytes = scalar.to_bytes();
     (scalar, bytes)
 }
 
 /// Compute the commitment bytes associated with a payload.
 /// Routers or APIs can reuse this to validate that a capsule matches the payload they received.
-pub fn payload_commitment_bytes(payload: &[u8]) -> Vec<u8> {
+pub fn payload_commitment_bytes(payload: &[u8]) -> [u8; crate::core::policy::COMMIT_LEN] {
     payload_commitment(payload).1
 }
 
@@ -400,30 +399,9 @@ pub fn keybinding_salt(
     BlsScalar::from_bytes_wide(&bytes)
 }
 
-fn hkdf_sha256_bytes(salt: &[u8; 32], ikm: &[u8; 32]) -> [u8; 32] {
-    let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
-    let mut okm = [0u8; 32];
-    hk.expand(&[], &mut okm)
-        .map_err(|_| Error::Crypto)
-        .expect("HKDF expand");
-    okm
-}
-
-fn keybinding_hash_scalar(
-    salt: BlsScalar,
-    salt_bytes: &[u8; 32],
-    ikm: &[u8; 32],
-) -> BlsScalar {
-    match keybinding_mode() {
-        KeyBindingMode::Poseidon => {
-            let secret = bytes_to_scalar_le(ikm);
-            poseidon_hash2([salt, secret])
-        }
-        KeyBindingMode::Hkdf => {
-            let hkey_bytes = hkdf_sha256_bytes(salt_bytes, ikm);
-            bytes_to_scalar_le(&hkey_bytes)
-        }
-    }
+fn keybinding_hash_scalar(salt: BlsScalar, ikm: &[u8; 32]) -> BlsScalar {
+    let secret = bytes_to_scalar_le(ikm);
+    poseidon_hash2([salt, secret])
 }
 
 fn bytes_to_scalar_le(bytes: &[u8; 32]) -> BlsScalar {
@@ -467,17 +445,12 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
     if let Some((prover, verifier)) = KEYBINDING_CACHE.lock().as_ref() {
         return Ok((prover.clone(), verifier.clone()));
     }
-    let mode = keybinding_mode();
-    let label: &[u8] = match mode {
-        KeyBindingMode::Poseidon => b"hornet-keybinding-poseidon",
-        KeyBindingMode::Hkdf => b"hornet-keybinding",
-    };
+    let label: &[u8] = b"hornet-keybinding-poseidon";
     let keybinding_circuit = KeyBindingCircuit::new(
         [0u8; 32],
         [0u8; 32],
         BlsScalar::zero(),
         BlsScalar::zero(),
-        mode.is_poseidon(),
     );
     let capacities = keybinding_capacities();
     eprintln!("keybinding capacities: {:?}", capacities);
@@ -514,7 +487,6 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
 }
 
 fn keybinding_capacities() -> Vec<usize> {
-    let mode = keybinding_mode();
     #[cfg(feature = "std")]
     {
         if let Ok(raw) = std::env::var("HORNET_KEYBINDING_LOG2") {
@@ -528,11 +500,7 @@ fn keybinding_capacities() -> Vec<usize> {
             }
         }
     }
-    if mode.is_poseidon() {
-        vec![1 << 15, 1 << 16]
-    } else {
-        vec![1 << 18, 1 << 19]
-    }
+    vec![1 << 15, 1 << 16]
 }
 
 fn blocklist_capacities(len: usize) -> Vec<usize> {
@@ -582,38 +550,9 @@ fn save_keybinding_verifier(bytes: &[u8]) {
 #[cfg(not(feature = "std"))]
 fn save_keybinding_verifier(_bytes: &[u8]) {}
 
-#[derive(Clone, Copy)]
-enum KeyBindingMode {
-    Poseidon,
-    Hkdf,
-}
-
-impl KeyBindingMode {
-    fn is_poseidon(self) -> bool {
-        matches!(self, KeyBindingMode::Poseidon)
-    }
-}
-
-fn keybinding_mode() -> KeyBindingMode {
-    #[cfg(feature = "std")]
-    {
-        if let Ok(raw) = std::env::var("HORNET_KEYBINDING_HASH") {
-            match raw.to_lowercase().as_str() {
-                "hkdf" | "hkdf-sha256" | "sha256" => return KeyBindingMode::Hkdf,
-                "poseidon" | "pos" => return KeyBindingMode::Poseidon,
-                _ => {}
-            }
-        }
-    }
-    KeyBindingMode::Poseidon
-}
-
 #[cfg(feature = "std")]
 fn keybinding_verifier_path() -> PathBuf {
-    let filename = match keybinding_mode() {
-        KeyBindingMode::Poseidon => "keybinding-verifier-poseidon.bin",
-        KeyBindingMode::Hkdf => "keybinding-verifier.bin",
-    };
+    let filename = "keybinding-verifier-poseidon.bin";
     Path::new("target").join(filename)
 }
 
@@ -671,12 +610,13 @@ pub fn prove_for_payload(policy_id: &PolicyId, payload: &[u8]) -> Result<PolicyC
 mod tests {
     use super::*;
     use crate::adapters::plonk::validator::PlonkCapsuleValidator;
-    use crate::policy::blocklist::BlocklistEntry;
+    use crate::policy::blocklist::{BlocklistEntry, ValueBytes};
     use alloc::vec;
 
     #[test]
     fn proof_roundtrip() {
-        let blocked_leaf = BlocklistEntry::Exact("blocked.example".into()).leaf_bytes();
+        let blocked_leaf =
+            BlocklistEntry::Exact(ValueBytes::new(b"blocked.example").unwrap()).leaf_bytes();
         let blocklist = vec![blocked_leaf.clone()];
         let policy =
             Arc::new(PlonkPolicy::new_with_blocklist(b"test-policy", &blocklist).expect("policy"));
@@ -686,16 +626,19 @@ mod tests {
         ensure_registry(&mut registry, &metadata).expect("registry");
         let validator = PlonkCapsuleValidator::new();
 
-        let safe_leaf = BlocklistEntry::Exact("safe.example".into()).leaf_bytes();
-        let capsule = policy.prove_payload(&safe_leaf).expect("prove payload");
+        let safe_leaf = BlocklistEntry::Exact(ValueBytes::new(b"safe.example").unwrap()).leaf_bytes();
+        let capsule = policy.prove_payload(safe_leaf.as_slice()).expect("prove payload");
         assert_eq!(capsule.policy_id, metadata.policy_id);
-        let mut buffer = capsule.encode();
+        let mut cap_buf = [0u8; crate::core::policy::MAX_CAPSULE_LEN];
+        let cap_len = capsule.encode_into(&mut cap_buf).expect("encode");
+        let mut buffer = Vec::with_capacity(cap_len + "safe.example".len());
+        buffer.extend_from_slice(&cap_buf[..cap_len]);
         buffer.extend_from_slice(b"safe.example");
         let (_capsule, consumed) = registry.enforce(&mut buffer, &validator).expect("enforce");
-        assert_eq!(consumed, capsule.encode().len());
+        assert_eq!(consumed, cap_len);
 
         assert!(matches!(
-            policy.prove_payload(&blocked_leaf),
+            policy.prove_payload(blocked_leaf.as_slice()),
             Err(Error::PolicyViolation)
         ));
     }
