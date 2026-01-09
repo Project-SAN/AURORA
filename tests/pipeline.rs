@@ -55,7 +55,7 @@ fn forward_pipeline_enforces_capsules() {
 
     let forward_pipeline = RegistryForwardPipeline::new();
     let result = forward_pipeline
-        .enforce(&registry, &mut onwire, &validator)
+        .enforce(&registry, &mut onwire, &validator, hornet::core::policy::PolicyRole::All)
         .expect("enforce pipeline")
         .expect("capsule present");
     assert_eq!(result.1, encode_capsule(&capsule).len());
@@ -66,7 +66,12 @@ fn forward_pipeline_enforces_capsules() {
         *byte ^= 0xFF;
     }
     let err = forward_pipeline
-        .enforce(&registry, &mut tampered, &validator)
+        .enforce(
+            &registry,
+            &mut tampered,
+            &validator,
+            hornet::core::policy::PolicyRole::All,
+        )
         .unwrap_err();
     assert!(matches!(err, Error::PolicyViolation));
 }
@@ -87,7 +92,7 @@ fn recording_forward_captures_capsule() {
 
     let recorder = RecordingForward::new();
     let result = recorder
-        .enforce(&registry, &mut onwire, &validator)
+        .enforce(&registry, &mut onwire, &validator, hornet::core::policy::PolicyRole::All)
         .expect("enforce pipeline")
         .expect("capsule present");
     assert_eq!(result.0.policy_id, metadata.policy_id);

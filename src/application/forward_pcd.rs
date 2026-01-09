@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use crate::application::forward::ForwardPipeline;
 use crate::core::policy::{
     encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, PolicyRegistry,
-    ProofKind, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
+    PolicyRole, ProofKind, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
     EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
 };
 use crate::pcd::{PcdBackend, PcdState};
@@ -33,6 +33,7 @@ impl ForwardPipeline for PcdForwardPipeline {
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
+        role: PolicyRole,
     ) -> Result<Option<(PolicyCapsule, usize)>> {
         if registry.is_empty() {
             return Ok(None);
@@ -41,7 +42,12 @@ impl ForwardPipeline for PcdForwardPipeline {
         let metadata = registry
             .get(&capsule.policy_id)
             .ok_or(Error::PolicyViolation)?;
-        validator.validate(&capsule, metadata)?;
+        for required in role.required_kinds() {
+            if capsule.part(*required).is_none() {
+                return Err(Error::PolicyViolation);
+            }
+        }
+        validator.validate_with_role(&capsule, metadata, role)?;
         if !metadata.supports_pcd() {
             return Ok(Some((capsule, consumed)));
         }
@@ -290,7 +296,7 @@ mod tests {
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
         let (updated, _consumed) = pipeline
-            .enforce(&registry, &mut payload, &validator)
+            .enforce(&registry, &mut payload, &validator, PolicyRole::All)
             .expect("enforce")
             .expect("capsule");
 
@@ -373,7 +379,12 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(&registry, &mut payload, &validator);
+        let result = pipeline.enforce(
+            &registry,
+            &mut payload,
+            &validator,
+            PolicyRole::All,
+        );
         assert!(matches!(result, Err(Error::PolicyViolation)));
     }
 
@@ -440,7 +451,12 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(&registry, &mut payload, &validator);
+        let result = pipeline.enforce(
+            &registry,
+            &mut payload,
+            &validator,
+            PolicyRole::All,
+        );
         assert!(matches!(result, Err(Error::PolicyViolation)));
     }
 
@@ -525,7 +541,12 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(&registry, &mut payload, &validator);
+        let result = pipeline.enforce(
+            &registry,
+            &mut payload,
+            &validator,
+            PolicyRole::All,
+        );
         assert!(result.is_ok(), "unexpected error: {:?}", result.err());
     }
 
@@ -598,7 +619,12 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(&registry, &mut payload, &validator);
+        let result = pipeline.enforce(
+            &registry,
+            &mut payload,
+            &validator,
+            PolicyRole::All,
+        );
         assert!(matches!(result, Err(Error::PolicyViolation)));
     }
 }

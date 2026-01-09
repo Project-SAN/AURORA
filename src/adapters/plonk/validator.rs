@@ -2,8 +2,9 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 use crate::core::policy::{
-    find_extension, CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata, ProofKind,
-    EXT_TAG_PCD_TARGET_HASH, EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
+    find_extension, CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata, PolicyRole,
+    ProofKind, EXT_TAG_PCD_TARGET_HASH, EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID,
+    EXT_TAG_SESSION_NONCE,
 };
 use crate::types::{Error, Result};
 use dusk_bytes::Serializable;
@@ -64,7 +65,19 @@ impl PlonkCapsuleValidator {
 
 impl CapsuleValidator for PlonkCapsuleValidator {
     fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()> {
+        self.validate_with_role(capsule, metadata, PolicyRole::All)
+    }
+
+    fn validate_with_role(
+        &self,
+        capsule: &PolicyCapsule,
+        metadata: &PolicyMetadata,
+        role: PolicyRole,
+    ) -> Result<()> {
         for part in capsule.parts[..(capsule.part_count as usize)].iter() {
+            if !role.allows(part.kind) {
+                continue;
+            }
             let Some(verifier) = self.load_verifier(metadata, part.kind as u8)? else {
                 continue;
             };

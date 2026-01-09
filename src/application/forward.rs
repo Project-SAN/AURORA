@@ -1,8 +1,9 @@
 //! Forwarding verification pipeline traits.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::core::policy::{PolicyCapsule, PolicyRegistry};
+use crate::core::policy::{PolicyCapsule, PolicyId, PolicyRegistry, PolicyRole};
 use crate::policy::CapsuleValidator;
 use crate::types::{Error, Result};
 
@@ -12,6 +13,7 @@ pub trait ForwardPipeline {
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
+        role: PolicyRole,
     ) -> Result<Option<(PolicyCapsule, usize)>>;
 
     fn enforce_batch(
@@ -19,10 +21,11 @@ pub trait ForwardPipeline {
         registry: &PolicyRegistry,
         payloads: &mut [Vec<u8>],
         validator: &dyn CapsuleValidator,
+        role: PolicyRole,
     ) -> Result<Vec<Option<(PolicyCapsule, usize)>>> {
         let mut out = Vec::with_capacity(payloads.len());
         for payload in payloads.iter_mut() {
-            out.push(self.enforce(registry, payload, validator)?);
+            out.push(self.enforce(registry, payload, validator, role)?);
         }
         Ok(out)
     }
@@ -31,6 +34,7 @@ pub trait ForwardPipeline {
         &self,
         _registry: &PolicyRegistry,
         _validator: &dyn CapsuleValidator,
+        _roles: &BTreeMap<PolicyId, PolicyRole>,
     ) -> Result<Vec<PolicyCapsule>> {
         Ok(Vec::new())
     }
@@ -53,12 +57,13 @@ impl ForwardPipeline for RegistryForwardPipeline {
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
+        role: PolicyRole,
     ) -> Result<Option<(PolicyCapsule, usize)>> {
         if registry.is_empty() {
             return Ok(None);
         }
         registry
-            .enforce(payload, validator)
+            .enforce_with_role(payload, validator, role)
             .map(Some)
             .map_err(|err| match err {
                 Error::PolicyViolation => Error::PolicyViolation,

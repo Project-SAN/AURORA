@@ -7,6 +7,7 @@ use hornet::application::setup::SetupPipeline;
 use hornet::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use hornet::policy::CapsuleValidator;
 use hornet::types::Result;
+use hornet::core::policy::PolicyRole;
 
 #[allow(dead_code)]
 pub struct NoopSetup;
@@ -40,8 +41,9 @@ impl ForwardPipeline for RecordingForward {
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
+        role: PolicyRole,
     ) -> Result<Option<(PolicyCapsule, usize)>> {
-        let (capsule, consumed) = registry.enforce(payload, validator)?;
+        let (capsule, consumed) = registry.enforce_with_role(payload, validator, role)?;
         *self.state.borrow_mut() = Some(capsule.clone());
         Ok(Some((capsule, consumed)))
     }

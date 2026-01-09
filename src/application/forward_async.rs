@@ -1,11 +1,11 @@
-use alloc::collections::{BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use spin::Mutex;
 
 use crate::application::forward::ForwardPipeline;
-use crate::core::policy::{PolicyCapsule, PolicyRegistry};
+use crate::core::policy::{PolicyCapsule, PolicyId, PolicyRegistry, PolicyRole};
 use crate::policy::CapsuleValidator;
 use crate::types::{Error, Result};
 
@@ -67,6 +67,7 @@ impl ForwardPipeline for AsyncForwardPipeline {
         registry: &PolicyRegistry,
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
+        role: PolicyRole,
     ) -> Result<Option<(PolicyCapsule, usize)>> {
         if registry.is_empty() {
             return Ok(None);
@@ -78,11 +79,16 @@ impl ForwardPipeline for AsyncForwardPipeline {
         let Some(metadata) = registry.get(&capsule.policy_id) else {
             return Err(Error::PolicyViolation);
         };
+        for required in role.required_kinds() {
+            if capsule.part(*required).is_none() {
+                return Err(Error::PolicyViolation);
+            }
+        }
         if metadata.supports_async() {
             self.pending.push(PendingEntry { capsule: capsule.clone() })?;
             return Ok(Some((capsule, consumed)));
         }
-        validator.validate(&capsule, metadata)?;
+        validator.validate_with_role(&capsule, metadata, role)?;
         Ok(Some((capsule, consumed)))
     }
 
@@ -90,6 +96,7 @@ impl ForwardPipeline for AsyncForwardPipeline {
         &self,
         registry: &PolicyRegistry,
         validator: &dyn CapsuleValidator,
+        roles: &BTreeMap<PolicyId, PolicyRole>,
     ) -> Result<Vec<PolicyCapsule>> {
         let entries = self.pending.drain();
         let mut violations = Vec::new();
@@ -98,7 +105,17 @@ impl ForwardPipeline for AsyncForwardPipeline {
                 violations.push(entry.capsule);
                 continue;
             };
-            if validator.validate(&entry.capsule, metadata).is_err() {
+            let role = match roles.get(&entry.capsule.policy_id).copied() {
+                Some(role) => role,
+                None => {
+                    violations.push(entry.capsule);
+                    continue;
+                }
+            };
+            if validator
+                .validate_with_role(&entry.capsule, metadata, role)
+                .is_err()
+            {
                 violations.push(entry.capsule);
             }
         }
