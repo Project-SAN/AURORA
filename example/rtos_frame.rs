@@ -1,6 +1,6 @@
 use hornet::core::policy::PolicyMetadata;
 use hornet::forward::Forward;
-use hornet::policy::blocklist::BlocklistEntry;
+use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::router::frame;
 use hornet::router::Router;
@@ -104,8 +104,8 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
 
 fn demo_policy() -> (PlonkPolicy, PolicyMetadata) {
     let blocklist = vec![
-        BlocklistEntry::Exact("blocked.router.test".into()).leaf_bytes(),
-        BlocklistEntry::Exact("deny.router.test".into()).leaf_bytes(),
+        BlocklistEntry::Exact(ValueBytes::new(b"blocked.router.test").unwrap()).leaf_bytes(),
+        BlocklistEntry::Exact(ValueBytes::new(b"deny.router.test").unwrap()).leaf_bytes(),
     ];
     let policy = PlonkPolicy::new_with_blocklist(b"router-test", &blocklist).unwrap();
     let metadata = policy.metadata(1_700_000_600, 0);
@@ -166,10 +166,10 @@ fn main() -> Result<()> {
     let router = Router::new();
     let now = 1_700_000_000u32;
     let (policy, metadata) = demo_policy();
-    let leaf = BlocklistEntry::Exact("ok.router.test".into()).leaf_bytes();
-    let capsule = policy.prove_payload(&leaf).expect("prove payload");
+    let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
+    let capsule = policy.prove_payload(leaf.as_slice()).expect("prove payload");
 
-    let mut body_plain = leaf.clone();
+    let mut body_plain = leaf.to_vec();
     body_plain.extend_from_slice(b"::payload");
 
     let packet = build_single_hop_packet(capsule.encode(), body_plain, now);

@@ -1,6 +1,6 @@
 use hornet::core::policy::PolicyMetadata;
 use hornet::forward::Forward;
-use hornet::policy::blocklist::BlocklistEntry;
+use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::router::Router;
 use hornet::time::TimeProvider;
@@ -112,25 +112,31 @@ fn build_single_hop_packet(
 
 fn demo_policy() -> (PlonkPolicy, PolicyMetadata) {
     let blocklist = vec![
-        BlocklistEntry::Exact("blocked.router.test".into()).leaf_bytes(),
-        BlocklistEntry::Exact("deny.router.test".into()).leaf_bytes(),
+        BlocklistEntry::Exact(ValueBytes::new(b"blocked.router.test").unwrap()).leaf_bytes(),
+        BlocklistEntry::Exact(ValueBytes::new(b"deny.router.test").unwrap()).leaf_bytes(),
     ];
     let policy = PlonkPolicy::new_with_blocklist(b"router-test", &blocklist).unwrap();
     let metadata = policy.metadata(1_700_000_600, 0);
     (policy, metadata)
 }
 
+fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
+    let mut buf = [0u8; hornet::core::policy::MAX_CAPSULE_LEN];
+    let len = capsule.encode_into(&mut buf).expect("encode capsule");
+    buf[..len].to_vec()
+}
+
 #[test]
 fn router_forwards_valid_capsule_and_decrypts_body() {
     let now = 1_700_000_000u32;
     let (policy, metadata) = demo_policy();
-    let leaf = BlocklistEntry::Exact("ok.router.test".into()).leaf_bytes();
-    let capsule = policy.prove_payload(&leaf).expect("prove payload");
+    let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
+    let capsule = policy.prove_payload(leaf.as_slice()).expect("prove payload");
 
-    let mut body_plain = leaf.clone();
+    let mut body_plain = leaf.to_vec();
     body_plain.extend_from_slice(b"::payload");
 
-    let mut packet = build_single_hop_packet(capsule.encode(), body_plain.clone(), now);
+    let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
 
     let mut router = Router::new();
     router
@@ -167,14 +173,12 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
 fn router_rejects_capsule_with_unknown_policy_id() {
     let now = 1_700_000_000u32;
     let (policy, metadata) = demo_policy();
-    let leaf = BlocklistEntry::Exact("ok.router.test".into()).leaf_bytes();
-    let mut capsule_bytes = policy
-        .prove_payload(&leaf)
-        .expect("prove payload")
-        .encode();
+    let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
+    let capsule = policy.prove_payload(leaf.as_slice()).expect("prove payload");
+    let mut capsule_bytes = encode_capsule(&capsule);
     capsule_bytes[4] ^= 0xFF; // flip a bit in the policy ID to break lookup
 
-    let mut packet = build_single_hop_packet(capsule_bytes, leaf.clone(), now);
+    let mut packet = build_single_hop_packet(capsule_bytes, leaf.to_vec(), now);
 
     let mut router = Router::new();
     router

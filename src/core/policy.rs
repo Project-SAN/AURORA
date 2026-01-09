@@ -3,8 +3,16 @@ pub mod extensions;
 pub mod metadata;
 pub mod registry;
 
-pub use capsule::{PolicyCapsule, ProofKind, ProofPart};
-pub use extensions::{decode_extensions, encode_extensions, CapsuleExtension};
+pub use capsule::{
+    PolicyCapsule, ProofKind, ProofPart, AUX_MAX, COMMIT_LEN, MAX_CAPSULE_LEN, MAX_PARTS, PROOF_LEN,
+};
+pub use extensions::{
+    extension_iter, find_extension, encode_extensions_into, CapsuleExtensionRef, ExtensionIter,
+    EXT_TAG_BATCH_ID, EXT_TAG_MODE, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
+    EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH, EXT_TAG_PAYLOAD_HASH,
+    EXT_TAG_PRECOMPUTE_ID, EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE,
+    EXT_TAG_SESSION_NONCE,
+};
 pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
 pub use registry::{CapsuleValidator, PolicyRegistry};
 

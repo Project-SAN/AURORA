@@ -19,7 +19,7 @@ pub struct PrecomputeToken {
 #[derive(Clone, Debug)]
 pub struct PrecomputeResult {
     pub token: PrecomputeToken,
-    pub commitment: alloc::vec::Vec<u8>,
+    pub commitment: [u8; crate::core::policy::COMMIT_LEN],
     pub version: u8,
 }
 

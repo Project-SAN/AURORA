@@ -2,7 +2,11 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::application::forward::ForwardPipeline;
-use crate::core::policy::{CapsuleExtension, PolicyCapsule, PolicyRegistry, ProofKind};
+use crate::core::policy::{
+    encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, PolicyRegistry,
+    ProofKind, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
+    EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
+};
 use crate::pcd::{PcdBackend, PcdState};
 use crate::policy::CapsuleValidator;
 use crate::types::{Error, Result};
@@ -41,48 +45,48 @@ impl ForwardPipeline for PcdForwardPipeline {
         if !metadata.supports_pcd() {
             return Ok(Some((capsule, consumed)));
         }
-        let exts = capsule
-            .extensions_for(ProofKind::Consistency)?
+        let part_count = capsule.part_count as usize;
+        let cons_index = capsule.parts[..part_count]
+            .iter()
+            .position(|part| part.kind == ProofKind::Consistency)
             .ok_or(Error::PolicyViolation)?;
-        let key_exts = capsule.extensions_for(ProofKind::KeyBinding)?.unwrap_or_default();
-        let Some(part) = capsule
-            .parts
-            .iter_mut()
-            .find(|part| part.kind == ProofKind::Consistency)
-        else {
-            return Err(Error::PolicyViolation);
+        let key_index = capsule.parts[..part_count]
+            .iter()
+            .position(|part| part.kind == ProofKind::KeyBinding);
+
+        let mut cons_aux_buf = [0u8; AUX_MAX];
+        let cons_aux_len = capsule.parts[cons_index].aux_len as usize;
+        cons_aux_buf[..cons_aux_len].copy_from_slice(capsule.parts[cons_index].aux());
+        let cons_aux = &cons_aux_buf[..cons_aux_len];
+
+        let mut key_aux_buf = [0u8; AUX_MAX];
+        let key_aux = if let Some(key_idx) = key_index {
+            let key_len = capsule.parts[key_idx].aux_len as usize;
+            key_aux_buf[..key_len].copy_from_slice(capsule.parts[key_idx].aux());
+            &key_aux_buf[..key_len]
+        } else {
+            &[][..]
         };
+
+        let part = &mut capsule.parts[cons_index];
         let mut hkey = None;
-        let mut root = None;
-        let mut htarget = None;
-        let mut seq = None;
-        let mut prev_hash = None;
-        let mut proof = None;
-        for ext in key_exts {
-            if let CapsuleExtension::PcdKeyHash(value) = ext {
-                hkey = Some(value);
-                break;
-            }
+        if let Some(value) = find_ext_32(key_aux, EXT_TAG_PCD_KEY_HASH) {
+            hkey = Some(value);
         }
-        for ext in exts {
-            match ext {
-                CapsuleExtension::PcdKeyHash(value) => {
-                    if let Some(expected) = hkey {
-                        if value != expected {
-                            return Err(Error::PolicyViolation);
-                        }
-                    } else {
-                        hkey = Some(value);
-                    }
+        if let Some(value) = find_ext_32(cons_aux, EXT_TAG_PCD_KEY_HASH) {
+            if let Some(expected) = hkey {
+                if value != expected {
+                    return Err(Error::PolicyViolation);
                 }
-                CapsuleExtension::PcdRoot(value) => root = Some(value),
-                CapsuleExtension::PcdTargetHash(value) => htarget = Some(value),
-                CapsuleExtension::PcdSeq(value) => seq = Some(value),
-                CapsuleExtension::PcdState(value) => prev_hash = Some(value),
-                CapsuleExtension::PcdProof(bytes) => proof = Some(bytes),
-                _ => {}
+            } else {
+                hkey = Some(value);
             }
         }
+        let root = find_ext_32(cons_aux, EXT_TAG_PCD_ROOT);
+        let htarget = find_ext_32(cons_aux, EXT_TAG_PCD_TARGET_HASH);
+        let seq = find_ext_u64(cons_aux, EXT_TAG_PCD_SEQ);
+        let prev_hash = find_ext_32(cons_aux, EXT_TAG_PCD_STATE);
+        let proof = find_extension(cons_aux, EXT_TAG_PCD_PROOF).ok().flatten();
         let state = PcdState {
             hkey: hkey.ok_or(Error::PolicyViolation)?,
             seq: seq.ok_or(Error::PolicyViolation)?,
@@ -95,32 +99,80 @@ impl ForwardPipeline for PcdForwardPipeline {
             }
         }
         let proof = proof.ok_or(Error::PolicyViolation)?;
-        self.backend.verify_step(&state, &proof)?;
+        self.backend.verify_step(&state, proof)?;
         let next = self.backend.step(&state);
         let next_hash = self.backend.hash(&next);
         let next_proof = self.backend.prove_step(&state, &proof)?;
-        part.aux = crate::core::policy::encode_extensions(&[
-            CapsuleExtension::PcdKeyHash(next.hkey),
-            CapsuleExtension::PcdRoot(next.root),
-            CapsuleExtension::PcdTargetHash(next.htarget),
-            CapsuleExtension::PcdSeq(next.seq),
-            CapsuleExtension::PcdState(next_hash),
-            CapsuleExtension::PcdProof(next_proof),
-        ]);
+        let seq_buf = next.seq.to_be_bytes();
+        let exts = [
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &next.hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_ROOT,
+                data: &next.root,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_TARGET_HASH,
+                data: &next.htarget,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_SEQ,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_STATE,
+                data: &next_hash,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_PROOF,
+                data: &next_proof,
+            },
+        ];
+        let mut aux_buf = [0u8; AUX_MAX];
+        let aux_len = encode_extensions_into(&exts, &mut aux_buf)?;
+        part.set_aux(&aux_buf[..aux_len])?;
 
-        let encoded = capsule.encode();
-        if encoded.len() != consumed {
+        let mut encoded = [0u8; crate::core::policy::MAX_CAPSULE_LEN];
+        let encoded_len = capsule.encode_into(&mut encoded)?;
+        if encoded_len != consumed {
             return Err(Error::Length);
         }
-        payload[..consumed].copy_from_slice(&encoded);
+        payload[..consumed].copy_from_slice(&encoded[..encoded_len]);
         Ok(Some((capsule, consumed)))
     }
+}
+
+fn find_ext_32(aux: &[u8], tag: u8) -> Option<[u8; 32]> {
+    let bytes = find_extension(aux, tag).ok()??;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(bytes);
+    Some(out)
+}
+
+fn find_ext_u64(aux: &[u8], tag: u8) -> Option<u64> {
+    let bytes = find_extension(aux, tag).ok()??;
+    if bytes.len() != 8 {
+        return None;
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(bytes);
+    Some(u64::from_be_bytes(buf))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::{encode_extensions, CapsuleExtension, PolicyCapsule, ProofPart};
+    use crate::core::policy::{
+        encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, ProofPart,
+        AUX_MAX, COMMIT_LEN, MAX_CAPSULE_LEN, MAX_PARTS, PROOF_LEN, EXT_TAG_PCD_KEY_HASH,
+        EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE,
+        EXT_TAG_PCD_TARGET_HASH,
+    };
     use crate::core::policy::{PolicyMetadata, PolicyRegistry, VerifierEntry};
     use crate::core::policy::metadata::POLICY_FLAG_PCD;
 
@@ -134,6 +186,45 @@ mod tests {
         ) -> crate::types::Result<()> {
             Ok(())
         }
+    }
+
+    fn make_aux(exts: &[CapsuleExtensionRef<'_>]) -> Vec<u8> {
+        let mut buf = [0u8; AUX_MAX];
+        let len = encode_extensions_into(exts, &mut buf).expect("encode exts");
+        buf[..len].to_vec()
+    }
+
+    fn make_part(kind: ProofKind, aux: &[u8]) -> ProofPart {
+        let mut part = ProofPart {
+            kind,
+            proof: [0u8; PROOF_LEN],
+            commitment: [0u8; COMMIT_LEN],
+            aux_len: 0,
+            aux: [0u8; AUX_MAX],
+        };
+        part.set_aux(aux).expect("set aux");
+        part
+    }
+
+    fn make_capsule(policy_id: [u8; 32], version: u8, parts: &[ProofPart]) -> PolicyCapsule {
+        let mut arr = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
+        let mut count = 0usize;
+        for part in parts {
+            arr[count] = *part;
+            count += 1;
+        }
+        PolicyCapsule {
+            policy_id,
+            version,
+            part_count: count.min(MAX_PARTS) as u8,
+            parts: arr,
+        }
+    }
+
+    fn encode_capsule(capsule: &PolicyCapsule) -> Vec<u8> {
+        let mut buf = [0u8; MAX_CAPSULE_LEN];
+        let len = capsule.encode_into(&mut buf).expect("encode capsule");
+        buf[..len].to_vec()
     }
 
     #[test]
@@ -159,34 +250,42 @@ mod tests {
             htarget: [3u8; 32],
         };
         let init_hash = init_state.hash();
-
-        let consistency_aux = encode_extensions(&[
-            CapsuleExtension::PcdKeyHash(init_state.hkey),
-            CapsuleExtension::PcdRoot(init_state.root),
-            CapsuleExtension::PcdTargetHash(init_state.htarget),
-            CapsuleExtension::PcdSeq(init_state.seq),
-            CapsuleExtension::PcdState(init_hash),
-            CapsuleExtension::PcdProof(Vec::new()),
+        let seq_buf = init_state.seq.to_be_bytes();
+        let consistency_aux = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &init_state.hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_ROOT,
+                data: &init_state.root,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_TARGET_HASH,
+                data: &init_state.htarget,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_SEQ,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_STATE,
+                data: &init_hash,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_PROOF,
+                data: &[],
+            },
         ]);
-        let capsule = PolicyCapsule {
+        let capsule = make_capsule(
             policy_id,
-            version: 1,
-            parts: vec![
-                ProofPart {
-                    kind: ProofKind::Consistency,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: consistency_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Policy,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: vec![],
-                },
+            1,
+            &[
+                make_part(ProofKind::Consistency, &consistency_aux),
+                make_part(ProofKind::Policy, &[]),
             ],
-        };
-        let mut payload = capsule.encode();
+        );
+        let mut payload = encode_capsule(&capsule);
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
@@ -195,22 +294,21 @@ mod tests {
             .expect("enforce")
             .expect("capsule");
 
-        let exts = updated
-            .extensions_for(ProofKind::Consistency)
-            .expect("extensions")
-            .expect("exts present");
-        let mut seq = None;
-        let mut state_hash = None;
-        for ext in exts {
-            match ext {
-                CapsuleExtension::PcdSeq(value) => seq = Some(value),
-                CapsuleExtension::PcdState(value) => state_hash = Some(value),
-                _ => {}
-            }
-        }
-        assert_eq!(seq, Some(2));
+        let cons_part = updated.part(ProofKind::Consistency).expect("cons part");
+        let seq_bytes = find_extension(cons_part.aux(), EXT_TAG_PCD_SEQ)
+            .expect("seq ext")
+            .expect("seq bytes");
+        let mut seq_buf = [0u8; 8];
+        seq_buf.copy_from_slice(seq_bytes);
+        let seq = u64::from_be_bytes(seq_buf);
+        assert_eq!(seq, 2);
         let next_state = init_state.next_seq();
-        assert_eq!(state_hash, Some(next_state.hash()));
+        let state_bytes = find_extension(cons_part.aux(), EXT_TAG_PCD_STATE)
+            .expect("state ext")
+            .expect("state bytes");
+        let mut state_hash = [0u8; 32];
+        state_hash.copy_from_slice(state_bytes);
+        assert_eq!(state_hash, next_state.hash());
     }
 
     #[test]
@@ -236,33 +334,42 @@ mod tests {
             htarget: [7u8; 32],
         };
         let bad_hash = [0xAA; 32];
-        let consistency_aux = encode_extensions(&[
-            CapsuleExtension::PcdKeyHash(init_state.hkey),
-            CapsuleExtension::PcdRoot(init_state.root),
-            CapsuleExtension::PcdTargetHash(init_state.htarget),
-            CapsuleExtension::PcdSeq(init_state.seq),
-            CapsuleExtension::PcdState(bad_hash),
-            CapsuleExtension::PcdProof(Vec::new()),
+        let seq_buf = init_state.seq.to_be_bytes();
+        let consistency_aux = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &init_state.hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_ROOT,
+                data: &init_state.root,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_TARGET_HASH,
+                data: &init_state.htarget,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_SEQ,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_STATE,
+                data: &bad_hash,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_PROOF,
+                data: &[],
+            },
         ]);
-        let capsule = PolicyCapsule {
+        let capsule = make_capsule(
             policy_id,
-            version: 1,
-            parts: vec![
-                ProofPart {
-                    kind: ProofKind::Consistency,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: consistency_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Policy,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: vec![],
-                },
+            1,
+            &[
+                make_part(ProofKind::Consistency, &consistency_aux),
+                make_part(ProofKind::Policy, &[]),
             ],
-        };
-        let mut payload = capsule.encode();
+        );
+        let mut payload = encode_capsule(&capsule);
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
@@ -293,33 +400,43 @@ mod tests {
             htarget: [6u8; 32],
         };
         let init_hash = init_state.hash();
-        let consistency_aux = encode_extensions(&[
-            CapsuleExtension::PcdKeyHash(init_state.hkey),
-            CapsuleExtension::PcdRoot(init_state.root),
-            CapsuleExtension::PcdTargetHash(init_state.htarget),
-            CapsuleExtension::PcdSeq(init_state.seq),
-            CapsuleExtension::PcdState(init_hash),
-            CapsuleExtension::PcdProof(vec![0x99]),
+        let seq_buf = init_state.seq.to_be_bytes();
+        let proof_bytes = [0x99u8];
+        let consistency_aux = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &init_state.hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_ROOT,
+                data: &init_state.root,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_TARGET_HASH,
+                data: &init_state.htarget,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_SEQ,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_STATE,
+                data: &init_hash,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_PROOF,
+                data: &proof_bytes,
+            },
         ]);
-        let capsule = PolicyCapsule {
+        let capsule = make_capsule(
             policy_id,
-            version: 1,
-            parts: vec![
-                ProofPart {
-                    kind: ProofKind::Consistency,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: consistency_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Policy,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: vec![],
-                },
+            1,
+            &[
+                make_part(ProofKind::Consistency, &consistency_aux),
+                make_part(ProofKind::Policy, &[]),
             ],
-        };
-        let mut payload = capsule.encode();
+        );
+        let mut payload = encode_capsule(&capsule);
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
@@ -351,52 +468,60 @@ mod tests {
             htarget: [0x44; 32],
         };
         let init_hash = init_state.hash();
-
-        let keybinding_aux = encode_extensions(&[CapsuleExtension::PcdKeyHash(key_hkey)]);
-        let consistency_aux = encode_extensions(&[
-            CapsuleExtension::PcdKeyHash(key_hkey),
-            CapsuleExtension::PcdRoot(init_state.root),
-            CapsuleExtension::PcdTargetHash(init_state.htarget),
-            CapsuleExtension::PcdSeq(init_state.seq),
-            CapsuleExtension::PcdState(init_hash),
-            CapsuleExtension::PcdProof(Vec::new()),
+        let keybinding_aux = make_aux(&[CapsuleExtensionRef {
+            tag: EXT_TAG_PCD_KEY_HASH,
+            data: &key_hkey,
+        }]);
+        let seq_buf = init_state.seq.to_be_bytes();
+        let consistency_aux = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &key_hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_ROOT,
+                data: &init_state.root,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_TARGET_HASH,
+                data: &init_state.htarget,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_SEQ,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_STATE,
+                data: &init_hash,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_PROOF,
+                data: &[],
+            },
         ]);
-        assert!(matches!(
-            crate::core::policy::decode_extensions(&keybinding_aux),
-            Ok(Some(_))
-        ));
-        assert!(matches!(
-            crate::core::policy::decode_extensions(&consistency_aux),
-            Ok(Some(_))
-        ));
-        let capsule = PolicyCapsule {
+        let capsule = make_capsule(
             policy_id,
-            version: 1,
-            parts: vec![
-                ProofPart {
-                    kind: ProofKind::KeyBinding,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: keybinding_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Consistency,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: consistency_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Policy,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: vec![],
-                },
+            1,
+            &[
+                make_part(ProofKind::KeyBinding, &keybinding_aux),
+                make_part(ProofKind::Consistency, &consistency_aux),
+                make_part(ProofKind::Policy, &[]),
             ],
-        };
-        let mut payload = capsule.encode();
+        );
+        let mut payload = encode_capsule(&capsule);
         let (decoded, _) = PolicyCapsule::decode(&payload).expect("decode");
-        assert!(decoded.extensions_for(ProofKind::KeyBinding).is_ok());
-        assert!(decoded.extensions_for(ProofKind::Consistency).is_ok());
+        assert!(find_extension(
+            decoded.part(ProofKind::KeyBinding).unwrap().aux(),
+            EXT_TAG_PCD_KEY_HASH
+        )
+        .unwrap()
+        .is_some());
+        assert!(find_extension(
+            decoded.part(ProofKind::Consistency).unwrap().aux(),
+            EXT_TAG_PCD_KEY_HASH
+        )
+        .unwrap()
+        .is_some());
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
@@ -429,41 +554,47 @@ mod tests {
             htarget: [0x44; 32],
         };
         let init_hash = init_state.hash();
-
-        let keybinding_aux = encode_extensions(&[CapsuleExtension::PcdKeyHash(key_hkey)]);
-        let consistency_aux = encode_extensions(&[
-            CapsuleExtension::PcdKeyHash(consistency_hkey),
-            CapsuleExtension::PcdRoot(init_state.root),
-            CapsuleExtension::PcdTargetHash(init_state.htarget),
-            CapsuleExtension::PcdSeq(init_state.seq),
-            CapsuleExtension::PcdState(init_hash),
-            CapsuleExtension::PcdProof(Vec::new()),
+        let keybinding_aux = make_aux(&[CapsuleExtensionRef {
+            tag: EXT_TAG_PCD_KEY_HASH,
+            data: &key_hkey,
+        }]);
+        let seq_buf = init_state.seq.to_be_bytes();
+        let consistency_aux = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &consistency_hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_ROOT,
+                data: &init_state.root,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_TARGET_HASH,
+                data: &init_state.htarget,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_SEQ,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_STATE,
+                data: &init_hash,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_PROOF,
+                data: &[],
+            },
         ]);
-        let capsule = PolicyCapsule {
+        let capsule = make_capsule(
             policy_id,
-            version: 1,
-            parts: vec![
-                ProofPart {
-                    kind: ProofKind::KeyBinding,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: keybinding_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Consistency,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: consistency_aux,
-                },
-                ProofPart {
-                    kind: ProofKind::Policy,
-                    proof: vec![],
-                    commitment: vec![],
-                    aux: vec![],
-                },
+            1,
+            &[
+                make_part(ProofKind::KeyBinding, &keybinding_aux),
+                make_part(ProofKind::Consistency, &consistency_aux),
+                make_part(ProofKind::Policy, &[]),
             ],
-        };
-        let mut payload = capsule.encode();
+        );
+        let mut payload = encode_capsule(&capsule);
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;

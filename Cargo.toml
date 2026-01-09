@@ -11,6 +11,7 @@ default = ["api", "http-client", "std"]
 api = ["dep:actix-web"]
 http-client = ["dep:ureq"]
 std = []
+bench = []
 regex-policy = ["std", "dep:regex"]
 pcd-nova = ["std", "dep:nova-snark", "dep:bincode", "dep:num-bigint"]
 
@@ -48,6 +49,10 @@ criterion = { version = "0.5", default-features = false, features = ["html_repor
 
 [[bench]]
 name = "hornet"
+harness = false
+
+[[bench]]
+name = "prove"
 harness = false
 
 [[example]]

@@ -19,7 +19,7 @@ pub struct SetupPacket {
 
 pub struct SourceSetupState {
     pub packet: SetupPacket,
-    pub keys_f: alloc::vec::Vec<Si>,
+    pub keys_f: sphinx::SiKeys,
     pub eph_pub: [u8; 32],
     pub seed: [u8; 16],
 }

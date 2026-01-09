@@ -48,15 +48,21 @@ fn run() -> Result<(), String> {
     let canonical_bytes = entry.leaf_bytes();
 
     let capsule = policy
-        .prove_payload(&canonical_bytes)
+        .prove_payload(canonical_bytes.as_slice())
         .map_err(|err| match err {
             HornetError::PolicyViolation => format!("host '{host}' violates the policy"),
             _ => format!("failed to generate proof: {err:?}"),
         })?;
-    let capsule_bytes = capsule.encode();
+    let mut capsule_buf = [0u8; hornet::core::policy::MAX_CAPSULE_LEN];
+    let capsule_len = capsule
+        .encode_into(&mut capsule_buf)
+        .map_err(|_| "failed to encode capsule")?;
+    let mut capsule_bytes = Vec::with_capacity(capsule_len);
+    capsule_bytes.extend_from_slice(&capsule_buf[..capsule_len]);
 
     let policy_hex = encode_hex(policy.policy_id());
-    let expected_commit = hornet::policy::plonk::payload_commitment_bytes(&canonical_bytes);
+    let expected_commit =
+        hornet::policy::plonk::payload_commitment_bytes(canonical_bytes.as_slice());
 
     let mut registry = PolicyRegistry::new();
     let metadata = policy.metadata(600, 0);
@@ -65,7 +71,7 @@ fn run() -> Result<(), String> {
         .map_err(|_| "failed to register policy metadata".to_string())?;
     let validator = PlonkCapsuleValidator::new();
     let mut payload = capsule_bytes.clone();
-    payload.extend_from_slice(&canonical_bytes);
+    payload.extend_from_slice(canonical_bytes.as_slice());
     let (verified, consumed) = registry
         .enforce(&mut payload, &validator)
         .map_err(|_| "local verification failed".to_string())?;

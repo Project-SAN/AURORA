@@ -21,6 +21,9 @@ async fn main() -> io::Result<()> {
     let directory_data: web::Data<PolicyAuthorityState> = web::Data::from(authority_state.clone());
     let pipeline_arc: Arc<ProofPipelineHandle> = authority_state.clone();
     let pipeline_data: web::Data<Arc<ProofPipelineHandle>> = web::Data::new(pipeline_arc);
+    let cpu_workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
     HttpServer::new(move || {
         App::new()
             .app_data(directory_data.clone())
@@ -33,6 +36,8 @@ async fn main() -> io::Result<()> {
             .service(verify)
             .route("/hey", web::get().to(manual_hello))
     })
+    .workers(cpu_workers)
+    .worker_max_blocking_threads(cpu_workers)
     .bind(("127.0.0.1", 8080))?
     .run()
     .await
