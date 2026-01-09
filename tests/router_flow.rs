@@ -3,6 +3,7 @@ use hornet::forward::Forward;
 use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::router::Router;
+use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::time::TimeProvider;
 use hornet::types::{
     Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment, Si, Sv, R_MAX,
@@ -120,6 +121,38 @@ fn demo_policy() -> (PlonkPolicy, PolicyMetadata) {
     (policy, metadata)
 }
 
+fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) {
+    router.set_node_id(Some(node_id.to_string()));
+    let routes = vec![
+        hornet::setup::directory::RouteAnnouncement {
+            policy_id,
+            interface: Some("router-entry".to_string()),
+            segment: routing::segment_from_elems(&[RouteElem::NextHop {
+                addr: IpAddr::V4([127, 0, 0, 1]),
+                port: 7001,
+            }]),
+        },
+        hornet::setup::directory::RouteAnnouncement {
+            policy_id,
+            interface: Some("router-middle".to_string()),
+            segment: routing::segment_from_elems(&[RouteElem::NextHop {
+                addr: IpAddr::V4([127, 0, 0, 1]),
+                port: 7002,
+            }]),
+        },
+        hornet::setup::directory::RouteAnnouncement {
+            policy_id,
+            interface: Some("router-exit".to_string()),
+            segment: routing::segment_from_elems(&[RouteElem::ExitTcp {
+                addr: IpAddr::V4([127, 0, 0, 1]),
+                port: 7003,
+                tls: false,
+            }]),
+        },
+    ];
+    router.install_routes(&routes).expect("install routes");
+}
+
 fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
     let mut buf = [0u8; hornet::core::policy::MAX_CAPSULE_LEN];
     let len = capsule.encode_into(&mut buf).expect("encode capsule");
@@ -139,6 +172,7 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
     let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
 
     let mut router = Router::new();
+    install_role_routes(&mut router, metadata.policy_id, "router-exit");
     router
         .install_policies(&[metadata.clone()])
         .expect("install policy");
@@ -181,6 +215,7 @@ fn router_rejects_capsule_with_unknown_policy_id() {
     let mut packet = build_single_hop_packet(capsule_bytes, leaf.to_vec(), now);
 
     let mut router = Router::new();
+    install_role_routes(&mut router, metadata.policy_id, "router-exit");
     router
         .install_policies(&[metadata.clone()])
         .expect("install policy");

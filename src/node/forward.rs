@@ -36,9 +36,17 @@ pub fn process_data(
         return Err(crate::types::Error::Replay);
     }
     let capsule_len = if let Some(policy) = ctx.policy {
+        let role = match PolicyCapsule::decode(payload.as_slice()) {
+            Ok((capsule, _)) => policy
+                .roles
+                .get(&capsule.policy_id)
+                .copied()
+                .ok_or(Error::PolicyViolation)?,
+            Err(_) => return Err(Error::PolicyViolation),
+        };
         policy
             .forward
-            .enforce(policy.registry, payload, policy.validator)?
+            .enforce(policy.registry, payload, policy.validator, role)?
             .map(|(_, consumed)| consumed)
     } else {
         None

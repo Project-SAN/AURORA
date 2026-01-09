@@ -27,9 +27,12 @@ fn main() {
     }
     let storage = FileRouterStorage::new(&config.storage_path);
     let mut router = if env::var("HORNET_PCD").ok().as_deref() == Some("1") {
-        Router::with_forward_pipeline(Box::new(pcd_forward_pipeline()))
+        Router::with_forward_pipeline_and_node_id(
+            Box::new(pcd_forward_pipeline()),
+            config.router_id.clone(),
+        )
     } else {
-        Router::new()
+        Router::with_node_id(config.router_id.clone())
     };
     let secrets = load_state(&storage, &mut router);
     let directory_path =

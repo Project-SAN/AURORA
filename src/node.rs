@@ -6,6 +6,8 @@ use alloc::collections::BTreeSet;
 use crate::application::forward::ForwardPipeline;
 use crate::sphinx::*;
 use crate::types::{Chdr, Result, RoutingSegment, Sv};
+use crate::policy::{PolicyId, PolicyRole};
+use alloc::collections::BTreeMap;
 
 pub trait ReplayFilter {
     fn insert(&mut self, tag: [u8; TAU_TAG_BYTES]) -> bool;
@@ -48,6 +50,7 @@ pub struct PolicyRuntime<'a> {
     pub registry: &'a crate::policy::PolicyRegistry,
     pub validator: &'a dyn crate::policy::CapsuleValidator,
     pub forward: &'a dyn ForwardPipeline,
+    pub roles: &'a BTreeMap<PolicyId, PolicyRole>,
 }
 
 pub struct NodeCtx<'a> {

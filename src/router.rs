@@ -2,10 +2,11 @@ use crate::adapters::plonk::validator::PlonkCapsuleValidator;
 use crate::application::forward::{ForwardPipeline, RegistryForwardPipeline};
 use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use crate::node::PolicyRuntime;
-use crate::policy::PolicyRegistry;
+use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::types::{Ahdr, Chdr, Result};
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod config;
@@ -23,6 +24,8 @@ pub struct Router {
     validator: PlonkCapsuleValidator,
     forward_pipeline: Box<dyn ForwardPipeline>,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
+    policy_roles: BTreeMap<[u8; 32], PolicyRole>,
+    node_id: Option<String>,
     penalty: penalty::PenaltyBox,
 }
 
@@ -33,7 +36,16 @@ impl Router {
             validator: PlonkCapsuleValidator::new(),
             forward_pipeline: Box::new(RegistryForwardPipeline::new()),
             routes: BTreeMap::new(),
+            policy_roles: BTreeMap::new(),
+            node_id: None,
             penalty: penalty::PenaltyBox::new(3),
+        }
+    }
+
+    pub fn with_node_id(node_id: Option<String>) -> Self {
+        Self {
+            node_id,
+            ..Self::new()
         }
     }
 
@@ -43,8 +55,29 @@ impl Router {
             validator: PlonkCapsuleValidator::new(),
             forward_pipeline: pipeline,
             routes: BTreeMap::new(),
+            policy_roles: BTreeMap::new(),
+            node_id: None,
             penalty: penalty::PenaltyBox::new(3),
         }
+    }
+
+    pub fn with_forward_pipeline_and_node_id(
+        pipeline: Box<dyn ForwardPipeline>,
+        node_id: Option<String>,
+    ) -> Self {
+        Self {
+            registry: PolicyRegistry::new(),
+            validator: PlonkCapsuleValidator::new(),
+            forward_pipeline: pipeline,
+            routes: BTreeMap::new(),
+            policy_roles: BTreeMap::new(),
+            node_id,
+            penalty: penalty::PenaltyBox::new(3),
+        }
+    }
+
+    pub fn set_node_id(&mut self, node_id: Option<String>) {
+        self.node_id = node_id;
     }
 
     pub fn with_penalty_threshold(mut self, threshold: u32) -> Self {
@@ -68,8 +101,19 @@ impl Router {
     }
 
     pub fn install_routes(&mut self, routes: &[RouteAnnouncement]) -> Result<()> {
-        for route in routes {
-            self.routes.insert(route.policy_id, route.clone());
+        self.refresh_policy_roles(routes);
+        if let Some(node_id) = self.node_id.as_deref() {
+            self.routes.clear();
+            for route in routes {
+                if route.interface.as_deref() == Some(node_id) {
+                    self.routes.insert(route.policy_id, route.clone());
+                }
+            }
+        } else {
+            self.routes.clear();
+            for route in routes {
+                self.routes.insert(route.policy_id, route.clone());
+            }
         }
         Ok(())
     }
@@ -91,6 +135,7 @@ impl Router {
             registry: &self.registry,
             validator: &self.validator,
             forward: self.forward_pipeline.as_ref(),
+            roles: &self.policy_roles,
         })
     }
 
@@ -114,13 +159,17 @@ impl Router {
         self.routes.get(policy)
     }
 
+    pub fn policy_role_for(&self, policy: &[u8; 32]) -> Option<PolicyRole> {
+        self.policy_roles.get(policy).copied()
+    }
+
     pub fn drain_pending(&self) -> Result<Vec<crate::policy::PolicyCapsule>> {
         let Some(policy) = self.policy_runtime() else {
             return Ok(Vec::new());
         };
         policy
             .forward
-            .drain_pending(policy.registry, policy.validator)
+            .drain_pending(policy.registry, policy.validator, &self.policy_roles)
     }
 
     pub fn handle_async_violations(&mut self) -> Result<penalty::AsyncActions> {
@@ -197,6 +246,32 @@ impl Router {
             policy,
         };
         node::backward::process_data(&mut ctx, chdr, ahdr, payload)
+    }
+
+    fn refresh_policy_roles(&mut self, routes: &[RouteAnnouncement]) {
+        self.policy_roles.clear();
+        let Some(node_id) = self.node_id.as_deref() else {
+            return;
+        };
+        let mut grouped: BTreeMap<[u8; 32], Vec<&RouteAnnouncement>> = BTreeMap::new();
+        for route in routes {
+            grouped.entry(route.policy_id).or_default().push(route);
+        }
+        for (policy_id, list) in grouped {
+            if let Some(index) = list
+                .iter()
+                .position(|route| route.interface.as_deref() == Some(node_id))
+            {
+                let role = if index == 0 {
+                    PolicyRole::Entry
+                } else if index + 1 == list.len() {
+                    PolicyRole::Exit
+                } else {
+                    PolicyRole::Middle
+                };
+                self.policy_roles.insert(policy_id, role);
+            }
+        }
     }
 }
 

@@ -423,7 +423,7 @@ mod tests {
         let policy = plonk::get_policy(&policy_id).expect("policy exists");
         let metadata = policy.metadata(600, 0);
         let mut registry = PolicyRegistry::new();
-        registry.register(metadata).expect("register metadata");
+        registry.register(metadata.clone()).expect("register metadata");
         let validator = PlonkCapsuleValidator::new();
 
         let (directory, pipeline_data) = wrap_state_data(state);
@@ -484,7 +484,7 @@ mod tests {
         let metadata = policy.metadata(exp.0, 0);
 
         let mut registry = PolicyRegistry::new();
-        registry.register(metadata).expect("register metadata");
+        registry.register(metadata.clone()).expect("register metadata");
         let validator = PlonkCapsuleValidator::new();
         let forward_pipeline = crate::application::forward::RegistryForwardPipeline::new();
         let (directory, pipeline_data) = wrap_state_data(state);
@@ -576,6 +576,9 @@ mod tests {
         let mut replay = crate::node::NoReplay;
         let time = FixedTimeProvider { now: now_secs };
 
+        let mut roles = alloc::collections::BTreeMap::new();
+        roles.insert(metadata.policy_id, crate::core::policy::PolicyRole::Exit);
+
         let mut ctx = crate::node::NodeCtx {
             sv,
             now: &time,
@@ -585,6 +588,7 @@ mod tests {
                 registry: &registry,
                 validator: &validator,
                 forward: &forward_pipeline,
+                roles: &roles,
             }),
         };
 
@@ -942,7 +946,7 @@ pub async fn verify(
         .ok_or(ApiError::PolicyNotFound(request.policy_id.clone()))?;
 
     let mut registry = PolicyRegistry::new();
-    registry.register(metadata).map_err(ApiError::from_prover)?;
+    registry.register(metadata.clone()).map_err(ApiError::from_prover)?;
     let validator = PlonkCapsuleValidator::new();
 
     let original_len = capsule_bytes.len();

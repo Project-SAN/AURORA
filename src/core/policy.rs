@@ -14,7 +14,7 @@ pub use extensions::{
     EXT_TAG_SESSION_NONCE,
 };
 pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
-pub use registry::{CapsuleValidator, PolicyRegistry};
+pub use registry::{CapsuleValidator, PolicyRegistry, PolicyRole};
 
 use crate::types::{Error, Result};
 use alloc::vec::Vec;

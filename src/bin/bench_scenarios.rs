@@ -5,7 +5,8 @@ use hornet::policy::blocklist::{BlocklistEntry, LeafBytes, ValueBytes};
 use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use hornet::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, ProofKind, AUX_MAX, EXT_TAG_PCD_KEY_HASH,
+    encode_extensions_into, CapsuleExtensionRef, PolicyRole, ProofKind, AUX_MAX,
+    EXT_TAG_PCD_KEY_HASH,
     EXT_TAG_PCD_TARGET_HASH, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
     MAX_CAPSULE_LEN,
 };
@@ -411,10 +412,13 @@ fn main() -> Result<()> {
                 let mut payload = Vec::with_capacity(cap_len);
                 payload.extend_from_slice(&cap_buf[..cap_len]);
                 payload.extend_from_slice(&encrypted_tail);
+                let mut roles = std::collections::BTreeMap::new();
+                roles.insert(metadata.policy_id, PolicyRole::All);
                 let policy_rt = PolicyRuntime {
                     registry: &registry,
                     validator: &validator,
                     forward: &pipeline,
+                    roles: &roles,
                 };
                 run_forward_chain(
                     &fixture,

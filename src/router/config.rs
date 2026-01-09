@@ -7,6 +7,7 @@ use std::time::Duration;
 pub struct RouterConfig {
     pub directory_url: String,
     pub directory_secret: String,
+    pub router_id: Option<String>,
     #[cfg(feature = "std")]
     pub directory_poll_interval: Duration,
     #[cfg(feature = "std")]
@@ -18,6 +19,7 @@ impl RouterConfig {
         Self {
             directory_url: directory_url.into(),
             directory_secret: directory_secret.into(),
+            router_id: None,
             #[cfg(feature = "std")]
             directory_poll_interval: Duration::from_secs(60),
             #[cfg(feature = "std")]
@@ -38,6 +40,7 @@ impl RouterConfig {
         let url =
             env::var("HORNET_DIR_URL").unwrap_or_else(|_| "https://example.com/directory".into());
         let secret = env::var("HORNET_DIR_SECRET").unwrap_or_else(|_| "shared-secret".into());
+        let router_id = env::var("HORNET_ROUTER_ID").ok().filter(|s| !s.is_empty());
         let poll = env::var("HORNET_DIR_INTERVAL")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -45,6 +48,7 @@ impl RouterConfig {
         let storage =
             env::var("HORNET_STORAGE_PATH").unwrap_or_else(|_| "router_state.json".into());
         let mut cfg = Self::new(url, secret);
+        cfg.router_id = router_id;
         cfg.directory_poll_interval = Duration::from_secs(poll);
         cfg.storage_path = storage;
         cfg.validate()?;
