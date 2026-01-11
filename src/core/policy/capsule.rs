@@ -8,8 +8,7 @@ pub const PROOF_LEN: usize = 1040;
 pub const COMMIT_LEN: usize = 32;
 pub const AUX_MAX: usize = 1024;
 pub const MAX_PARTS: usize = 4;
-pub const MAX_CAPSULE_LEN: usize =
-    HEADER_LEN + MAX_PARTS * (7 + PROOF_LEN + COMMIT_LEN + AUX_MAX);
+pub const MAX_CAPSULE_LEN: usize = HEADER_LEN + MAX_PARTS * (7 + PROOF_LEN + COMMIT_LEN + AUX_MAX);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofKind {

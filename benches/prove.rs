@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use hornet::api::prove::{bench_submit_batch, BenchJob, PolicyAuthorityState, ProofPipelineHandle};
+use hornet::api::prove::{PolicyAuthorityState, ProofPipelineHandle};
 use hornet::application::prove::{ProveInput, ProofPipeline};
 use hornet::core::policy::PolicyId;
 use hornet::policy::blocklist::{Blocklist, BlocklistEntry, LeafBytes, ValueBytes};
@@ -7,6 +7,32 @@ use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::{self, PlonkPolicy};
 use std::sync::Arc;
 use std::time::Duration;
+
+#[cfg(feature = "bench")]
+use hornet::api::prove::{bench_submit_batch, BenchJob};
+
+#[cfg(not(feature = "bench"))]
+struct BenchJob {
+    policy_id: PolicyId,
+    payload: Vec<u8>,
+    aux: Vec<u8>,
+}
+
+#[cfg(not(feature = "bench"))]
+fn bench_submit_batch(
+    pipeline: Arc<ProofPipelineHandle>,
+    jobs: Vec<BenchJob>,
+) -> Result<Vec<hornet::core::policy::PolicyCapsule>, hornet::application::prove::ProofError> {
+    let inputs = jobs
+        .iter()
+        .map(|job| ProveInput {
+            policy_id: job.policy_id,
+            payload: job.payload.as_slice(),
+            aux: job.aux.as_slice(),
+        })
+        .collect::<Vec<_>>();
+    pipeline.prove_batch(&inputs)
+}
 
 struct BenchContext {
     state: PolicyAuthorityState,
