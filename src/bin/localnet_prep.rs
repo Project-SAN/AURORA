@@ -109,6 +109,7 @@ fn write_env(spec: &RouterSpec) -> Result<(), Box<dyn std::error::Error>> {
     let env_contents = format!(
         "HORNET_DIR_URL=https://localnet.invalid/{name}\n\
 HORNET_DIR_SECRET={secret}\n\
+HORNET_ROUTER_ID={name}\n\
 HORNET_ROUTER_BIND={bind}\n\
 HORNET_STORAGE_PATH={storage}\n\
 HORNET_DIRECTORY_PATH=config/localnet/{name}.directory.json\n\

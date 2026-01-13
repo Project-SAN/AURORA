@@ -3,17 +3,23 @@ mod suppert;
 use hornet::application::forward::{ForwardPipeline, RegistryForwardPipeline};
 use hornet::application::setup::{RegistrySetupPipeline, SetupPipeline};
 use hornet::core::policy::PolicyRegistry;
-use hornet::policy::blocklist::BlocklistEntry;
+use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
 use hornet::policy::plonk::{self, PlonkPolicy};
 use hornet::policy::PolicyMetadata;
 use hornet::types::Error;
 use std::sync::Arc;
 use suppert::RecordingForward;
 
+fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
+    let mut buf = [0u8; hornet::core::policy::MAX_CAPSULE_LEN];
+    let len = capsule.encode_into(&mut buf).expect("encode capsule");
+    buf[..len].to_vec()
+}
+
 fn demo_policy() -> (PlonkPolicy, PolicyMetadata) {
     let blocklist = vec![
-        BlocklistEntry::Exact("blocked.example".into()).leaf_bytes(),
-        BlocklistEntry::Exact("deny.test".into()).leaf_bytes(),
+        BlocklistEntry::Exact(ValueBytes::new(b"blocked.example").unwrap()).leaf_bytes(),
+        BlocklistEntry::Exact(ValueBytes::new(b"deny.test").unwrap()).leaf_bytes(),
     ];
     let policy = PlonkPolicy::new_with_blocklist(b"pipeline-test", &blocklist).unwrap();
     let metadata = policy.metadata(900, 0);
@@ -41,26 +47,31 @@ fn forward_pipeline_enforces_capsules() {
         .expect("register metadata");
     let validator = hornet::adapters::plonk::validator::PlonkCapsuleValidator::new();
 
-    let payload = BlocklistEntry::Exact("safe.example".into()).leaf_bytes();
-    let capsule = policy.prove_payload(&payload).expect("prove payload");
+    let payload = BlocklistEntry::Exact(ValueBytes::new(b"safe.example").unwrap()).leaf_bytes();
+    let capsule = policy.prove_payload(payload.as_slice()).expect("prove payload");
 
-    let mut onwire = capsule.encode();
+    let mut onwire = encode_capsule(&capsule);
     onwire.extend_from_slice(payload.as_slice());
 
     let forward_pipeline = RegistryForwardPipeline::new();
     let result = forward_pipeline
-        .enforce(&registry, &mut onwire, &validator)
+        .enforce(&registry, &mut onwire, &validator, hornet::core::policy::PolicyRole::All)
         .expect("enforce pipeline")
         .expect("capsule present");
-    assert_eq!(result.1, capsule.encode().len());
+    assert_eq!(result.1, encode_capsule(&capsule).len());
 
     // Tampering should fail.
-    let mut tampered = capsule.encode();
+    let mut tampered = encode_capsule(&capsule);
     if let Some(byte) = tampered.get_mut(50) {
         *byte ^= 0xFF;
     }
     let err = forward_pipeline
-        .enforce(&registry, &mut tampered, &validator)
+        .enforce(
+            &registry,
+            &mut tampered,
+            &validator,
+            hornet::core::policy::PolicyRole::All,
+        )
         .unwrap_err();
     assert!(matches!(err, Error::PolicyViolation));
 }
@@ -74,14 +85,14 @@ fn recording_forward_captures_capsule() {
         .expect("register metadata");
     let validator = hornet::adapters::plonk::validator::PlonkCapsuleValidator::new();
 
-    let payload = BlocklistEntry::Exact("safe.record".into()).leaf_bytes();
-    let capsule = policy.prove_payload(&payload).expect("prove payload");
-    let mut onwire = capsule.encode();
+    let payload = BlocklistEntry::Exact(ValueBytes::new(b"safe.record").unwrap()).leaf_bytes();
+    let capsule = policy.prove_payload(payload.as_slice()).expect("prove payload");
+    let mut onwire = encode_capsule(&capsule);
     onwire.extend_from_slice(payload.as_slice());
 
     let recorder = RecordingForward::new();
     let result = recorder
-        .enforce(&registry, &mut onwire, &validator)
+        .enforce(&registry, &mut onwire, &validator, hornet::core::policy::PolicyRole::All)
         .expect("enforce pipeline")
         .expect("capsule present");
     assert_eq!(result.0.policy_id, metadata.policy_id);

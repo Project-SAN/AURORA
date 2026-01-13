@@ -1,21 +1,184 @@
-# ZKMB-HORNET Protocol Specification (Draft)
+# ZKMB‑HORNET Protocol (Poseidon KeyBinding, Exit Response) — Spec v2
 
-## Overview
-ZKMB-HORNET extends HORNET routing with third-party-issued zero-knowledge proof capsules so that policy enforcement happens without disclosing the underlying policy to relays. The source attaches a `PolicyCapsule` that proves policy compliance, and each forwarding node verifies the capsule using `PolicyMetadata` delivered during setup. Packets that violate the policy are dropped without revealing the secret rules.
+This document is the **current protocol spec** for the AURORA/HORNET ZKMB system, rewritten to
+match the implementation as of **2026‑01‑03**. It replaces the previous Zombie‑oriented draft.
+Where applicable, it references Zombie/ZKMB as background, but the normative behavior is defined
+here.
 
-## Actors
-- **Policy Authority (PA)**: Compiles the policy circuit to a Plonk-like SNARK and exposes an API for proof generation and metadata distribution.
-- **Source Client**: Extracts policy-relevant data from plaintext traffic, obtains a proof capsule from the PA (or a local prover), and prepends it to outgoing payloads.
-- **Forwarding Nodes**: HORNET relays that receive `PolicyMetadata` during setup and verify capsules on the data plane.
-- **Destination**: The final hop that receives the decrypted payload after the capsule has been stripped.
+## 1. Goals and Design Summary
 
-## Data Structures
-### PolicyMetadata TLV
-Encoded inside the AHDR as TLV type `0xA1`.
+This protocol combines:
+- **Per‑hop policy enforcement** (ZKMB‑style capsule verification at each router).
+- **Onion routing (HORNET‑style AHDR/FS)** for forward and backward paths.
+- **Key‑binding** via a ZK circuit, but **not tied to TLS**.  
+  The default binding hash is **Poseidon** for ZK efficiency.
+- **Exit behavior**: the exit hop **decrypts the forward payload**, **delivers it to a TCP service**,
+  and **returns the response via the backward path**.
+
+Key differences from Zombie/ZKMB:
+- The network is **multi‑hop**; verification is **per hop**, not a single middlebox.
+- There is no TLS transcript. **Key binding is protocol‑local** (Poseidon over salt+secret).
+- The policy capsule is attached per packet.
+
+## 2. Actors
+
+- **PA (Policy Authority)**: publishes policy metadata (verifier blobs).
+- **Source (Client)**: constructs capsules and forward/backward path headers.
+- **Routers**: verify and forward; exit additionally **terminates** TCP and emits responses.
+- **Destination**: a TCP service (HTTP in the reference workflow).
+
+## 3. Cryptographic Primitives
+
+### 3.1 Poseidon KeyBinding Hash (default)
+
+The KeyBinding circuit and host computation use:
+
+```
+H_key = Poseidon( domain_tag, salt, secret )
+```
+
+- Poseidon arity: 2 inputs (salt, secret), width 3.
+- Domain tag: `2^arity - 1` (standard Poseidon domain tag).
+- Round constants: **Grain LFSR** per Poseidon spec (field size = 256 bits).
+- MDS: deterministic Cauchy‑matrix construction.
+
+Mode selection:
+- Default: Poseidon (`HORNET_KEYBINDING_HASH=poseidon` or unset).
+- Legacy: HKDF‑SHA256 (`HORNET_KEYBINDING_HASH=hkdf`).
+
+### 3.2 HORNET AHDR / FS
+
+Per hop, a node:
+1) opens FS to obtain `(s_i, r_i, exp_i)`,
+2) validates MAC,
+3) strips AHDR to the next hop.
+
+This is unchanged from the existing `packet/ahdr.rs` and `packet/core.rs` implementation.
+
+### 3.3 Onion Payload Encryption
+
+Forward direction:
+```
+source: build onion layers for payload tail
+router: remove one layer (per hop)
+```
+
+Backward direction:
+```
+exit: adds onion layer for response
+routers: add onion layer per hop (backward processing)
+source: removes layers to recover response
+```
+
+Backward initial IV is derived as:
+```
+IV_back = PRG1(s_exit)
+```
+where `s_exit` is the per‑hop secret from the exit’s AHDR open.
+
+## 4. Packet Structure and Wire Format
+
+This section defines the packet/frame layout used between routers and
+the payload structure used inside forward/backward packets.
+
+### 4.1 TCP Frame (router‑to‑router)
+
+```
+struct Frame {
+    u8  direction;   // 0 = Forward, 1 = Backward
+    u8  pkt_type;    // 1 = Setup, 2 = Data
+    u8  hops;        // path length
+    u8  reserved;    // must be 0
+    u8  specific[16]; // CHDR.specific (IV0 or EXP)
+    u32 ahdr_len;    // LE
+    u32 payload_len; // LE
+    u8  ahdr[ahdr_len];
+    u8  payload[payload_len];
+}
+```
+
+This matches `encode_frame_bytes()` / `read_incoming_packet()` in `src/router/io.rs`.
+
+### 4.2 CHDR (shared header)
+
+```
+struct Chdr {
+    u8  pkt_type;    // Setup or Data
+    u8  hops;        // number of hops in path
+    u8  specific[16]; // Data: IV0, Setup: EXP (coarse)
+}
+```
+
+### 4.3 AHDR (anonymous header)
+
+AHDR is a fixed size of `rmax * C_BLOCK` bytes:
+
+```
+AHDR = FS_0 || gamma_0 || beta_0
+```
+
+Each hop peels one block (Algorithm 3 in `src/packet/ahdr.rs`).
+
+#### Size constants
+
+From `src/types.rs`:
+
+```
+FS_LEN = 32         // bytes
+K_MAC  = 16         // bytes
+C_BLOCK = 48        // FS_LEN + K_MAC
+R_MAX  = 7          // default maximum path length
+```
+
+Thus:
+```
+AHDR_LEN = rmax * C_BLOCK
+```
+
+`rmax` must satisfy `1 <= hops <= rmax <= R_MAX` on both forward and backward paths.
+
+### 4.4 Forward Payload
+
+```
+payload = PolicyCapsule || encrypted_tail
+```
+
+The encrypted tail is onion‑encrypted and peeled one layer per hop.
+
+### 4.5 Backward Payload
+
+```
+payload = response_bytes
+```
+
+The exit constructs this payload from TCP response bytes and sends it
+back through the backward AHDR.
+
+#### Size limits and truncation
+
+There is no explicit framing for response size beyond the frame header.
+In the current implementation, the exit reads **until EOF or timeout** and
+returns whatever bytes were read.
+
+Operational constraints:
+- Very large responses can inflate backward payloads and increase latency.
+- Implementations SHOULD cap the response size (e.g., 64 KiB) and truncate
+  any extra bytes.
+- If truncation is applied, it MUST occur after TCP read and before backward
+  onion processing.
+
+### 4.6 Setup Payload
+
+Setup packets reuse the same frame format. The payload is the setup
+wire format in `src/setup/wire.rs` and carries directory metadata and
+policy verifiers.
+
+### 4.1 AHDR‑embedded PolicyMetadata TLV
+
 ```
 u8  tlv_type   = 0xA1
 u16 tlv_len    = |payload|
-payload = struct PolicyMetadataPayload {
+payload = PolicyMetadataPayload {
     policy_id: [u8; 32],
     version: u16,
     expiry: u32,
@@ -24,12 +187,11 @@ payload = struct PolicyMetadataPayload {
     verifier_blob: [u8; verifier_blob_len],
 }
 ```
-- `policy_id`: identifies the circuit and version.
-- `verifier_blob`: raw bytes from `dusk-plonk`’s `composer::Verifier::to_bytes()` (verification key, openings, public input layout, transcript type).
-- `expiry`: UNIX timestamp (seconds). Nodes should request re-setup when expired.
 
-### PolicyCapsule Payload
-Prepend this structure to the application payload:
+Each router installs the verifier during setup.
+
+### 4.2 PolicyCapsule (payload prefix)
+
 ```
 struct PolicyCapsule {
     magic: [u8; 4] = "ZKMB",
@@ -44,205 +206,331 @@ struct PolicyCapsule {
     aux_data: [u8; aux_len],
 }
 ```
-- `proof`: Plonk proof (hundreds of bytes to 1 KB).
-- `commitment`: commitment of the plaintext or TLS transcript (Poseidon/BLAKE3, etc.).
-- `aux_data`: additional public inputs, e.g., session IDs or time nonces.
-The capsule is followed immediately by the actual application payload.
 
-## Protocol Flow
-1. **Setup**
-   - The source fetches routing data and `PolicyMetadata` from the directory.
-   - During AHDR construction, it embeds the metadata TLV. Each node parses the TLV while decrypting AHDR, then registers `policy_id → verifier`.
+The capsule is followed by the encrypted tail.
 
-2. **Proof Generation**
-   - The source extracts the policy-relevant field (e.g., HTTP Host) from the payload, hashes it, and feeds it into the circuit.
-   - The client calls the proof API (`POLICY_PROOF_URL`) with `{policy_id, payload_hex, aux_hex}` and receives proof/commitment JSON, or locally runs the same Plonk prover (`policy-plonk` + `policy-client`).
-   - The PA returns the Plonk proof; on error it responds with HTTP 4xx and `non_compliant`.
+#### Capsule version and part ordering
 
-3. **Data Transmission**
-   - The source builds the `PolicyCapsule` and prepends it to the payload.
-   - `hornet::source::build_data_packet` assembles AHDR/CHDR and dispatches the onion packet.
+`capsule_version` is currently `0x01`.
 
-4. **Forwarding Node**
-   - `process_data_forward` removes an onion layer, decodes the capsule, and looks up the verifier via `policy_id`.
-   - It runs `verify(proof, [commitment, aux])`.
-   - Success: drop the capsule bytes and forward the remaining payload.
-   - Failure: return `Error::PolicyViolation`, drop the packet, and log only `policy_id` + result.
-
-5. **Destination**
-   - The last hop receives only the application payload and handles it per normal HORNET delivery rules.
-
-## PA API
+Proof parts MUST appear in the following order:
 ```
-POST /plonk/prove
-Headers:
-  Authorization: Bearer <token>
-Body (JSON/CBOR):
-{
-  "policy_id": "base64",
-  "commit": "base64",
-  "aux": "base64",
-  "payload_hint": "ciphertext hash"
-}
-Response:
-{
-  "policy_id": "...",
-  "proof": "base64",
-  "commit_confirm": "base64",
-  "aux_hash": "base64",
-  "expiry": <u64>
-}
+1) KeyBinding proof (if required by policy flags)
+2) Policy proof (always)
 ```
-- Proofs are only returned on success; failures use HTTP 4xx with `non_compliant`.
-- Apply rate limiting and auditing to prevent policy probing.
 
-## Error Handling
-- `Error::PolicyViolation`: missing capsule, policy mismatch, or proof failure.
-- `Error::Expired`: metadata expired.
-- PI collection: log `policy_id`, peer, timestamp only (no plaintext reason).
+Future versions MAY add additional proof parts, but MUST preserve the
+ordering of existing parts for backward compatibility.
 
-## Security Requirements
-- Plonk proofs rely on a universal SRS (single trusted setup).
-- Rotate `policy_id` when updating circuits; stop issuing proofs for old IDs.
-- Clients must authenticate to the API; unauthenticated clients cannot send traffic.
-- Nodes must not allow capsule verification to be disabled; packets without proofs must be dropped.
+#### Proof parts and verification order
 
-## Implementation Roadmap
-1. Implement `PolicyCapsule`/`PolicyMetadata` types + codecs.
-2. Embed metadata TLVs into AHDR; implement node registry.
-3. Hook capsule extraction/verification into `process_data_forward`.
-4. Integrate Plonk verifier (possibly via FFI) and proof service API.
-5. Testing: capsule parsing, success/failure paths, expiry handling.
+The capsule can carry multiple proof parts. The current implementation
+expects the following semantics:
 
-## Use Cases
-- Privacy-preserving filtering of illegal/phishing content.
-- Controlled access to B2B portals or enterprise APIs.
-- Remote compliance (e.g., TLS transcript inspections).
+1) **KeyBinding proof**
+   - Purpose: bind `secret` to public `hkey` via Poseidon (or HKDF in legacy mode).
+   - Public inputs: `salt`, `hkey` (both scalars).
+   - Commitment field: `hkey` bytes (LE encoding of the scalar).
 
-## Open Questions
-- Viable Plonk verifier for `no_std`.
-- API SLAs/NFRs (latency, availability).
-- Capsule chaining for multiple simultaneous policies.
-- Rate limiting / auditing to withstand failure-oracle attacks.
+2) **Policy proof**
+   - Purpose: prove the extracted target is not in the blocklist.
+   - Public inputs: `target_scalar` (blocklist leaf scalar) and blocklist root.
+   - Commitment field: `target_commitment` derived from the payload (see below).
 
-## Implementation Architecture (hornet crate)
-The Rust implementation follows a functional domain modeling style and is split into three layers—`core`, `application`, and `adapters`. This keeps the reusable library surface (`no_std + alloc`) independent from I/O-heavy components such as Actix or Plonk backends.
+Routers verify:
+```
+KeyBinding (if present)  -> Policy
+```
 
-### Core layer (`src/core`)
-- Pure domain layer that depends only on `alloc`. It owns `PolicyCapsule`, `PolicyMetadata`, TLV codecs, and `PolicyRegistry`.
-- `PolicyRegistry` keeps the `policy_id → PolicyMetadata` map and delegates validation to the `CapsuleValidator` trait. `enforce(payload, validator)` returns `(PolicyCapsule, consumed_len)` while preserving determinism.
-- All functions are side-effect free and return `crate::types::Error::{Length, PolicyViolation}` for callers to handle.
+Policy proof **must** be present for data packets with a policy capsule.
+KeyBinding proof is required when `POLICY_FLAG_PCD` is set in metadata.
 
-### Application layer (`src/application`)
-- **SetupPipeline** orchestrates how metadata TLVs are installed. `RegistrySetupPipeline` reuses `policy::plonk::ensure_registry()` to hydrate verifier blobs, and `setup::node_process_with_policy()` accepts any pipeline implementation.
-- **ProofPipeline** transforms `ProveInput { policy_id, payload, aux }` into a `PolicyCapsule`, surfacing `ProofError::{PolicyNotFound, Extraction, Prover}`. `PolicyAuthorityState` (Plonk policy + extractor) implements the trait and is injected as `Arc<dyn ProofPipeline + Send + Sync>`.
-- **ForwardPipeline** abstracts enforcement on the data plane. `RegistryForwardPipeline` delegates to `PolicyRegistry::enforce()` and returns `Option<(PolicyCapsule, usize)>`, allowing capsule-free flows to pass through unchanged.
+Auxiliary data (`aux_data`) carries policy‑specific public inputs
+required by the verifier (e.g., Merkle root or non‑membership proof parts).
 
-### Adapters layer (`src/adapters`)
-- **plonk::validator** provides `PlonkCapsuleValidator`, caching per-policy `PlonkVerifier` instances (in a `BTreeMap`) and checking proof/commitment lengths (`Proof::SIZE`, `BlsScalar::SIZE`).
-- **actix** wires HTTP handlers (feature `api`). `POST /prove` decodes `payload_hex` into `ProveInput` and calls the injected `ProofPipeline`; `POST /verify` derives metadata, populates a fresh `PolicyRegistry`, and validates capsules via `PlonkCapsuleValidator`.
-- **CLI/bin** (`src/main.rs`) shares `PolicyAuthorityState` via `Arc`, registering both `web::Data<PolicyAuthorityState>` (directory access) and `web::Data<Arc<ProofPipelineHandle>>` (proof generation) so binaries and libraries use the same pipeline.
+#### Public input encoding (Policy)
 
-### Node/Runtime
-- `NodeCtx` carries an optional `PolicyRuntime { registry, validator, forward }`; both forward/backward paths call `ForwardPipeline::enforce()` and fall back to `PolicyCapsule::decode()` when no registry is configured.
-- `setup::install_policy_metadata()` parses TLVs and pushes them through `SetupPipeline`, keeping the TLV format reusable even if the verifier backend changes.
-- Validators only need to implement `CapsuleValidator`, making them pluggable across setup/proof/forward flows.
-- Experimental router runtime (`src/router`) now includes:
-  - `router::runtime::RouterRuntime`: wires policy state + time provider + replay/forward factories into packet processing loops.
-  - `router::io::TcpPacketListener` / `TcpForward`: reference TCP transport that consumes/produces fixed-length frames and resolves next hops from `routing::RouteElem` TLVs.
-  - `router::storage::FileRouterStorage`: persists `PolicyMetadata` and node secrets (`Sv`) as JSON so routers can restore policy state on restart.
-  - `router::sync::client`: pluggable directory client (`ureq` HTTP or local file) that fetches signed announcements and applies them to the `Router`.
+Blocklist leaf bytes are canonicalized and mapped to a scalar:
+```
+target_scalar = H_512(leaf_bytes) mod Fr
+```
+This is implemented by `scalar_from_leaf()` in `src/policy/blocklist.rs`.
 
-### Testing and mocks
-- Shared mocks live under `tests/suppert/`. `tests/pipeline.rs` uses them to exercise setup/install and forward enforcement flows independently of Actix/Plonk internals.
-- End-to-end tests in `src/api/prove.rs` rely on the same dependency injection (WebData + `ProofPipeline`) as production.
+The policy commitment placed in the capsule is:
+```
+target_commitment = H_512(payload_bytes) mod Fr
+```
+implemented by `payload_commitment()` in `src/policy/plonk.rs`.
 
-## Appendix: Privacy-Preserving Remote Proof Protocol
-The current `POST /prove` endpoint requires the client to submit plaintext targets (search terms, HTTP Host headers) to the PA, exposing them to operators. The revised proposal satisfies:
-1. Clients never reveal plaintext targets to the PA.
-2. The PA remains responsible for proving non-membership against the blocklist.
-3. Forwarding nodes continue to enforce policies via `PolicyCapsule` verification only.
-4. Extra crypto is confined to the client side, enabling lightweight implementations (e.g., browser extensions).
+The proof’s public input vector is:
+```
+[ target_scalar ]
+```
+and the verifier uses `aux_data` to obtain the blocklist root (and any
+non‑membership path if required by the circuit).
 
-TEE-based attestation and Verifiable Oblivious PRF (VOPRF) are combined so that operators cannot observe targets while the PA proves policy compliance.
+#### CapsuleExtension TLV (aux_data)
 
-### New Components
-- **Attested TEE**: The `/prove` endpoint runs inside an enclave; clients verify quotes/binary measurements before proceeding.
-- **VOPRF key pair**: The PA evaluates `y = F_k(x)` without learning the input.
-- **Hashed blocklist**: Precompute `F_k(b_i)` for each blocklist entry and commit via a Merkle tree.
-- **Payload commitments**: Clients commit to payload-derived values (Poseidon/BLAKE3) and include a nonce.
+`aux_data` uses the extension TLV format defined in `src/core/policy/extensions.rs`:
 
-### Revised workflow
-1. **Directory access**
-   - `GET /@hornet/directory` returns `{policy_id, prove_url, verify_url, voprf params, tee_quote, binary_measurement, merkle_root}`.
-   - Clients verify the TEE quote, measurement, and public parameters before trust is established.
+```
+aux_data =
+  "ZEXT" || version(1) || count(1) || [ext_0 ... ext_{count-1}]
 
-2. **VOPRF evaluation**
-   - Client blinds `x` to obtain `α = Blind(x)` and sends it to `POST /@hornet/oprf`.
-   - TEE returns `β = Evaluate_k(α)`.
-   - Client derives `y = Finalize(x, β)`; the PA never learns `x`.
+ext_i =
+  tag(1) || len(2, BE) || value(len)
+```
 
-3. **Privacy-preserving proof request**
-   - Client sends:
-     ```json
-     {
-       "policy_id": "<hex>",
-       "payload_commitment": "<poseidon(x || nonce)>",
-       "payload_hint": "<hashed HTTP metadata>",
-       "oprf_output": "<hex(y)>",
-       "nonce_commitment": "<blake3(nonce)>"
-     }
-     ```
-   - Plaintext payload and `x` are never transmitted; the nonce thwarts dictionary attacks.
+Tags (current):
+```
+1  Mode(u8)
+2  Sequence(u64, BE)
+3  BatchId(u64, BE)
+4  PrecomputeId(bytes)
+5  PayloadHash([u8;32])
+6  PrecomputeProof(bytes)
+7  PcdState([u8;32])
+8  PcdKeyHash([u8;32])
+9  PcdRoot([u8;32])
+10 PcdTargetHash([u8;32])
+11 PcdSeq(u64, BE)
+12 PcdProof(bytes)
+13 SessionNonce([u8;32])
+14 RouteId([u8;32])
+```
 
-4. **TEE proof generation**
-   - The enclave proves:
-     1. `oprf_output == F_k(x)` (re-evaluated inside the TEE).
-     2. `payload_commitment` matches `x` reconstructed from payload/nonce.
-     3. `y` is not in the Merkle-committed blocklist.
-   - Outputs: `proof`, `commitment`, `aux`, and the new public inputs (`oprf_output`, `nonce_commitment`) concatenated into the capsule.
+KeyBinding proof parts MUST include:
+```
+SessionNonce (tag 13)
+RouteId      (tag 14)
+PcdKeyHash   (tag 8)   // hkey bytes
+```
 
-5. **Capsule verification**
-   - Nodes verify the extended capsule by checking the proof against the new public inputs and recomputing `payload_commitment` from the packet.
-   - Optionally, they compare `nonce_commitment` with encrypted payload hints.
-   - Success guarantees the target is not blocklisted, without exposing `x` to PA operators.
+Policy proof parts SHOULD include:
+```
+Sequence (tag 2)
+```
 
-### Additional endpoints
-| Method | Path                  | Description                                           |
-|--------|----------------------|-------------------------------------------------------|
-| GET    | `/@hornet/directory` | Returns metadata plus TEE attestation artifacts        |
-| POST   | `/@hornet/oprf`      | Evaluates blinded inputs inside the TEE               |
-| POST   | `/@hornet/prove_privacy` | Issues proofs without revealing payload plaintext |
-| POST   | `/@hornet/verify`    | Verifies capsules given the new public inputs         |
+Other tags are reserved for PCD / precompute modes and are ignored if not used.
 
-### Operational notes
-- **Attestation**: Clients must validate the quote signer and whitelist binary measurements; otherwise they abort.
-- **Dictionary resistance**: Blind OPRF plus nonce commitments prevent the PA from precomputing popular targets.
-- **Verifier updates**: The existing verification path is extended with the additional public inputs but still relies on Plonk.
-- **Fail-safe**: Errors at any step (attestation, OPRF, proof) cause the connection to abort and notify the user.
+### 4.3 Forward Encrypted Tail (exit‑aware)
 
-### Suggested roadmap
-1. Implement VOPRF and rebuild the blocklist as `F_k(b_i)` Merkle roots.
-2. Ship TEE binaries with attestation verification tooling.
-3. Extend the Plonk circuit for commitment consistency + non-inclusion proofs.
-4. Extend `PolicyCapsule` and verifier formats with the new public inputs.
-5. Update clients/browser extensions to follow the new flow while keeping a backward-compatible mode.
+After the capsule:
 
-### Outstanding Engineering Tasks
-The current Rust prototype ships an experimental router runtime (directory sync + TCP forwarding + persistence). To reach a production-ready HORNET router, the following work remains:
+```
+canonical_leaf || ahdr_b_len || ahdr_b || app_request
+```
 
-1. **Setup Packet Handling & Key Management**
-   - Implement full `setup::node_process_with_policy` integration inside the router so setup packets update `Si/Fs/CHDR` state, and persist those secrets (not just `Sv`) via `router::storage`.
-   - Restore the complete setup state (policy registry + node keys) on restart.
-2. **Secure Networking**
-   - Replace the current plaintext TCP frame with an authenticated/ encrypted transport (e.g., TLS or Noise) and support multiple concurrent connections with backpressure.
-   - Add node-to-node handshake/identity verification to prevent spoofing or replay.
-3. **Observability & Control Plane**
-   - Scheduled directory sync with exponential backoff, structured logging, and metrics (policy violations, replay drops, forward success rates).
-   - CLI/configuration for network bindings, storage paths, and security parameters.
-4. **Routing Integration**
-   - Use real routing descriptors (multiple `RouteElem`s per segment), maintain per-hop position, and update routing tables dynamically rather than assuming a single next-hop segment.
-5. **Testing**
-   - End-to-end integration tests covering setup→data flow across multiple nodes, persistence across restarts, and error conditions (expired metadata, invalid proofs, replay attacks).
+- `canonical_leaf`: blocklist canonical bytes (tagged encoding, see §6).
+- `ahdr_b_len`: u32 (LE) length of backward AHDR.
+- `ahdr_b`: AHDR bytes for the backward path (rmax * c bytes).
+- `app_request`: application payload (HTTP bytes in demo).
 
-These tasks are tracked in the Rust repo and should be completed before treating the router as production-ready.
+Routers remove onion layers until the exit sees this cleartext tail.
+
+### 4.4 Backward Payload (exit‑constructed)
+
+Backward payload is the response body as returned by the exit’s TCP connection.
+
+## 5. Protocol Flow
+
+### 5.1 Setup
+
+1) **Directory fetch**: client receives `PolicyMetadata`.
+2) **Setup packets** carry the TLV; each router registers the verifier.
+
+### 5.2 KeyBinding Proof (Poseidon)
+
+Inputs:
+```
+salt = H(policy_id, htarget, session_nonce, route_id)   // scalar
+secret = sender secret (32 bytes)                       // witness
+hkey = Poseidon(salt, secret)                           // public
+```
+
+Circuit enforces `Poseidon(salt, secret) == hkey`.
+
+Public inputs:
+- `salt` (as scalar)
+- `hkey` (as scalar)
+
+The resulting KeyBinding proof is included as a separate proof part inside the capsule.
+
+#### Salt construction (KeyBinding)
+
+`salt` is a **scalar** derived from:
+```
+policy_id || htarget || session_nonce || route_id
+```
+
+where:
+- `policy_id`: 32 bytes from `PolicyMetadata`
+- `htarget`: 32‑byte hash of the canonical leaf bytes
+- `session_nonce`: 32 bytes (per session)
+- `route_id`: 32 bytes derived from (entry, exit, target)
+
+The implementation computes:
+```
+salt = H_512(policy_id || htarget || session_nonce || route_id) mod Fr
+```
+
+No TLV is used for these fields; the concatenation order is fixed.
+
+#### session_nonce and route_id generation
+
+`session_nonce`:
+- 32 random bytes generated per session by the client.
+- In the reference client, generated via a CSPRNG (`rand::RngCore`).
+
+`route_id`:
+- 32‑byte SHA‑256 hash over the forward route and target tuple:
+  ```
+  H( router_0.name || router_0.bind
+   || router_1.name || router_1.bind
+   || ...
+   || ip_version || ip_bytes || target_port )
+  ```
+- `ip_version` is `0x04` or `0x06`.
+- `target_port` is big‑endian.
+
+This definition matches `compute_route_id()` in `src/bin/hornet_data_sender.rs`.
+
+#### Public input encoding (KeyBinding)
+
+Both `salt` and `hkey` are encoded as **little‑endian 32‑byte scalars**.
+The circuit enforces the byte‑to‑scalar relation and exposes each scalar as a public input.
+
+For Poseidon mode:
+```
+salt_scalar = from_bytes_le(salt_bytes)
+secret_scalar = from_bytes_le(secret_bytes)
+hkey_scalar = Poseidon(salt_scalar, secret_scalar)
+```
+
+For HKDF legacy mode:
+```
+salt_scalar = from_bytes_le(salt_bytes)
+hkey_bytes = HKDF_SHA256(salt_bytes, secret_bytes)
+hkey_scalar = from_bytes_le(hkey_bytes)
+```
+
+### 5.3 Forward Packet Construction (client)
+
+1) Build **forward AHDR** for entry→middle→exit.
+2) Build **backward AHDR** for exit→middle→entry→client.
+3) Create plaintext tail:
+   ```
+   canonical_leaf || ahdr_b_len || ahdr_b || app_request
+   ```
+4) Build onion payload layers (forward direction).
+5) Prepend PolicyCapsule.
+6) Send to entry.
+
+### 5.4 Per‑hop Forwarding
+
+Each router:
+1) Opens AHDR and validates MAC.
+2) Verifies `PolicyCapsule` (drops on failure).
+3) Removes one onion layer.
+4) Forwards to next hop.
+
+### 5.5 Exit Behavior (NEW)
+
+When the exit detects that the next hop is `ExitTcp`:
+1) **Parse the decrypted tail** to extract:
+   - canonical leaf
+   - `ahdr_b_len`
+   - `ahdr_b`
+   - `app_request`
+2) **Send `app_request` to `(addr, port)` via TCP**.
+3) Read the response bytes.
+4) Construct backward packet:
+   - `chdr.hops = forward hops`
+   - `chdr.typ = Data`
+   - `chdr.specific = PRG1(s_exit)` (derived from exit secret)
+   - `ahdr = ahdr_b`
+   - `payload = response bytes`
+5) Call backward pipeline to add onion layers and forward.
+
+### 5.6 Backward Path
+
+Routers:
+1) Open AHDR.
+2) Add onion layer.
+3) Forward to previous hop.
+
+Client:
+1) Removes onion layers using backward keys.
+2) Outputs response bytes to the user.
+
+## 6. Canonical Leaf Encoding (Blocklist)
+
+Canonical leaf bytes are carried **in cleartext inside the decrypted tail**.
+
+Encoding:
+
+- Exact: `TAG_EXACT || len || bytes`
+- Prefix: `TAG_PREFIX || len || bytes`
+- CIDR: `TAG_CIDR || ip_version || prefix || network_bytes`
+- Range: `TAG_RANGE || lenA || bytesA || lenB || bytesB`
+
+Tags:
+```
+0x01 exact
+0x02 prefix
+0x03 cidr
+0x04 range
+```
+
+Exit uses this to parse the first element and find the backward AHDR offset.
+
+## 7. Error Handling
+
+### Forward Path
+- Invalid MAC / replay / policy violation → **drop**.
+
+### Exit
+- If tail parsing fails → **drop**.
+- TCP connect error → **drop**.
+
+### Backward
+- Invalid MAC / replay → **drop**.
+
+## 8. Configuration Knobs
+
+Environment variables:
+
+- `HORNET_KEYBINDING_HASH=poseidon|hkdf`  
+  Poseidon is the default.
+
+- `HORNET_KEYBINDING_LOG2` / `HORNET_KEYBINDING_CAPACITY`  
+  Override PLONK capacity for keybinding circuit compilation.
+
+## 9. Implementation Mapping
+
+Key locations:
+- KeyBinding circuit: `src/policy/plonk.rs`
+- Poseidon core: `src/policy/poseidon.rs`
+- Poseidon circuit: `src/policy/poseidon_circuit.rs`
+- Forward pipeline: `src/node/forward.rs`
+- Backward pipeline: `src/node/backward.rs`
+- TCP I/O: `src/router/io.rs`
+- Client build: `src/bin/hornet_data_sender.rs`
+
+## 10. Known Limitations
+
+- Exit reads raw TCP bytes and returns raw response bytes; **no HTTP parsing**.
+- No batching or async verification.
+- No TLS transcript binding.
+
+## 11. Roadmap (future work)
+
+1) Optional **HTTP parsing** at exit (streaming, content‑length).
+2) Async verification with drop/penalty.
+3) Batch proof support.
+4) Full PCD chaining for multi‑hop proofs.
+
+## 12. References (Background)
+
+- Zombie: Middleboxes that Don’t Snoop (NSDI 2024)
+- Zero‑Knowledge Middleboxes (USENIX Security 2022)
