@@ -1,6 +1,14 @@
+use hornet::core::policy::ProofKind;
+use hornet::pcd::{HashPcdBackend, PcdBackend, PcdState};
+use hornet::core::policy::{
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF,
+    EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
+    EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE, MAX_CAPSULE_LEN,
+};
 use hornet::policy::blocklist;
-use hornet::policy::plonk::PlonkPolicy;
+use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::Blocklist;
+use sha2::{Digest, Sha256};
 use hornet::policy::Extractor;
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
@@ -14,7 +22,8 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
     if let Err(err) = run() {
@@ -35,6 +44,7 @@ fn run() -> Result<(), String> {
     let message = args
         .next()
         .unwrap_or_else(|| "hello from hornet_data_sender".into());
+    let _control = spawn_control_listener(info_path.to_string(), host.to_string(), message.as_bytes().to_vec());
     send_data(&info_path, &host, message.as_bytes())
 }
 
@@ -75,11 +85,123 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let entry = blocklist::entry_from_target(&target)
         .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
     let canonical_bytes = entry.leaf_bytes();
-    let capsule = policy
-        .prove_payload(&canonical_bytes)
-        .map_err(|err| format!("failed to prove payload: {err:?}"))?;
-
     let mut rng = SmallRng::seed_from_u64(derive_seed());
+    let mut sender_secret = [0u8; 32];
+    let mut session_nonce = [0u8; 32];
+    rng.fill_bytes(&mut sender_secret);
+    rng.fill_bytes(&mut session_nonce);
+    let route_id = compute_route_id(&routers, &target_ip, target_port);
+    let htarget = hash_bytes(canonical_bytes.as_slice());
+    println!("Generating keybinding+policy proof...");
+    let proof_start = Instant::now();
+    let mut capsule = policy
+        .prove_payload_with_keybinding(
+            canonical_bytes.as_slice(),
+            Some(KeyBindingInputs {
+                sender_secret,
+                htarget,
+                session_nonce,
+                route_id,
+            }),
+        )
+        .map_err(|err| format!("failed to prove payload: {err:?}"))?;
+    println!(
+        "Proof generated in {:.2?}",
+        proof_start.elapsed()
+    );
+    let sequence = current_sequence()?;
+    let mut workspace = blocklist::MerkleWorkspace::new();
+    let root = blocklist.merkle_root_in_workspace(&mut workspace);
+    let hkey = capsule
+        .part(ProofKind::KeyBinding)
+        .map(|part| part.commitment)
+        .unwrap_or([0u8; 32]);
+    let init_state = PcdState {
+        hkey,
+        seq: 1,
+        root,
+        htarget,
+    };
+    let backend = pcd_backend_from_env();
+    let init_hash = backend.hash(&init_state);
+    let pcd_proof = backend
+        .prove_base(&init_state)
+        .unwrap_or_else(|_| Vec::new());
+    for part in capsule
+        .parts
+        .iter_mut()
+        .take(capsule.part_count as usize)
+    {
+        match part.kind {
+            ProofKind::Policy => {
+                let seq_buf = sequence.to_be_bytes();
+                let exts = [CapsuleExtensionRef {
+                    tag: EXT_TAG_SEQUENCE,
+                    data: &seq_buf,
+                }];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                    .map_err(|_| "failed to encode policy extensions")?;
+                part.set_aux(&aux_buf[..aux_len])
+                    .map_err(|_| "failed to set policy extensions")?;
+            }
+            ProofKind::Consistency => {
+                let seq_buf = init_state.seq.to_be_bytes();
+                let exts = [
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_KEY_HASH,
+                        data: &init_state.hkey,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_ROOT,
+                        data: &init_state.root,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_TARGET_HASH,
+                        data: &init_state.htarget,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_SEQ,
+                        data: &seq_buf,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_STATE,
+                        data: &init_hash,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_PROOF,
+                        data: &pcd_proof,
+                    },
+                ];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                    .map_err(|_| "failed to encode consistency extensions")?;
+                part.set_aux(&aux_buf[..aux_len])
+                    .map_err(|_| "failed to set consistency extensions")?;
+            }
+            ProofKind::KeyBinding => {
+                let exts = [
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_KEY_HASH,
+                        data: &hkey,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_SESSION_NONCE,
+                        data: &session_nonce,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_ROUTE_ID,
+                        data: &route_id,
+                    },
+                ];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                    .map_err(|_| "failed to encode keybinding extensions")?;
+                part.set_aux(&aux_buf[..aux_len])
+                    .map_err(|_| "failed to set keybinding extensions")?;
+            }
+        }
+    }
     let hops = routers.len();
     let rmax = hops;
     let mut keys = Vec::with_capacity(hops);
@@ -188,16 +310,21 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     full_payload.extend_from_slice(&ahdr_b.bytes);
     full_payload.extend_from_slice(&request_payload);
 
-    let capsule_bytes = capsule.encode();
+    let mut capsule_buf = [0u8; MAX_CAPSULE_LEN];
+    let capsule_len = capsule
+        .encode_into(&mut capsule_buf)
+        .map_err(|_| "failed to encode capsule")?;
     let mut encrypted_tail = Vec::new();
-    encrypted_tail.extend_from_slice(&canonical_bytes);
+    encrypted_tail.extend_from_slice(canonical_bytes.as_slice());
     encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
     hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
-    let mut payload = capsule_bytes;
+    let mut payload = Vec::with_capacity(capsule_len + encrypted_tail.len());
+    payload.extend_from_slice(&capsule_buf[..capsule_len]);
     payload.extend_from_slice(&encrypted_tail);
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
+    println!("Sending frame to entry {}", entry.bind);
     send_frame(entry, &frame)?;
     println!(
         "データ送信完了: {} へ {} バイト (hops={})",
@@ -206,9 +333,31 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         hops
     );
 
-    // Listen for response
+    // Listen for response with timeout
     println!("Waiting for response...");
-    let (mut stream, addr) = listener.accept().map_err(|e| format!("accept failed: {e}"))?;
+    let timeout_secs: u64 = env::var("HORNET_RESPONSE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("set nonblocking failed: {e}"))?;
+    let start = Instant::now();
+    let (mut stream, addr) = loop {
+        match listener.accept() {
+            Ok(pair) => break pair,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() > Duration::from_secs(timeout_secs) {
+                    return Err(format!(
+                        "response timeout after {}s (no backward packet)",
+                        timeout_secs
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => return Err(format!("accept failed: {err}")),
+        }
+    };
     println!("Connection from {}", addr);
     
     // Read response frame
@@ -255,6 +404,48 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     println!("Received Response:\n{}", String::from_utf8_lossy(&encrypted_response));
 
     Ok(())
+}
+
+#[cfg(feature = "pcd-nova")]
+fn pcd_backend_from_env() -> Box<dyn PcdBackend> {
+    if env::var("HORNET_PCD_BACKEND").ok().as_deref() == Some("nova") {
+        match hornet::pcd::nova::NovaPcdBackend::new() {
+            Ok(backend) => Box::new(backend),
+            Err(err) => {
+                eprintln!("pcd: failed to init nova backend ({err:?}), using hash backend");
+                Box::new(HashPcdBackend)
+            }
+        }
+    } else {
+        Box::new(HashPcdBackend)
+    }
+}
+
+#[cfg(not(feature = "pcd-nova"))]
+fn pcd_backend_from_env() -> Box<dyn PcdBackend> {
+    Box::new(HashPcdBackend)
+}
+
+fn spawn_control_listener(info_path: String, host: String, payload: Vec<u8>) -> Option<std::thread::JoinHandle<()>> {
+    let bind = env::var("HORNET_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7100".into());
+    let listener = TcpListener::bind(&bind).ok()?;
+    Some(thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 128];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 {
+                    if let Ok(msg) = hornet::control::decode(&buf[..n]) {
+                        println!("control message: {:?}", msg);
+                        match msg {
+                            hornet::control::ControlMessage::ResendRequest { .. } => {
+                                let _ = send_data(&info_path, &host, &payload);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }))
 }
 
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
@@ -387,6 +578,50 @@ fn derive_seed() -> u64 {
         .unwrap_or_default()
         .as_nanos();
     (nanos ^ (std::process::id() as u128)) as u64
+}
+
+fn hash_bytes(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn compute_route_id(
+    routers: &[(StoredState, RouterInfo)],
+    target_ip: &IpAddr,
+    target_port: u16,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for (_state, info) in routers {
+        hasher.update(info.name.as_bytes());
+        hasher.update(info.bind.as_bytes());
+    }
+    match target_ip {
+        IpAddr::V4(ip) => {
+            hasher.update(&[4u8]);
+            hasher.update(ip);
+        }
+        IpAddr::V6(ip) => {
+            hasher.update(&[6u8]);
+            hasher.update(ip);
+        }
+    }
+    hasher.update(&target_port.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn current_sequence() -> Result<u64, String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "time went backwards".to_string())?
+        .as_nanos();
+    Ok((nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64)
 }
 
 #[derive(Clone, Deserialize)]

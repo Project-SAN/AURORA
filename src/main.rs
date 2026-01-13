@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use actix_web::{web, App, HttpServer};
 use hornet::api::hello::{hello, manual_hello};
-use hornet::api::prove::{prove, verify, PolicyAuthorityState, ProofPipelineHandle};
+use hornet::api::prove::{
+    precompute, prove, prove_batch, prove_precomputed, verify, PolicyAuthorityState,
+    ProofPipelineHandle,
+};
 use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::{self, PlonkPolicy};
@@ -18,15 +21,23 @@ async fn main() -> io::Result<()> {
     let directory_data: web::Data<PolicyAuthorityState> = web::Data::from(authority_state.clone());
     let pipeline_arc: Arc<ProofPipelineHandle> = authority_state.clone();
     let pipeline_data: web::Data<Arc<ProofPipelineHandle>> = web::Data::new(pipeline_arc);
+    let cpu_workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
     HttpServer::new(move || {
         App::new()
             .app_data(directory_data.clone())
             .app_data(pipeline_data.clone())
             .service(hello)
             .service(prove)
+            .service(prove_batch)
+            .service(precompute)
+            .service(prove_precomputed)
             .service(verify)
             .route("/hey", web::get().to(manual_hello))
     })
+    .workers(cpu_workers)
+    .worker_max_blocking_threads(cpu_workers)
     .bind(("127.0.0.1", 8080))?
     .run()
     .await
