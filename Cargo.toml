@@ -3,6 +3,10 @@ name = "aurora"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["kernel"]
+resolver = "2"
+
 [lib]
 name = "hornet"
 
@@ -48,6 +52,7 @@ libc = { version = "0.2" }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
+
 
 [[bench]]
 name = "hornet"
