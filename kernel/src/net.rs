@@ -13,7 +13,6 @@ use crate::virtio;
 
 const IP_ADDR: [u8; 4] = [10, 0, 2, 15];
 const GW_ADDR: [u8; 4] = [10, 0, 2, 2];
-const LISTEN_PORT: u16 = 1234;
 const RX_BUF_SIZE: usize = 4096;
 const TX_BUF_SIZE: usize = 4096;
 const FRAME_BUF_SIZE: usize = 2048;
@@ -48,6 +47,7 @@ pub struct NetStack {
     iface: Interface,
     sockets: SocketSet<'static>,
     tcp: SocketHandle,
+    listen_port: u16,
 }
 
 impl NetStack {
@@ -71,7 +71,7 @@ impl NetStack {
         let tcp_handle = sockets.add(tcp);
 
         serial::write(format_args!(
-            "smoltcp: ip={}.{}.{}.{} gw={}.{}.{}.{} port={}\n",
+            "smoltcp: ip={}.{}.{}.{} gw={}.{}.{}.{}\n",
             IP_ADDR[0],
             IP_ADDR[1],
             IP_ADDR[2],
@@ -79,37 +79,72 @@ impl NetStack {
             GW_ADDR[0],
             GW_ADDR[1],
             GW_ADDR[2],
-            GW_ADDR[3],
-            LISTEN_PORT
+            GW_ADDR[3]
         ));
         Self {
             iface,
             sockets,
             tcp: tcp_handle,
+            listen_port: 0,
         }
     }
 
     pub fn poll(&mut self, device: &mut VirtioDevice, now: Instant) -> Option<u64> {
         let _ = self.iface.poll(now, device, &mut self.sockets);
-
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
-        if !socket.is_open() {
-            let _ = socket.listen(LISTEN_PORT);
-        }
-
-        if socket.can_recv() {
-            let mut buf = [0u8; 512];
-            let mut copied = 0usize;
-            if let Ok(size) = socket.recv_slice(&mut buf) {
-                copied = size;
-            }
-            if copied > 0 && socket.can_send() {
-                let _ = socket.send_slice(&buf[..copied]);
-            }
-        }
         self.iface
             .poll_delay(now, &self.sockets)
             .map(|d| d.total_millis())
+    }
+
+    pub fn listen(&mut self, port: u16) -> bool {
+        if port == 0 {
+            return false;
+        }
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+        if socket.is_listening() && self.listen_port == port {
+            return true;
+        }
+        if socket.is_open() && !socket.is_listening() {
+            return false;
+        }
+        if socket.listen(port).is_ok() {
+            self.listen_port = port;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn accept(&mut self) -> bool {
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+        socket.is_active()
+    }
+
+    pub fn recv(&mut self, buf: &mut [u8]) -> usize {
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+        if !socket.can_recv() {
+            return 0;
+        }
+        match socket.recv_slice(buf) {
+            Ok(size) => size,
+            Err(_) => 0,
+        }
+    }
+
+    pub fn send(&mut self, buf: &[u8]) -> usize {
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+        if !socket.can_send() {
+            return 0;
+        }
+        match socket.send_slice(buf) {
+            Ok(size) => size,
+            Err(_) => 0,
+        }
+    }
+
+    pub fn close(&mut self) {
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+        socket.close();
     }
 }
 
