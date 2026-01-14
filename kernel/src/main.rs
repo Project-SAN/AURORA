@@ -6,21 +6,30 @@
 extern crate alloc;
 
 mod heap;
+mod acpi;
+mod apic;
+mod hpet;
 mod interrupts;
-mod pic;
-mod pit;
 mod port;
 mod serial;
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
 use uefi::table::boot::MemoryType;
+use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
 
 #[entry]
 fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     serial::init();
     heap::init();
     serial::write(format_args!("Hello from AURORA UEFI kernel\n"));
+
+    let rsdp_addr = find_rsdp(&system_table);
+    if rsdp_addr == 0 {
+        serial::write(format_args!("ACPI RSDP not found\n"));
+    } else {
+        serial::write(format_args!("ACPI RSDP at {:#x}\n", rsdp_addr));
+    }
 
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
     let entries = memory_map.entries().count();
@@ -29,8 +38,21 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         entries
     ));
 
-    interrupts::init();
-    serial::write(format_args!("Timer interrupts enabled\n"));
+    if rsdp_addr != 0 {
+        if let Some(info) = acpi::init(rsdp_addr) {
+            serial::write(format_args!(
+                "ACPI: LAPIC={:#x} IOAPIC={:?} HPET={:?}\n",
+                info.lapic_addr, info.ioapic_addr, info.hpet_addr
+            ));
+            if interrupts::init(&info) {
+                serial::write(format_args!("APIC/HPET timer enabled\n"));
+            } else {
+                serial::write(format_args!("APIC/HPET timer not configured\n"));
+            }
+        } else {
+            serial::write(format_args!("ACPI parse failed; timer not configured\n"));
+        }
+    }
 
     let mut last_tick = 0;
     loop {
@@ -41,6 +63,15 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         }
         last_tick = now;
     }
+}
+
+fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
+    for entry in system_table.config_table() {
+        if entry.guid == ACPI2_GUID || entry.guid == ACPI_GUID {
+            return entry.address as u64;
+        }
+    }
+    0
 }
 
 #[panic_handler]

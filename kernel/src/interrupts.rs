@@ -2,7 +2,9 @@ use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::pic::{self, PIC1_OFFSET};
+use crate::acpi::AcpiInfo;
+use crate::apic;
+use crate::hpet::Hpet;
 
 macro_rules! handler_addr {
     ($handler:path) => {
@@ -11,6 +13,7 @@ macro_rules! handler_addr {
 }
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+const TIMER_VECTOR: u8 = 32;
 
 #[repr(C)]
 pub struct InterruptStackFrame {
@@ -87,18 +90,21 @@ impl Idt {
 
 static IDT: Idt = Idt::new();
 
-pub fn init() {
+pub fn init(info: &AcpiInfo) -> bool {
+    let mut ok = false;
     unsafe {
         disable();
         init_idt();
         load_idt();
-        pic::init();
-        // Unmask timer (IRQ0) and cascade (IRQ2).
-        pic::unmask(0);
-        pic::unmask(2);
-        crate::pit::init(100);
+        if let Some(hpet_addr) = info.hpet_addr {
+            if let Some(hpet) = Hpet::init(hpet_addr) {
+                apic::init(info.lapic_addr, TIMER_VECTOR, &hpet);
+                ok = true;
+            }
+        }
         enable();
     }
+    ok
 }
 
 pub fn ticks() -> u64 {
@@ -145,7 +151,8 @@ unsafe fn init_idt() {
     set_handler(30, handler_addr!(security_exception), cs);
     set_handler(31, handler_addr!(reserved), cs);
 
-    set_handler(PIC1_OFFSET as usize, handler_addr!(timer_interrupt), cs);
+    set_handler(TIMER_VECTOR as usize, handler_addr!(timer_interrupt), cs);
+    set_handler(0xFF, handler_addr!(spurious_interrupt), cs);
 }
 
 unsafe fn set_handler(vector: usize, handler: u64, selector: u16) {
@@ -192,7 +199,11 @@ fn fault(vector: u8, error: Option<u64>) -> ! {
 
 extern "x86-interrupt" fn timer_interrupt(_frame: &mut InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
-    pic::eoi(PIC1_OFFSET);
+    apic::eoi();
+}
+
+extern "x86-interrupt" fn spurious_interrupt(_frame: &mut InterruptStackFrame) {
+    apic::eoi();
 }
 
 macro_rules! exception_no_error {
