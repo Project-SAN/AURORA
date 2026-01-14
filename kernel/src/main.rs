@@ -129,16 +129,20 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         }
     };
 
+    let mut next_poll_tick = None;
+    if let Some(stack) = net_stack.as_mut() {
+        next_poll_tick = schedule_next_poll(interrupts::ticks(), stack.poll(&mut net_device, net::now()));
+    }
+
     let mut last_tick = 0;
-    let mut last_poll = 0;
     loop {
         unsafe { core::arch::asm!("hlt"); }
         let now = interrupts::ticks();
         if let Some(stack) = net_stack.as_mut() {
-            let due = now.saturating_sub(last_poll) >= 10;
-            if interrupts::net_irq_pending() || due {
-                stack.poll(&mut net_device, net::now());
-                last_poll = now;
+            let irq = interrupts::net_irq_pending();
+            let due = next_poll_tick.map_or(false, |t| now >= t);
+            if irq || due {
+                next_poll_tick = schedule_next_poll(now, stack.poll(&mut net_device, net::now()));
             }
         }
         virtio::reclaim_tx();
@@ -163,6 +167,16 @@ unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize)
         in(reg) target,
         options(noreturn)
     );
+}
+
+fn schedule_next_poll(now_ticks: u64, delay_ms: Option<u64>) -> Option<u64> {
+    delay_ms.map(|ms| {
+        let mut ticks = (ms + 9) / 10;
+        if ticks == 0 {
+            ticks = 1;
+        }
+        now_ticks.saturating_add(ticks)
+    })
 }
 
 fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
