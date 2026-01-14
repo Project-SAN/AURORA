@@ -13,7 +13,9 @@ macro_rules! handler_addr {
 }
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+static NET_IRQ: AtomicU64 = AtomicU64::new(0);
 const TIMER_VECTOR: u8 = 32;
+pub const NET_VECTOR: u8 = 0x40;
 
 #[repr(C)]
 pub struct InterruptStackFrame {
@@ -111,6 +113,19 @@ pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
+pub fn enable_net_irq() {
+    unsafe {
+        disable();
+        let cs = code_segment();
+        set_handler(NET_VECTOR as usize, handler_addr!(net_interrupt), cs);
+        enable();
+    }
+}
+
+pub fn net_irq_pending() -> bool {
+    NET_IRQ.swap(0, Ordering::AcqRel) != 0
+}
+
 unsafe fn init_idt() {
     let cs = code_segment();
     let idt_ptr = IDT.entries_ptr();
@@ -203,6 +218,11 @@ extern "x86-interrupt" fn timer_interrupt(_frame: &mut InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn spurious_interrupt(_frame: &mut InterruptStackFrame) {
+    apic::eoi();
+}
+
+extern "x86-interrupt" fn net_interrupt(_frame: &mut InterruptStackFrame) {
+    NET_IRQ.store(1, Ordering::Release);
     apic::eoi();
 }
 

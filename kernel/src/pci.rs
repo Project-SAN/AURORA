@@ -5,10 +5,10 @@ const CONFIG_ADDRESS: u16 = 0xCF8;
 const CONFIG_DATA: u16 = 0xCFC;
 
 const VENDOR_VIRTIO: u16 = 0x1AF4;
-const DEVICE_VIRTIO_NET_LEGACY: u16 = 0x1000;
 const DEVICE_VIRTIO_NET_MODERN: u16 = 0x1041;
 const PCI_STATUS_CAPABILITIES: u16 = 1 << 4;
 const PCI_CAP_ID_VENDOR: u8 = 0x09;
+const PCI_CAP_ID_MSIX: u8 = 0x11;
 
 const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
@@ -27,6 +27,9 @@ pub struct VirtioPciDevice {
     pub notify_off_multiplier: u32,
     pub isr_cfg: Option<u64>,
     pub device_cfg: Option<u64>,
+    pub msix_table: Option<u64>,
+    pub msix_table_size: u16,
+    pub msix_cap_offset: Option<u8>,
 }
 
 pub fn scan() -> usize {
@@ -69,8 +72,7 @@ pub fn find_virtio_net() -> Option<VirtioPciDevice> {
                 let device_id = read_u16(bus, device, function, 0x02);
                 let class = read_u8(bus, device, function, 0x0B);
                 if vendor == VENDOR_VIRTIO
-                    && (device_id == DEVICE_VIRTIO_NET_LEGACY
-                        || device_id == DEVICE_VIRTIO_NET_MODERN)
+                    && device_id == DEVICE_VIRTIO_NET_MODERN
                     && class == 0x02
                 {
                     let bars = read_bars(bus, device, function);
@@ -104,6 +106,9 @@ pub fn find_virtio_net() -> Option<VirtioPciDevice> {
                         notify_off_multiplier: caps.notify_off_multiplier,
                         isr_cfg: caps.isr_cfg,
                         device_cfg: caps.device_cfg,
+                        msix_table: caps.msix_table,
+                        msix_table_size: caps.msix_table_size,
+                        msix_cap_offset: caps.msix_cap_offset,
                     });
                 }
             }
@@ -125,6 +130,9 @@ struct VirtioPciCaps {
     notify_off_multiplier: u32,
     isr_cfg: Option<u64>,
     device_cfg: Option<u64>,
+    msix_table: Option<u64>,
+    msix_table_size: u16,
+    msix_cap_offset: Option<u8>,
 }
 
 fn read_virtio_caps(bus: u16, device: u16, function: u16) -> VirtioPciCaps {
@@ -160,11 +168,34 @@ fn read_virtio_caps(bus: u16, device: u16, function: u16) -> VirtioPciCaps {
                     }
                 }
             }
+        } else if cap_id == PCI_CAP_ID_MSIX {
+            let msg_ctrl = read_u16(bus, device, function, cap_off + 2);
+            let table_size = (msg_ctrl & 0x07FF).saturating_add(1);
+            let table_raw = read_u32(bus, device, function, cap_off + 4);
+            let table_bir = (table_raw & 0x7) as usize;
+            let table_off = table_raw & !0x7;
+            if let Some(bar_base) = read_bar_base(bus, device, function, table_bir) {
+                caps.msix_table = Some(bar_base + table_off as u64);
+                caps.msix_table_size = table_size;
+                caps.msix_cap_offset = Some(cap_ptr);
+            }
         }
         cap_ptr = next;
         guard += 1;
     }
     caps
+}
+
+pub fn enable_msix(dev: &VirtioPciDevice) -> bool {
+    let cap = match dev.msix_cap_offset {
+        Some(c) => c as u16,
+        None => return false,
+    };
+    let mut msg_ctrl = read_u16(dev.bus, dev.device, dev.function, cap + 2);
+    msg_ctrl |= 1 << 15; // MSI-X Enable
+    msg_ctrl &= !(1 << 14); // clear Function Mask
+    write_u16(dev.bus, dev.device, dev.function, cap + 2, msg_ctrl);
+    true
 }
 
 fn read_bar_base(bus: u16, device: u16, function: u16, index: usize) -> Option<u64> {

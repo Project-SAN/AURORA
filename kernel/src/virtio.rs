@@ -5,26 +5,15 @@ use core::ptr::{read_volatile, write_bytes, write_volatile};
 use core::sync::atomic::{fence, AtomicU32, Ordering};
 
 use crate::memory;
+use crate::pci;
 use crate::pci::VirtioPciDevice;
 use crate::paging;
-use crate::port;
 use crate::serial;
+use crate::interrupts;
 
 const VIRTIO_NET_F_MAC: u32 = 5;
 const VIRTIO_NET_F_MRG_RXBUF: u32 = 15;
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
-
-const REG_DEVICE_FEATURES: u16 = 0x00;
-const REG_DRIVER_FEATURES: u16 = 0x04;
-const REG_QUEUE_ADDR: u16 = 0x08;
-const REG_QUEUE_SIZE: u16 = 0x0C;
-const REG_QUEUE_SELECT: u16 = 0x0E;
-const REG_QUEUE_NOTIFY: u16 = 0x10;
-const REG_DEVICE_STATUS: u16 = 0x12;
-const REG_ISR_STATUS: u16 = 0x13;
-const REG_DEVICE_CONFIG: u16 = 0x14;
-const REG_GUEST_PAGE_SIZE: u16 = 0x28;
-const REG_QUEUE_ALIGN: u16 = 0x26;
 
 const STATUS_ACKNOWLEDGE: u8 = 1;
 const STATUS_DRIVER: u8 = 2;
@@ -37,12 +26,10 @@ const QUEUE_NUM_TX: u16 = 1;
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
-const VIRTIO_NET_HDR_LEN_LEGACY: usize = 10;
-const VIRTIO_NET_HDR_LEN_MRG: usize = 12;
+const VIRTIO_NET_HDR_LEN: usize = 12;
 const VIRTQ_ALIGN: usize = 4096;
 const RX_BUFFER_LEN: usize = 2048;
 const RX_QUEUE_ENTRIES: usize = 32;
-const TX_BUFFER_LEN: usize = 4096 - VIRTIO_NET_HDR_LEN_LEGACY;
 const TX_POOL_SIZE: usize = 32;
 
 static RX_LOG: AtomicU32 = AtomicU32::new(0);
@@ -70,7 +57,6 @@ struct VirtioPciCommonCfg {
 
 #[derive(Clone, Copy)]
 enum Notify {
-    Port(u16),
     Mmio(u64),
 }
 
@@ -102,100 +88,16 @@ struct VirtqUsedElem {
     len: u32,
 }
 
-pub fn init_net(dev: &VirtioPciDevice) -> bool {
-    if dev.common_cfg.is_some() && dev.notify_cfg.is_some() && dev.device_cfg.is_some() {
-        if init_net_modern(dev) {
-            return true;
-        }
-        serial::write(format_args!(
-            "virtio: modern init failed, falling back to legacy\n"
-        ));
-    }
-    init_net_legacy(dev)
+#[repr(C)]
+struct MsixTableEntry {
+    addr_low: u32,
+    addr_high: u32,
+    data: u32,
+    ctrl: u32,
 }
 
-pub fn init_net_legacy(dev: &VirtioPciDevice) -> bool {
-    let io = match dev.io_base {
-        Some(io) => io,
-        None => {
-            serial::write(format_args!("virtio: no io base\n"));
-            return false;
-        }
-    };
-
-    // Reset
-    outb(io, REG_DEVICE_STATUS, 0);
-    outb(io, REG_DEVICE_STATUS, STATUS_ACKNOWLEDGE);
-    outb(io, REG_DEVICE_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
-    outl(io, REG_GUEST_PAGE_SIZE, 4096);
-
-    let device_features = inl(io, REG_DEVICE_FEATURES);
-    let mut driver_features = 0u32;
-    if (device_features & (1 << VIRTIO_NET_F_MAC)) != 0 {
-        driver_features |= 1 << VIRTIO_NET_F_MAC;
-    }
-    outl(io, REG_DRIVER_FEATURES, driver_features);
-
-    let mut mac = [0u8; 6];
-    if (driver_features & (1 << VIRTIO_NET_F_MAC)) != 0 {
-        for i in 0..6 {
-            mac[i] = inb(io, REG_DEVICE_CONFIG + i as u16);
-        }
-        serial::write(format_args!(
-            "virtio-net mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-        ));
-    }
-
-    let mut rxq = match setup_queue(io, QUEUE_NUM_RX) {
-        Some(q) => q,
-        None => {
-            fail(io, "queue rx");
-            return false;
-        }
-    };
-    let txq = match setup_queue(io, QUEUE_NUM_TX) {
-        Some(q) => q,
-        None => {
-            fail(io, "queue tx");
-            return false;
-        }
-    };
-    serial::write(format_args!(
-        "virtio: rx phys={:#x} tx phys={:#x}\n",
-        rxq.desc_phys, txq.desc_phys
-    ));
-
-    let hdr_len = VIRTIO_NET_HDR_LEN_LEGACY;
-    if !prime_rx_buffers(&mut rxq, RX_QUEUE_ENTRIES, hdr_len) {
-        fail(io, "queue rx");
-        return false;
-    }
-
-    let tx_state = match init_tx_state(&txq) {
-        Some(state) => state,
-        None => {
-            fail(io, "tx buffers");
-            return false;
-        }
-    };
-
-    outb(
-        io,
-        REG_DEVICE_STATUS,
-        STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_DRIVER_OK,
-    );
-    serial::write(format_args!("virtio-net legacy init complete\n"));
-
-    // Save queues for polling.
-    set_net(VirtioNet {
-        rx: rxq,
-        tx: txq,
-        tx_state,
-        hdr_len,
-        mac,
-    });
-    true
+pub fn init_net(dev: &VirtioPciDevice) -> bool {
+    init_net_modern(dev)
 }
 
 fn init_net_modern(dev: &VirtioPciDevice) -> bool {
@@ -217,6 +119,19 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
         return false;
     }
 
+    if dev.msix_table.is_none() || dev.msix_table_size == 0 {
+        serial::write(format_args!("virtio: MSI-X not available\n"));
+        return false;
+    }
+    if !pci::enable_msix(dev) {
+        serial::write(format_args!("virtio: MSI-X enable failed\n"));
+        return false;
+    }
+    if !setup_msix(dev) {
+        serial::write(format_args!("virtio: MSI-X setup failed\n"));
+        return false;
+    }
+
     let common_ptr = mmio_ptr(common_addr);
     let notify_base_ptr = mmio_ptr(notify_base);
     let device_cfg_ptr = mmio_ptr(device_cfg);
@@ -230,23 +145,21 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
         write_volatile(&mut (*common).device_status, 0);
         write_volatile(&mut (*common).device_status, STATUS_ACKNOWLEDGE);
         write_volatile(&mut (*common).device_status, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+        write_volatile(&mut (*common).msix_config, 0xFFFF);
     }
 
     let device_features = read_device_features(common);
-    if (device_features & VIRTIO_F_VERSION_1) == 0 {
-        serial::write(format_args!("virtio: device lacks version 1 feature\n"));
+    let required =
+        VIRTIO_F_VERSION_1 | (1u64 << VIRTIO_NET_F_MAC) | (1u64 << VIRTIO_NET_F_MRG_RXBUF);
+    if (device_features & required) != required {
+        serial::write(format_args!(
+            "virtio: missing required features (device={:#x} required={:#x})\n",
+            device_features, required
+        ));
         write_status(common, STATUS_FAILED);
         return false;
     }
-    let mut driver_features = VIRTIO_F_VERSION_1;
-    if (device_features & (1u64 << VIRTIO_NET_F_MAC)) != 0 {
-        driver_features |= 1u64 << VIRTIO_NET_F_MAC;
-    }
-    let mut hdr_len = VIRTIO_NET_HDR_LEN_LEGACY;
-    if (device_features & (1u64 << VIRTIO_NET_F_MRG_RXBUF)) != 0 {
-        driver_features |= 1u64 << VIRTIO_NET_F_MRG_RXBUF;
-        hdr_len = VIRTIO_NET_HDR_LEN_MRG;
-    }
+    let driver_features = required;
     write_driver_features(common, driver_features);
 
     write_status(
@@ -260,26 +173,24 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
     }
 
     let mut mac = [0u8; 6];
-    if (driver_features & (1u64 << VIRTIO_NET_F_MAC)) != 0 {
-        for i in 0..6 {
-            unsafe {
-                mac[i] = read_volatile((device_cfg_ptr as *const u8).add(i));
-            }
+    for i in 0..6 {
+        unsafe {
+            mac[i] = read_volatile((device_cfg_ptr as *const u8).add(i));
         }
-        serial::write(format_args!(
-            "virtio-net mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-        ));
     }
+    serial::write(format_args!(
+        "virtio-net mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    ));
 
-    let mut rxq = match setup_queue_modern(common, notify_base_ptr, notify_mult, QUEUE_NUM_RX) {
+    let mut rxq = match setup_queue_modern(common, notify_base_ptr, notify_mult, QUEUE_NUM_RX, 0) {
         Some(q) => q,
         None => {
             write_status(common, STATUS_FAILED);
             return false;
         }
     };
-    let txq = match setup_queue_modern(common, notify_base_ptr, notify_mult, QUEUE_NUM_TX) {
+    let txq = match setup_queue_modern(common, notify_base_ptr, notify_mult, QUEUE_NUM_TX, 0) {
         Some(q) => q,
         None => {
             write_status(common, STATUS_FAILED);
@@ -291,7 +202,7 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
         rxq.desc_phys, txq.desc_phys
     ));
 
-    if !prime_rx_buffers(&mut rxq, RX_QUEUE_ENTRIES, hdr_len) {
+    if !prime_rx_buffers(&mut rxq, RX_QUEUE_ENTRIES) {
         write_status(common, STATUS_FAILED);
         return false;
     }
@@ -314,7 +225,6 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
         rx: rxq,
         tx: txq,
         tx_state,
-        hdr_len,
         mac,
     });
     true
@@ -325,6 +235,7 @@ fn setup_queue_modern(
     notify_base: u64,
     notify_mult: u32,
     queue: u16,
+    vector: u16,
 ) -> Option<VirtQueue> {
     unsafe {
         write_volatile(&mut (*common).queue_select, queue);
@@ -343,7 +254,15 @@ fn setup_queue_modern(
         write_volatile(&mut (*common).queue_desc, mem.queue.desc_phys);
         write_volatile(&mut (*common).queue_driver, mem.queue.avail_phys);
         write_volatile(&mut (*common).queue_device, mem.queue.used_phys);
-        write_volatile(&mut (*common).queue_msix_vector, 0xFFFF);
+        write_volatile(&mut (*common).queue_msix_vector, vector);
+    }
+    let readback = unsafe { read_volatile(&(*common).queue_msix_vector) };
+    if readback != vector {
+        serial::write(format_args!(
+            "virtio: queue {} MSI-X vector rejected ({:#x})\n",
+            queue, readback
+        ));
+        return None;
     }
     let notify_off = unsafe { read_volatile(&(*common).queue_notify_off) };
     let notify_addr = notify_base + (notify_off as u64) * (notify_mult as u64);
@@ -396,39 +315,6 @@ fn read_status(common: *mut VirtioPciCommonCfg) -> u8 {
     unsafe { read_volatile(&(*common).device_status) }
 }
 
-fn setup_queue(io: u16, queue: u16) -> Option<VirtQueue> {
-    outw(io, REG_QUEUE_SELECT, queue);
-    let max = inw(io, REG_QUEUE_SIZE);
-    if max == 0 {
-        serial::write(format_args!("virtio: queue {} not available\n", queue));
-        return None;
-    }
-    let qsize = max;
-    // Write back the queue size (legacy devices expect this).
-    outw(io, REG_QUEUE_SIZE, qsize);
-    // Queue alignment (legacy). Use 4K.
-    outw(io, REG_QUEUE_ALIGN, VIRTQ_ALIGN as u16);
-    let mem = allocate_queue(qsize)?;
-    let pfn = (mem.phys >> 12) as u32;
-    outl(io, REG_QUEUE_ADDR, pfn);
-    serial::write(format_args!(
-        "virtio: queue {} size {} pfn {:#x}\n",
-        queue, qsize, pfn
-    ));
-    // Read back queue address for debugging.
-    let readback = inl(io, REG_QUEUE_ADDR);
-    if readback != pfn {
-        serial::write(format_args!(
-            "virtio: queue {} addr readback {:#x} (expected {:#x})\n",
-            queue, readback, pfn
-        ));
-    }
-    let mut q = mem.queue;
-    q.queue_index = queue;
-    q.notify = Notify::Port(io);
-    Some(q)
-}
-
 struct QueueMem {
     phys: u64,
     _size: usize,
@@ -439,7 +325,6 @@ struct VirtioNet {
     rx: VirtQueue,
     tx: VirtQueue,
     tx_state: TxState,
-    hdr_len: usize,
     mac: [u8; 6],
 }
 
@@ -530,7 +415,7 @@ fn allocate_queue(qsize: u16) -> Option<QueueMem> {
             avail_phys,
             used_phys,
             queue_index: 0,
-            notify: Notify::Port(0),
+            notify: Notify::Mmio(0),
             avail_idx: 0,
             last_used: 0,
         },
@@ -541,12 +426,7 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
-fn fail(io: u16, msg: &str) {
-    serial::write(format_args!("virtio init failed: {}\n", msg));
-    outb(io, REG_DEVICE_STATUS, STATUS_FAILED);
-}
-
-fn prime_rx_buffers(rxq: &mut VirtQueue, count: usize, hdr_len: usize) -> bool {
+fn prime_rx_buffers(rxq: &mut VirtQueue, count: usize) -> bool {
     let count = count.min(rxq.size as usize);
     for i in 0..count {
         let buf = match memory::alloc_dma_pages(1) {
@@ -556,12 +436,12 @@ fn prime_rx_buffers(rxq: &mut VirtQueue, count: usize, hdr_len: usize) -> bool {
         let head = (i * 2) as u16;
         let desc = VirtqDesc {
             addr: buf.phys,
-            len: hdr_len as u32,
+            len: VIRTIO_NET_HDR_LEN as u32,
             flags: VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
             next: head + 1,
         };
         let desc2 = VirtqDesc {
-            addr: buf.phys + hdr_len as u64,
+            addr: buf.phys + VIRTIO_NET_HDR_LEN as u64,
             len: RX_BUFFER_LEN as u32,
             flags: VIRTQ_DESC_F_WRITE,
             next: 0,
@@ -577,7 +457,7 @@ fn prime_rx_buffers(rxq: &mut VirtQueue, count: usize, hdr_len: usize) -> bool {
 }
 
 pub fn send_frame(frame: &[u8]) -> bool {
-    match with_net(|net| send_frame_queue(&mut net.tx, &mut net.tx_state, net.hdr_len, frame)) {
+    match with_net(|net| send_frame_queue(&mut net.tx, &mut net.tx_state, frame)) {
         Some(ok) => ok,
         None => false,
     }
@@ -587,14 +467,9 @@ pub fn reclaim_tx() {
     let _ = with_net(|net| reclaim_tx_queue(&mut net.tx, &mut net.tx_state));
 }
 
-fn send_frame_queue(
-    txq: &mut VirtQueue,
-    tx_state: &mut TxState,
-    hdr_len: usize,
-    frame: &[u8],
-) -> bool {
+fn send_frame_queue(txq: &mut VirtQueue, tx_state: &mut TxState, frame: &[u8]) -> bool {
     reclaim_tx_queue(txq, tx_state);
-    if frame.len() + hdr_len > 4096 {
+    if frame.len() + VIRTIO_NET_HDR_LEN > 4096 {
         serial::write(format_args!(
             "virtio: tx frame too large ({})\n",
             frame.len()
@@ -617,17 +492,17 @@ fn send_frame_queue(
     let virt = memory::phys_to_virt(buf_phys);
     unsafe {
         write_bytes(virt, 0, 4096);
-        core::ptr::copy_nonoverlapping(frame.as_ptr(), virt.add(hdr_len), frame.len());
+        core::ptr::copy_nonoverlapping(frame.as_ptr(), virt.add(VIRTIO_NET_HDR_LEN), frame.len());
     }
 
     let desc0 = VirtqDesc {
         addr: buf_phys,
-        len: hdr_len as u32,
+        len: VIRTIO_NET_HDR_LEN as u32,
         flags: VIRTQ_DESC_F_NEXT,
         next: head + 1,
     };
     let desc1 = VirtqDesc {
-        addr: buf_phys + hdr_len as u64,
+        addr: buf_phys + VIRTIO_NET_HDR_LEN as u64,
         len: frame.len() as u32,
         flags: 0,
         next: 0,
@@ -669,11 +544,9 @@ fn push_avail(queue: &mut VirtQueue, desc_idx: u16) {
 }
 
 fn notify_queue(queue: &VirtQueue) {
-    match queue.notify {
-        Notify::Port(io) => outw(io, REG_QUEUE_NOTIFY, queue.queue_index),
-        Notify::Mmio(addr) => unsafe {
-            write_volatile(addr as *mut u32, queue.queue_index as u32);
-        },
+    let Notify::Mmio(addr) = queue.notify;
+    unsafe {
+        write_volatile(addr as *mut u32, queue.queue_index as u32);
     }
 }
 
@@ -682,10 +555,10 @@ fn used_idx(queue: &VirtQueue) -> u16 {
 }
 
 pub fn recv_frame() -> Option<Vec<u8>> {
-    with_net(|net| recv_frame_queue(&mut net.rx, net.hdr_len))?
+    with_net(|net| recv_frame_queue(&mut net.rx))?
 }
 
-fn recv_frame_queue(rxq: &mut VirtQueue, hdr_len: usize) -> Option<Vec<u8>> {
+fn recv_frame_queue(rxq: &mut VirtQueue) -> Option<Vec<u8>> {
     let used = used_idx(rxq);
     if rxq.last_used == used {
         return None;
@@ -697,7 +570,7 @@ fn recv_frame_queue(rxq: &mut VirtQueue, hdr_len: usize) -> Option<Vec<u8>> {
     let total_len = elem.len as usize;
 
     let desc1 = unsafe { read_volatile(rxq.desc.add((head + 1) as usize)) };
-    let payload_len = total_len.saturating_sub(hdr_len);
+    let payload_len = total_len.saturating_sub(VIRTIO_NET_HDR_LEN);
     let copy_len = cmp::min(payload_len, desc1.len as usize);
     let src = memory::phys_to_virt(desc1.addr);
     let mut frame = Vec::with_capacity(copy_len);
@@ -729,6 +602,29 @@ fn recv_frame_queue(rxq: &mut VirtQueue, hdr_len: usize) -> Option<Vec<u8>> {
         }
     }
     Some(frame)
+}
+
+fn setup_msix(dev: &VirtioPciDevice) -> bool {
+    let table_phys = match dev.msix_table {
+        Some(addr) => addr,
+        None => return false,
+    };
+    if dev.msix_table_size == 0 {
+        return false;
+    }
+    let table_ptr = mmio_ptr(table_phys) as *mut MsixTableEntry;
+    let vector = interrupts::NET_VECTOR as u32;
+    let apic_id = 0u64;
+    let msi_addr = 0xFEE0_0000u64 | (apic_id << 12);
+    let msi_data = vector & 0xFF;
+    unsafe {
+        let entry = table_ptr.add(0);
+        write_volatile(&mut (*entry).addr_low, (msi_addr & 0xFFFF_FFFF) as u32);
+        write_volatile(&mut (*entry).addr_high, (msi_addr >> 32) as u32);
+        write_volatile(&mut (*entry).data, msi_data);
+        write_volatile(&mut (*entry).ctrl, 0);
+    }
+    true
 }
 
 fn init_tx_state(txq: &VirtQueue) -> Option<TxState> {
@@ -775,34 +671,4 @@ fn avail_ring(queue: &VirtQueue) -> *mut u16 {
 
 fn used_ring(queue: &VirtQueue) -> *mut VirtqUsedElem {
     unsafe { (queue.used as *mut u8).add(4) as *mut VirtqUsedElem }
-}
-
-#[inline]
-fn outb(base: u16, offset: u16, value: u8) {
-    unsafe { port::outb(base + offset, value) }
-}
-
-#[inline]
-fn outw(base: u16, offset: u16, value: u16) {
-    unsafe { port::outw(base + offset, value) }
-}
-
-#[inline]
-fn outl(base: u16, offset: u16, value: u32) {
-    unsafe { port::outl(base + offset, value) }
-}
-
-#[inline]
-fn inb(base: u16, offset: u16) -> u8 {
-    unsafe { port::inb(base + offset) }
-}
-
-#[inline]
-fn inw(base: u16, offset: u16) -> u16 {
-    unsafe { port::inw(base + offset) }
-}
-
-#[inline]
-fn inl(base: u16, offset: u16) -> u32 {
-    unsafe { port::inl(base + offset) }
 }
