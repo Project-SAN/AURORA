@@ -122,6 +122,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     loop {
         unsafe { core::arch::asm!("hlt"); }
         let now = interrupts::ticks();
+        virtio::poll_rx();
         if now != last_tick && now % 100 == 0 {
             serial::write(format_args!("tick={}\n", now));
         }
