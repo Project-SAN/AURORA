@@ -10,6 +10,8 @@ mod acpi;
 mod apic;
 mod hpet;
 mod interrupts;
+mod memory;
+mod paging;
 mod port;
 mod serial;
 
@@ -37,6 +39,27 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         "Exited boot services. Memory map entries: {}\n",
         entries
     ));
+    let stats = memory::init(&memory_map);
+    serial::write(format_args!(
+        "Memory: usable={} KiB regions={}\n",
+        stats.total_usable / 1024,
+        stats.region_count
+    ));
+    if let Some(buf) = memory::alloc_dma_pages(2) {
+        serial::write(format_args!(
+            "DMA test: phys={:#x} size={} bytes\n",
+            buf.phys, buf.size
+        ));
+    } else {
+        serial::write(format_args!("DMA test: allocation failed\n"));
+    }
+
+    if let Some(pml4) = paging::init_identity_4g() {
+        unsafe { paging::switch_to(pml4) };
+        serial::write(format_args!("Paging: switched to identity-mapped 4GiB\n"));
+    } else {
+        serial::write(format_args!("Paging: failed to build tables\n"));
+    }
 
     if rsdp_addr != 0 {
         if let Some(info) = acpi::init(rsdp_addr) {
