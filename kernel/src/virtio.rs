@@ -37,6 +37,8 @@ const VIRTIO_NET_HDR_LEN: usize = 10;
 const VIRTQ_ALIGN: usize = 4096;
 const RX_BUFFER_LEN: usize = 2048;
 const RX_QUEUE_ENTRIES: usize = 32;
+const TX_BUFFER_LEN: usize = 4096 - VIRTIO_NET_HDR_LEN;
+const TX_POOL_SIZE: usize = 32;
 
 #[repr(C)]
 struct VirtqDesc {
@@ -106,7 +108,7 @@ pub fn init_net_legacy(dev: &VirtioPciDevice) -> bool {
             return false;
         }
     };
-    let mut txq = match setup_queue(io, QUEUE_NUM_TX) {
+    let txq = match setup_queue(io, QUEUE_NUM_TX) {
         Some(q) => q,
         None => {
             fail(io, "queue tx");
@@ -123,6 +125,14 @@ pub fn init_net_legacy(dev: &VirtioPciDevice) -> bool {
         return false;
     }
 
+    let tx_state = match init_tx_state(&txq) {
+        Some(state) => state,
+        None => {
+            fail(io, "tx buffers");
+            return false;
+        }
+    };
+
     outb(
         io,
         REG_DEVICE_STATUS,
@@ -135,6 +145,7 @@ pub fn init_net_legacy(dev: &VirtioPciDevice) -> bool {
         io,
         rx: rxq,
         tx: txq,
+        tx_state,
         mac,
     });
     true
@@ -180,7 +191,17 @@ struct VirtioNet {
     io: u16,
     rx: VirtQueue,
     tx: VirtQueue,
+    tx_state: TxState,
     mac: [u8; 6],
+}
+
+struct TxBuffer {
+    phys: u64,
+}
+
+struct TxState {
+    bufs: Vec<TxBuffer>,
+    free: Vec<u16>,
 }
 
 struct NetState {
@@ -297,25 +318,39 @@ fn prime_rx_buffers(io: u16, rxq: &mut VirtQueue, count: usize) -> bool {
 }
 
 pub fn send_frame(frame: &[u8]) -> bool {
-    match with_net(|net| send_frame_queue(net.io, &mut net.tx, frame)) {
+    match with_net(|net| send_frame_queue(net.io, &mut net.tx, &mut net.tx_state, frame)) {
         Some(ok) => ok,
         None => false,
     }
 }
 
-fn send_frame_queue(io: u16, txq: &mut VirtQueue, frame: &[u8]) -> bool {
-    if frame.len() + VIRTIO_NET_HDR_LEN > 4096 {
+pub fn reclaim_tx() {
+    let _ = with_net(|net| reclaim_tx_queue(&mut net.tx, &mut net.tx_state));
+}
+
+fn send_frame_queue(io: u16, txq: &mut VirtQueue, tx_state: &mut TxState, frame: &[u8]) -> bool {
+    reclaim_tx_queue(txq, tx_state);
+    if frame.len() > TX_BUFFER_LEN {
         serial::write(format_args!(
             "virtio: tx frame too large ({})\n",
             frame.len()
         ));
         return false;
     }
-    let buf = match memory::alloc_dma_pages(1) {
-        Some(buf) => buf,
-        None => return false,
+    let head = match tx_state.free.pop() {
+        Some(head) => head,
+        None => {
+            serial::write(format_args!("virtio: tx no free buffers\n"));
+            return false;
+        }
     };
-    let virt = memory::phys_to_virt(buf.phys);
+    let buf_index = (head as usize) / 2;
+    if buf_index >= tx_state.bufs.len() {
+        serial::write(format_args!("virtio: tx invalid head {}\n", head));
+        return false;
+    }
+    let buf_phys = tx_state.bufs[buf_index].phys;
+    let virt = memory::phys_to_virt(buf_phys);
     unsafe {
         write_bytes(virt, 0, 4096);
         core::ptr::copy_nonoverlapping(
@@ -326,39 +361,27 @@ fn send_frame_queue(io: u16, txq: &mut VirtQueue, frame: &[u8]) -> bool {
     }
 
     let desc0 = VirtqDesc {
-        addr: buf.phys,
+        addr: buf_phys,
         len: VIRTIO_NET_HDR_LEN as u32,
         flags: VIRTQ_DESC_F_NEXT,
-        next: 1,
+        next: head + 1,
     };
     let desc1 = VirtqDesc {
-        addr: buf.phys + VIRTIO_NET_HDR_LEN as u64,
+        addr: buf_phys + VIRTIO_NET_HDR_LEN as u64,
         len: frame.len() as u32,
         flags: 0,
         next: 0,
     };
     unsafe {
-        write_volatile(txq.desc.add(0), desc0);
-        write_volatile(txq.desc.add(1), desc1);
+        write_volatile(txq.desc.add(head as usize), desc0);
+        write_volatile(txq.desc.add((head + 1) as usize), desc1);
     }
 
-    let start = used_idx(txq);
     fence(Ordering::SeqCst);
-    push_avail(txq, 0);
+    push_avail(txq, head);
     fence(Ordering::SeqCst);
     outw(io, REG_QUEUE_NOTIFY, QUEUE_NUM_TX);
-
-    for _ in 0..50_000_000 {
-        let current = used_idx(txq);
-        if current != start {
-            memory::free_contiguous(buf.phys, 1);
-            return true;
-        }
-        unsafe { core::arch::asm!("pause"); }
-    }
-
-    serial::write(format_args!("virtio: tx pending (used {} unchanged)\n", start));
-    false
+    true
 }
 
 fn push_avail(queue: &mut VirtQueue, desc_idx: u16) {
@@ -406,6 +429,44 @@ fn recv_frame_queue(io: u16, rxq: &mut VirtQueue) -> Option<Vec<u8>> {
     outw(io, REG_QUEUE_NOTIFY, QUEUE_NUM_RX);
     rxq.last_used = rxq.last_used.wrapping_add(1);
     Some(frame)
+}
+
+fn init_tx_state(txq: &VirtQueue) -> Option<TxState> {
+    let max_pairs = (txq.size as usize) / 2;
+    let count = cmp::min(TX_POOL_SIZE, max_pairs).max(1);
+    let mut bufs: Vec<TxBuffer> = Vec::with_capacity(count);
+    let mut free = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let buf = match memory::alloc_dma_pages(1) {
+            Some(buf) => buf,
+            None => {
+                for b in &bufs {
+                    memory::free_contiguous(b.phys, 1);
+                }
+                return None;
+            }
+        };
+        bufs.push(TxBuffer { phys: buf.phys });
+        free.push((i * 2) as u16);
+    }
+    Some(TxState { bufs, free })
+}
+
+fn reclaim_tx_queue(txq: &mut VirtQueue, tx_state: &mut TxState) {
+    let used = used_idx(txq);
+    while txq.last_used != used {
+        let idx = txq.last_used % txq.size;
+        let elem = unsafe { read_volatile(used_ring(txq).add(idx as usize)) };
+        let head = elem.id as u16;
+        let buf_index = (head as usize) / 2;
+        if buf_index < tx_state.bufs.len() {
+            tx_state.free.push(head);
+        } else {
+            serial::write(format_args!("virtio: tx reclaim unknown head {}\n", head));
+        }
+        txq.last_used = txq.last_used.wrapping_add(1);
+    }
 }
 
 fn avail_ring(queue: &VirtQueue) -> *mut u16 {

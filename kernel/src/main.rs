@@ -135,6 +135,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         if let Some(stack) = net_stack.as_mut() {
             stack.poll(&mut net_device, net::now());
         }
+        virtio::reclaim_tx();
         if now != last_tick && now % 100 == 0 {
             serial::write(format_args!("tick={}\n", now));
         }
