@@ -1,4 +1,6 @@
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::cmp;
 use core::ptr::{read_volatile, write_bytes, write_volatile};
 use core::sync::atomic::{fence, Ordering};
 
@@ -35,8 +37,6 @@ const VIRTIO_NET_HDR_LEN: usize = 10;
 const VIRTQ_ALIGN: usize = 4096;
 const RX_BUFFER_LEN: usize = 2048;
 const RX_QUEUE_ENTRIES: usize = 32;
-const GUEST_IP: [u8; 4] = [10, 0, 2, 15];
-const GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];
 
 #[repr(C)]
 struct VirtqDesc {
@@ -130,11 +130,13 @@ pub fn init_net_legacy(dev: &VirtioPciDevice) -> bool {
     );
     serial::write(format_args!("virtio-net legacy init complete\n"));
 
-    // Send ARP request to trigger RX path.
-    send_arp_request(io, &mut txq, &mac, GUEST_IP, GATEWAY_IP);
-
     // Save queues for polling.
-    set_net(VirtioNet { io, rx: rxq, tx: txq });
+    set_net(VirtioNet {
+        io,
+        rx: rxq,
+        tx: txq,
+        mac,
+    });
     true
 }
 
@@ -178,6 +180,7 @@ struct VirtioNet {
     io: u16,
     rx: VirtQueue,
     tx: VirtQueue,
+    mac: [u8; 6],
 }
 
 struct NetState {
@@ -205,6 +208,10 @@ where
         let net = slot.as_mut()?;
         Some(f(net))
     }
+}
+
+pub fn mac_address() -> Option<[u8; 6]> {
+    with_net(|net| net.mac)
 }
 
 struct VirtQueue {
@@ -289,42 +296,33 @@ fn prime_rx_buffers(io: u16, rxq: &mut VirtQueue, count: usize) -> bool {
     true
 }
 
-fn send_arp_request(io: u16, txq: &mut VirtQueue, mac: &[u8; 6], src_ip: [u8; 4], dst_ip: [u8; 4]) {
+pub fn send_frame(frame: &[u8]) -> bool {
+    match with_net(|net| send_frame_queue(net.io, &mut net.tx, frame)) {
+        Some(ok) => ok,
+        None => false,
+    }
+}
+
+fn send_frame_queue(io: u16, txq: &mut VirtQueue, frame: &[u8]) -> bool {
+    if frame.len() + VIRTIO_NET_HDR_LEN > 4096 {
+        serial::write(format_args!(
+            "virtio: tx frame too large ({})\n",
+            frame.len()
+        ));
+        return false;
+    }
     let buf = match memory::alloc_dma_pages(1) {
         Some(buf) => buf,
-        None => return,
+        None => return false,
     };
     let virt = memory::phys_to_virt(buf.phys);
     unsafe {
         write_bytes(virt, 0, 4096);
-    }
-
-    let frame_ptr = unsafe { virt.add(VIRTIO_NET_HDR_LEN) };
-    let frame_len = 60usize;
-    let mut frame = [0u8; 60];
-    // Ethernet header
-    frame[0..6].copy_from_slice(&[0xff; 6]); // broadcast
-    frame[6..12].copy_from_slice(mac);
-    frame[12] = 0x08; // Ethertype: ARP
-    frame[13] = 0x06;
-
-    // ARP payload (28 bytes) at offset 14
-    let arp = 14;
-    frame[arp + 0] = 0x00;
-    frame[arp + 1] = 0x01; // HW type: Ethernet
-    frame[arp + 2] = 0x08;
-    frame[arp + 3] = 0x00; // Proto: IPv4
-    frame[arp + 4] = 0x06; // HW len
-    frame[arp + 5] = 0x04; // Proto len
-    frame[arp + 6] = 0x00;
-    frame[arp + 7] = 0x01; // Opcode: request
-    frame[arp + 8..arp + 14].copy_from_slice(mac);
-    frame[arp + 14..arp + 18].copy_from_slice(&src_ip);
-    frame[arp + 18..arp + 24].copy_from_slice(&[0; 6]); // target MAC unknown
-    frame[arp + 24..arp + 28].copy_from_slice(&dst_ip);
-
-    unsafe {
-        core::ptr::copy_nonoverlapping(frame.as_ptr(), frame_ptr, frame_len);
+        core::ptr::copy_nonoverlapping(
+            frame.as_ptr(),
+            virt.add(VIRTIO_NET_HDR_LEN),
+            frame.len(),
+        );
     }
 
     let desc0 = VirtqDesc {
@@ -335,7 +333,7 @@ fn send_arp_request(io: u16, txq: &mut VirtQueue, mac: &[u8; 6], src_ip: [u8; 4]
     };
     let desc1 = VirtqDesc {
         addr: buf.phys + VIRTIO_NET_HDR_LEN as u64,
-        len: frame_len as u32,
+        len: frame.len() as u32,
         flags: 0,
         next: 0,
     };
@@ -343,26 +341,24 @@ fn send_arp_request(io: u16, txq: &mut VirtQueue, mac: &[u8; 6], src_ip: [u8; 4]
         write_volatile(txq.desc.add(0), desc0);
         write_volatile(txq.desc.add(1), desc1);
     }
-    // Read used idx before notifying so we can detect fast completion.
+
     let start = used_idx(txq);
-    serial::write(format_args!(
-        "virtio: tx used idx start={} used_ptr={:#x}\n",
-        start, txq.used as u64
-    ));
     fence(Ordering::SeqCst);
     push_avail(txq, 0);
     fence(Ordering::SeqCst);
-    // notify queue 1
     outw(io, REG_QUEUE_NOTIFY, QUEUE_NUM_TX);
+
     for _ in 0..50_000_000 {
         let current = used_idx(txq);
         if current != start {
-            serial::write(format_args!("virtio: tx complete (used {} -> {})\n", start, current));
-            return;
+            memory::free_contiguous(buf.phys, 1);
+            return true;
         }
         unsafe { core::arch::asm!("pause"); }
     }
+
     serial::write(format_args!("virtio: tx pending (used {} unchanged)\n", start));
+    false
 }
 
 fn push_avail(queue: &mut VirtQueue, desc_idx: u16) {
@@ -381,52 +377,35 @@ fn used_idx(queue: &VirtQueue) -> u16 {
     unsafe { read_volatile(&(*queue.used).idx) }
 }
 
-pub fn poll_rx() {
-    let _ = with_net(|net| poll_rx_queue(net.io, &mut net.rx));
+pub fn recv_frame() -> Option<Vec<u8>> {
+    with_net(|net| recv_frame_queue(net.io, &mut net.rx))?
 }
 
-fn poll_rx_queue(io: u16, rxq: &mut VirtQueue) {
+fn recv_frame_queue(io: u16, rxq: &mut VirtQueue) -> Option<Vec<u8>> {
     let used = used_idx(rxq);
-    while rxq.last_used != used {
-        let idx = rxq.last_used % rxq.size;
-        let elem = unsafe { read_volatile(used_ring(rxq).add(idx as usize)) };
-        let head = elem.id as u16;
-        let total_len = elem.len as usize;
-        if total_len >= VIRTIO_NET_HDR_LEN {
-            let payload_len = total_len - VIRTIO_NET_HDR_LEN;
-            let desc = unsafe { read_volatile(rxq.desc.add(head as usize)) };
-            let data_ptr = memory::phys_to_virt(desc.addr + VIRTIO_NET_HDR_LEN as u64);
-            let eth_type = unsafe {
-                let et_ptr = data_ptr.add(12);
-                ((*et_ptr as u16) << 8) | (*et_ptr.add(1) as u16)
-            };
-            if eth_type == 0x0806 && payload_len >= 42 {
-                // ARP
-                unsafe {
-                    let arp = data_ptr.add(14);
-                    let op = ((*arp.add(6) as u16) << 8) | (*arp.add(7) as u16);
-                    if op == 2 {
-                        let ip = [*arp.add(14), *arp.add(15), *arp.add(16), *arp.add(17)];
-                        serial::write(format_args!(
-                            "virtio: rx arp reply from {}.{}.{}.{}\n",
-                            ip[0], ip[1], ip[2], ip[3]
-                        ));
-                    } else {
-                        serial::write(format_args!("virtio: rx arp op={}\n", op));
-                    }
-                }
-            } else {
-                serial::write(format_args!(
-                    "virtio: rx len={} eth=0x{:04x}\n",
-                    payload_len, eth_type
-                ));
-            }
-        }
-
-        push_avail(rxq, head);
-        outw(io, REG_QUEUE_NOTIFY, QUEUE_NUM_RX);
-        rxq.last_used = rxq.last_used.wrapping_add(1);
+    if rxq.last_used == used {
+        return None;
     }
+
+    let idx = rxq.last_used % rxq.size;
+    let elem = unsafe { read_volatile(used_ring(rxq).add(idx as usize)) };
+    let head = elem.id as u16;
+    let total_len = elem.len as usize;
+
+    let desc1 = unsafe { read_volatile(rxq.desc.add((head + 1) as usize)) };
+    let payload_len = total_len.saturating_sub(VIRTIO_NET_HDR_LEN);
+    let copy_len = cmp::min(payload_len, desc1.len as usize);
+    let src = memory::phys_to_virt(desc1.addr);
+    let mut frame = Vec::with_capacity(copy_len);
+    unsafe {
+        frame.set_len(copy_len);
+        core::ptr::copy_nonoverlapping(src, frame.as_mut_ptr(), copy_len);
+    }
+
+    push_avail(rxq, head);
+    outw(io, REG_QUEUE_NOTIFY, QUEUE_NUM_RX);
+    rxq.last_used = rxq.last_used.wrapping_add(1);
+    Some(frame)
 }
 
 fn avail_ring(queue: &VirtQueue) -> *mut u16 {
