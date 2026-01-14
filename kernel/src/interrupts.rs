@@ -19,15 +19,6 @@ pub const NET_TX_VECTOR: u8 = 0x41;
 static NET_RX_IRQ: AtomicU64 = AtomicU64::new(0);
 static NET_TX_IRQ: AtomicU64 = AtomicU64::new(0);
 
-#[repr(C)]
-pub struct InterruptStackFrame {
-    pub instruction_pointer: u64,
-    pub code_segment: u64,
-    pub cpu_flags: u64,
-    pub stack_pointer: u64,
-    pub stack_segment: u64,
-}
-
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct IdtEntry {
@@ -259,7 +250,23 @@ exception_no_error!(non_maskable_interrupt, 2);
 exception_no_error!(breakpoint, 3);
 exception_no_error!(overflow, 4);
 exception_no_error!(bound_range, 5);
-exception_no_error!(invalid_opcode, 6);
+extern "x86-interrupt" fn invalid_opcode(frame: &mut InterruptStackFrame) {
+    let rsp: u64;
+    unsafe {
+        asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+    }
+    crate::serial::write(format_args!(
+        "INVALID OPCODE rip={:#x} cs={:#x} rflags={:#x} frame_ptr={:#x} rsp={:#x}\n",
+        frame.instruction_pointer,
+        frame.code_segment,
+        frame.cpu_flags,
+        frame as *const _ as u64,
+        rsp
+    ));
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
 exception_no_error!(device_not_available, 7);
 exception_with_error!(double_fault, 8);
 exception_no_error!(coprocessor_segment_overrun, 9);
@@ -267,7 +274,25 @@ exception_with_error!(invalid_tss, 10);
 exception_with_error!(segment_not_present, 11);
 exception_with_error!(stack_segment_fault, 12);
 exception_with_error!(general_protection_fault, 13);
-exception_with_error!(page_fault, 14);
+extern "x86-interrupt" fn page_fault(frame: &mut InterruptStackFrame, code: u64) {
+    let cr2: u64;
+    unsafe {
+        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+    }
+    crate::serial::write(format_args!(
+        "PAGE FAULT err={:#x} rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x} cr2={:#x}\n",
+        code,
+        frame.instruction_pointer,
+        frame.code_segment,
+        frame.cpu_flags,
+        frame.stack_pointer,
+        frame.stack_segment,
+        cr2
+    ));
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
 exception_no_error!(reserved, 15);
 exception_no_error!(floating_point, 16);
 exception_with_error!(alignment_check, 17);
@@ -277,3 +302,12 @@ exception_no_error!(virtualization_exception, 20);
 exception_with_error!(control_protection, 21);
 exception_with_error!(vmm_communication, 29);
 exception_with_error!(security_exception, 30);
+
+#[repr(C)]
+pub struct InterruptStackFrame {
+    pub instruction_pointer: u64,
+    pub code_segment: u64,
+    pub cpu_flags: u64,
+    pub stack_pointer: u64,
+    pub stack_segment: u64,
+}

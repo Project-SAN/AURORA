@@ -6,6 +6,7 @@
 extern crate alloc;
 
 mod heap;
+mod arch;
 mod acpi;
 mod apic;
 mod hpet;
@@ -16,6 +17,8 @@ mod paging;
 mod pci;
 mod port;
 mod serial;
+mod syscall;
+mod user;
 mod virtio;
 
 use core::panic::PanicInfo;
@@ -90,6 +93,29 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     serial::write(format_args!("Entered higher-half\n"));
 
+    const RUN_USERLAND: bool = cfg!(feature = "userland");
+
+    let syscall_stack_pages = 16usize;
+    let syscall_stack_phys = match memory::alloc_contiguous(syscall_stack_pages) {
+        Some(addr) => addr,
+        None => {
+            serial::write(format_args!("Syscall stack alloc failed\n"));
+            loop {
+                unsafe { core::arch::asm!("hlt"); }
+            }
+        }
+    };
+    let syscall_stack_top = paging::to_higher_half(
+        syscall_stack_phys + (syscall_stack_pages as u64) * memory::PAGE_SIZE,
+    );
+    arch::init(syscall_stack_top);
+    serial::write(format_args!(
+        "arch: tr={:#x} tss_rsp0={:#x} efer={:#x}\n",
+        arch::gdt::read_tr(),
+        arch::gdt::tss_rsp0(),
+        arch::syscall::read_efer()
+    ));
+
     if rsdp_addr != 0 {
         if let Some(info) = acpi::init(rsdp_addr) {
             serial::write(format_args!(
@@ -128,6 +154,18 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
             None
         }
     };
+
+    if RUN_USERLAND {
+        if let Some(image) = user::load_user_image(user::USER_ELF) {
+            serial::write(format_args!(
+                "userland: entry={:#x} stack={:#x}\n",
+                image.entry, image.stack_top
+            ));
+            unsafe { enter_user(image.entry, image.stack_top) };
+        } else {
+            serial::write(format_args!("userland: load failed\n"));
+        }
+    }
 
     let mut next_poll_tick = None;
     if let Some(stack) = net_stack.as_mut() {
@@ -172,6 +210,34 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         }
         last_tick = now;
     }
+}
+
+unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
+    let user_cs = (arch::gdt::USER_CODE | 3) as u64;
+    let user_ss = (arch::gdt::USER_DATA | 3) as u64;
+    let rflags = read_rflags() | (1 << 9);
+    core::arch::asm!(
+        "push {0}",
+        "push {1}",
+        "push {2}",
+        "push {3}",
+        "push {4}",
+        "iretq",
+        in(reg) user_ss,
+        in(reg) stack_top,
+        in(reg) rflags,
+        in(reg) user_cs,
+        in(reg) entry,
+        options(noreturn)
+    );
+}
+
+fn read_rflags() -> u64 {
+    let rflags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem, preserves_flags));
+    }
+    rflags
 }
 
 unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize) -> ! {
