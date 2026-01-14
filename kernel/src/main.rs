@@ -11,6 +11,7 @@ mod apic;
 mod hpet;
 mod interrupts;
 mod memory;
+mod net;
 mod paging;
 mod pci;
 mod port;
@@ -102,6 +103,15 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         serial::write(format_args!("virtio-net not found\n"));
     }
 
+    let mut net_device = net::VirtioDevice::new();
+    let mut net_stack = match virtio::mac_address() {
+        Some(mac) => Some(net::NetStack::new(mac, &mut net_device, net::now())),
+        None => {
+            serial::write(format_args!("smoltcp: mac not available\n"));
+            None
+        }
+    };
+
     if rsdp_addr != 0 {
         if let Some(info) = acpi::init(rsdp_addr) {
             serial::write(format_args!(
@@ -122,7 +132,9 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     loop {
         unsafe { core::arch::asm!("hlt"); }
         let now = interrupts::ticks();
-        virtio::poll_rx();
+        if let Some(stack) = net_stack.as_mut() {
+            stack.poll(&mut net_device, net::now());
+        }
         if now != last_tick && now % 100 == 0 {
             serial::write(format_args!("tick={}\n", now));
         }
