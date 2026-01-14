@@ -47,6 +47,13 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     } else {
         serial::write(format_args!("DMA test: allocation failed\n"));
     }
+    if let Some(norm) = memory::alloc_normal_pages(4) {
+        serial::write(format_args!("Normal alloc: phys={:#x} pages=4\n", norm));
+        memory::free_contiguous(norm, 4);
+        serial::write(format_args!("Normal free: ok\n"));
+    } else {
+        serial::write(format_args!("Normal alloc: failed\n"));
+    }
 
     if let Some(pml4) = paging::init_identity_4g() {
         unsafe { paging::switch_to(pml4) };
