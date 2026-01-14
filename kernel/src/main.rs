@@ -12,8 +12,10 @@ mod hpet;
 mod interrupts;
 mod memory;
 mod paging;
+mod pci;
 mod port;
 mod serial;
+mod virtio;
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
@@ -86,6 +88,19 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
 extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     serial::write(format_args!("Entered higher-half\n"));
+
+    let pci_count = pci::scan();
+    serial::write(format_args!("PCI scan complete: {} devices\n", pci_count));
+    if let Some(dev) = pci::find_virtio_net() {
+        serial::write(format_args!(
+            "virtio-net at {:02x}:{:02x}.{} io={:?} mmio={:?}\n",
+            dev.bus, dev.device, dev.function, dev.io_base, dev.mmio_base
+        ));
+        pci::enable_bus_master(&dev);
+        let _ = virtio::init_net_legacy(&dev);
+    } else {
+        serial::write(format_args!("virtio-net not found\n"));
+    }
 
     if rsdp_addr != 0 {
         if let Some(info) = acpi::init(rsdp_addr) {
