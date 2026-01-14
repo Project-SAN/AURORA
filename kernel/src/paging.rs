@@ -9,6 +9,14 @@ const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
 const FLAGS: u64 = PRESENT | WRITABLE;
 
+pub const KERNEL_BASE: u64 = 0xffff_8000_0000_0000;
+const KERNEL_PML4_INDEX: usize = ((KERNEL_BASE >> 39) & 0x1ff) as usize;
+
+#[inline]
+pub fn to_higher_half(phys: u64) -> u64 {
+    KERNEL_BASE + phys
+}
+
 pub fn init_identity_4g() -> Option<u64> {
     let pml4_phys = memory::alloc_contiguous(1)?;
     let pdpt_phys = memory::alloc_contiguous(1)?;
@@ -22,8 +30,10 @@ pub fn init_identity_4g() -> Option<u64> {
         *slot = phys;
     }
 
-    // Link PML4[0] -> PDPT
+    // Link PML4[0] -> PDPT (identity)
     write_entry(pml4_phys, 0, pdpt_phys | FLAGS);
+    // Link PML4[KERNEL_PML4_INDEX] -> same PDPT (higher-half alias)
+    write_entry(pml4_phys, KERNEL_PML4_INDEX, pdpt_phys | FLAGS);
 
     // Link PDPT[0..4] -> PDs and populate 2MiB entries.
     for (i, pd) in pd_phys.iter().enumerate() {

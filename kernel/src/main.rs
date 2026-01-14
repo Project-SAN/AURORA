@@ -27,12 +27,6 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     serial::write(format_args!("Hello from AURORA UEFI kernel\n"));
 
     let rsdp_addr = find_rsdp(&system_table);
-    if rsdp_addr == 0 {
-        serial::write(format_args!("ACPI RSDP not found\n"));
-    } else {
-        serial::write(format_args!("ACPI RSDP at {:#x}\n", rsdp_addr));
-    }
-
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
     let entries = memory_map.entries().count();
     serial::write(format_args!(
@@ -56,10 +50,35 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     if let Some(pml4) = paging::init_identity_4g() {
         unsafe { paging::switch_to(pml4) };
-        serial::write(format_args!("Paging: switched to identity-mapped 4GiB\n"));
+        serial::write(format_args!(
+            "Paging: identity 4GiB + higher-half at {:#x}\n",
+            paging::KERNEL_BASE
+        ));
     } else {
         serial::write(format_args!("Paging: failed to build tables\n"));
     }
+    let stack_pages = 8usize;
+    let stack_phys = match memory::alloc_contiguous(stack_pages) {
+        Some(addr) => addr,
+        None => {
+            serial::write(format_args!("Stack alloc failed; staying in low half\n"));
+            loop {
+                unsafe { core::arch::asm!("hlt"); }
+            }
+        }
+    };
+
+    if rsdp_addr == 0 {
+        serial::write(format_args!("ACPI RSDP not found\n"));
+    } else {
+        serial::write(format_args!("ACPI RSDP at {:#x}\n", rsdp_addr));
+    }
+
+    unsafe { enter_higher_half(rsdp_addr, stack_phys, stack_pages) }
+}
+
+extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
+    serial::write(format_args!("Entered higher-half\n"));
 
     if rsdp_addr != 0 {
         if let Some(info) = acpi::init(rsdp_addr) {
@@ -86,6 +105,22 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         }
         last_tick = now;
     }
+}
+
+unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize) -> ! {
+    let stack_top = paging::to_higher_half(
+        stack_phys + (stack_pages as u64) * memory::PAGE_SIZE,
+    );
+    let target = paging::to_higher_half(higher_half_main as *const () as u64);
+    core::arch::asm!(
+        "mov rsp, {0}",
+        "mov rdi, {1}",
+        "jmp {2}",
+        in(reg) stack_top,
+        in(reg) rsdp_addr,
+        in(reg) target,
+        options(noreturn)
+    );
 }
 
 fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
