@@ -98,7 +98,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
             dev.bus, dev.device, dev.function, dev.io_base, dev.mmio_base
         ));
         pci::enable_bus_master(&dev);
-        let _ = virtio::init_net_legacy(&dev);
+        let _ = virtio::init_net(&dev);
     } else {
         serial::write(format_args!("virtio-net not found\n"));
     }
