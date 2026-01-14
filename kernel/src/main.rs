@@ -1,10 +1,15 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![feature(abi_x86_interrupt)]
 
 extern crate alloc;
 
 mod heap;
+mod interrupts;
+mod pic;
+mod pit;
+mod port;
 mod serial;
 
 use core::panic::PanicInfo;
@@ -24,8 +29,17 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         entries
     ));
 
+    interrupts::init();
+    serial::write(format_args!("Timer interrupts enabled\n"));
+
+    let mut last_tick = 0;
     loop {
         unsafe { core::arch::asm!("hlt"); }
+        let now = interrupts::ticks();
+        if now != last_tick && now % 100 == 0 {
+            serial::write(format_args!("tick={}\n", now));
+        }
+        last_tick = now;
     }
 }
 
