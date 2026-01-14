@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::cmp;
 use core::ptr::{read_volatile, write_bytes, write_volatile};
-use core::sync::atomic::{fence, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 
 use crate::memory;
 use crate::pci;
@@ -31,9 +31,68 @@ const VIRTQ_ALIGN: usize = 4096;
 const RX_BUFFER_LEN: usize = 2048;
 const RX_QUEUE_ENTRIES: usize = 32;
 const TX_POOL_SIZE: usize = 32;
+const RX_MSIX_VECTOR: u16 = 0;
+const TX_MSIX_VECTOR: u16 = 1;
 
 static RX_LOG: AtomicU32 = AtomicU32::new(0);
 static TX_LOG: AtomicU32 = AtomicU32::new(0);
+
+struct NetStats {
+    rx_packets: AtomicU64,
+    rx_bytes: AtomicU64,
+    rx_drops: AtomicU64,
+    rx_overflow: AtomicU64,
+    tx_packets: AtomicU64,
+    tx_bytes: AtomicU64,
+    tx_drops: AtomicU64,
+    tx_overflow: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NetStatsSnapshot {
+    pub rx_packets: u64,
+    pub rx_bytes: u64,
+    pub rx_drops: u64,
+    pub rx_overflow: u64,
+    pub tx_packets: u64,
+    pub tx_bytes: u64,
+    pub tx_drops: u64,
+    pub tx_overflow: u64,
+}
+
+impl NetStats {
+    const fn new() -> Self {
+        Self {
+            rx_packets: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            rx_drops: AtomicU64::new(0),
+            rx_overflow: AtomicU64::new(0),
+            tx_packets: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            tx_drops: AtomicU64::new(0),
+            tx_overflow: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> NetStatsSnapshot {
+        NetStatsSnapshot {
+            rx_packets: self.rx_packets.load(Ordering::Relaxed),
+            rx_bytes: self.rx_bytes.load(Ordering::Relaxed),
+            rx_drops: self.rx_drops.load(Ordering::Relaxed),
+            rx_overflow: self.rx_overflow.load(Ordering::Relaxed),
+            tx_packets: self.tx_packets.load(Ordering::Relaxed),
+            tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
+            tx_drops: self.tx_drops.load(Ordering::Relaxed),
+            tx_overflow: self.tx_overflow.load(Ordering::Relaxed),
+        }
+    }
+}
+
+static NET_STATS: NetStats = NetStats::new();
+
+pub fn stats_snapshot() -> NetStatsSnapshot {
+    NET_STATS.snapshot()
+}
 
 #[repr(C)]
 struct VirtioPciCommonCfg {
@@ -119,7 +178,7 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
         return false;
     }
 
-    if dev.msix_table.is_none() || dev.msix_table_size == 0 {
+    if dev.msix_table.is_none() || dev.msix_table_size < 2 {
         serial::write(format_args!("virtio: MSI-X not available\n"));
         return false;
     }
@@ -183,14 +242,26 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     ));
 
-    let mut rxq = match setup_queue_modern(common, notify_base_ptr, notify_mult, QUEUE_NUM_RX, 0) {
+    let mut rxq = match setup_queue_modern(
+        common,
+        notify_base_ptr,
+        notify_mult,
+        QUEUE_NUM_RX,
+        RX_MSIX_VECTOR,
+    ) {
         Some(q) => q,
         None => {
             write_status(common, STATUS_FAILED);
             return false;
         }
     };
-    let txq = match setup_queue_modern(common, notify_base_ptr, notify_mult, QUEUE_NUM_TX, 0) {
+    let txq = match setup_queue_modern(
+        common,
+        notify_base_ptr,
+        notify_mult,
+        QUEUE_NUM_TX,
+        TX_MSIX_VECTOR,
+    ) {
         Some(q) => q,
         None => {
             write_status(common, STATUS_FAILED);
@@ -468,6 +539,8 @@ pub fn reclaim_tx() {
 fn send_frame_queue(txq: &mut VirtQueue, tx_state: &mut TxState, frame: &[u8]) -> bool {
     reclaim_tx_queue(txq, tx_state);
     if frame.len() + VIRTIO_NET_HDR_LEN > 4096 {
+        NET_STATS.tx_overflow.fetch_add(1, Ordering::Relaxed);
+        NET_STATS.tx_drops.fetch_add(1, Ordering::Relaxed);
         serial::write(format_args!(
             "virtio: tx frame too large ({})\n",
             frame.len()
@@ -477,6 +550,7 @@ fn send_frame_queue(txq: &mut VirtQueue, tx_state: &mut TxState, frame: &[u8]) -
     let head = match tx_state.free.pop() {
         Some(head) => head,
         None => {
+            NET_STATS.tx_drops.fetch_add(1, Ordering::Relaxed);
             serial::write(format_args!("virtio: tx no free buffers\n"));
             return false;
         }
@@ -514,6 +588,10 @@ fn send_frame_queue(txq: &mut VirtQueue, tx_state: &mut TxState, frame: &[u8]) -
     push_avail(txq, head);
     fence(Ordering::SeqCst);
     notify_queue(txq);
+    NET_STATS.tx_packets.fetch_add(1, Ordering::Relaxed);
+    NET_STATS
+        .tx_bytes
+        .fetch_add(frame.len() as u64, Ordering::Relaxed);
     if TX_LOG.fetch_add(1, Ordering::Relaxed) < 8 {
         serial::write(format_args!(
             "virtio: tx len={} head={} free={}\n",
@@ -552,11 +630,11 @@ fn used_idx(queue: &VirtQueue) -> u16 {
     unsafe { read_volatile(&(*queue.used).idx) }
 }
 
-pub fn recv_frame() -> Option<Vec<u8>> {
-    with_net(|net| recv_frame_queue(&mut net.rx))?
+pub fn recv_frame_into(buf: &mut [u8]) -> Option<usize> {
+    with_net(|net| recv_frame_into_queue(&mut net.rx, buf))?
 }
 
-fn recv_frame_queue(rxq: &mut VirtQueue) -> Option<Vec<u8>> {
+fn recv_frame_into_queue(rxq: &mut VirtQueue, buf: &mut [u8]) -> Option<usize> {
     let used = used_idx(rxq);
     if rxq.last_used == used {
         return None;
@@ -567,29 +645,48 @@ fn recv_frame_queue(rxq: &mut VirtQueue) -> Option<Vec<u8>> {
     let head = elem.id as u16;
     let total_len = elem.len as usize;
 
+    if total_len < VIRTIO_NET_HDR_LEN {
+        NET_STATS.rx_drops.fetch_add(1, Ordering::Relaxed);
+        rxq.last_used = rxq.last_used.wrapping_add(1);
+        push_avail(rxq, head);
+        notify_queue(rxq);
+        return None;
+    }
+
     let desc1 = unsafe { read_volatile(rxq.desc.add((head + 1) as usize)) };
     let payload_len = total_len.saturating_sub(VIRTIO_NET_HDR_LEN);
-    let copy_len = cmp::min(payload_len, desc1.len as usize);
+    let max_copy = cmp::min(desc1.len as usize, buf.len());
+    if payload_len > max_copy {
+        NET_STATS.rx_overflow.fetch_add(1, Ordering::Relaxed);
+        NET_STATS.rx_drops.fetch_add(1, Ordering::Relaxed);
+        rxq.last_used = rxq.last_used.wrapping_add(1);
+        push_avail(rxq, head);
+        notify_queue(rxq);
+        return None;
+    }
+    let copy_len = payload_len;
     let src = memory::phys_to_virt(desc1.addr);
-    let mut frame = Vec::with_capacity(copy_len);
     unsafe {
-        frame.set_len(copy_len);
-        core::ptr::copy_nonoverlapping(src, frame.as_mut_ptr(), copy_len);
+        core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), copy_len);
     }
 
     push_avail(rxq, head);
     notify_queue(rxq);
     rxq.last_used = rxq.last_used.wrapping_add(1);
+    NET_STATS.rx_packets.fetch_add(1, Ordering::Relaxed);
+    NET_STATS
+        .rx_bytes
+        .fetch_add(copy_len as u64, Ordering::Relaxed);
     if RX_LOG.fetch_add(1, Ordering::Relaxed) < 8 {
         serial::write(format_args!(
             "virtio: rx len={} head={}\n",
             copy_len, head
         ));
         if copy_len >= 14 {
-            let eth_type = ((frame[12] as u16) << 8) | (frame[13] as u16);
+            let eth_type = ((buf[12] as u16) << 8) | (buf[13] as u16);
             if eth_type == 0x0806 && copy_len >= 42 {
-                let op = ((frame[20] as u16) << 8) | (frame[21] as u16);
-                let tip = [frame[38], frame[39], frame[40], frame[41]];
+                let op = ((buf[20] as u16) << 8) | (buf[21] as u16);
+                let tip = [buf[38], buf[39], buf[40], buf[41]];
                 serial::write(format_args!(
                     "virtio: rx arp op={} tip={}.{}.{}.{}\n",
                     op, tip[0], tip[1], tip[2], tip[3]
@@ -599,7 +696,7 @@ fn recv_frame_queue(rxq: &mut VirtQueue) -> Option<Vec<u8>> {
             }
         }
     }
-    Some(frame)
+    Some(copy_len)
 }
 
 fn setup_msix(dev: &VirtioPciDevice) -> bool {
@@ -607,19 +704,26 @@ fn setup_msix(dev: &VirtioPciDevice) -> bool {
         Some(addr) => addr,
         None => return false,
     };
-    if dev.msix_table_size == 0 {
+    if dev.msix_table_size < 2 {
         return false;
     }
     let table_ptr = mmio_ptr(table_phys) as *mut MsixTableEntry;
-    let vector = interrupts::NET_VECTOR as u32;
     let apic_id = 0u64;
     let msi_addr = 0xFEE0_0000u64 | (apic_id << 12);
-    let msi_data = vector & 0xFF;
+
+    let rx_data = (interrupts::NET_RX_VECTOR as u32) & 0xFF;
+    let tx_data = (interrupts::NET_TX_VECTOR as u32) & 0xFF;
     unsafe {
-        let entry = table_ptr.add(0);
+        let entry = table_ptr.add(RX_MSIX_VECTOR as usize);
         write_volatile(&mut (*entry).addr_low, (msi_addr & 0xFFFF_FFFF) as u32);
         write_volatile(&mut (*entry).addr_high, (msi_addr >> 32) as u32);
-        write_volatile(&mut (*entry).data, msi_data);
+        write_volatile(&mut (*entry).data, rx_data);
+        write_volatile(&mut (*entry).ctrl, 0);
+
+        let entry = table_ptr.add(TX_MSIX_VECTOR as usize);
+        write_volatile(&mut (*entry).addr_low, (msi_addr & 0xFFFF_FFFF) as u32);
+        write_volatile(&mut (*entry).addr_high, (msi_addr >> 32) as u32);
+        write_volatile(&mut (*entry).data, tx_data);
         write_volatile(&mut (*entry).ctrl, 0);
     }
     true

@@ -16,17 +16,31 @@ const GW_ADDR: [u8; 4] = [10, 0, 2, 2];
 const LISTEN_PORT: u16 = 1234;
 const RX_BUF_SIZE: usize = 4096;
 const TX_BUF_SIZE: usize = 4096;
+const FRAME_BUF_SIZE: usize = 2048;
+const RX_POOL_SIZE: usize = 64;
+const TX_POOL_SIZE: usize = 64;
 
 pub fn now() -> Instant {
     let ms = interrupts::ticks().saturating_mul(10);
     Instant::from_millis(ms as i64)
 }
 
-pub struct VirtioDevice;
+pub struct VirtioDevice {
+    rx_pool: Vec<Vec<u8>>,
+    tx_pool: Vec<Vec<u8>>,
+}
 
 impl VirtioDevice {
     pub fn new() -> Self {
-        VirtioDevice
+        let mut rx_pool = Vec::with_capacity(RX_POOL_SIZE);
+        for _ in 0..RX_POOL_SIZE {
+            rx_pool.push(Vec::with_capacity(FRAME_BUF_SIZE));
+        }
+        let mut tx_pool = Vec::with_capacity(TX_POOL_SIZE);
+        for _ in 0..TX_POOL_SIZE {
+            tx_pool.push(Vec::with_capacity(FRAME_BUF_SIZE));
+        }
+        VirtioDevice { rx_pool, tx_pool }
     }
 }
 
@@ -101,9 +115,12 @@ impl NetStack {
 
 pub struct VirtioRxToken {
     frame: Vec<u8>,
+    pool: *mut Vec<Vec<u8>>,
 }
 
-pub struct VirtioTxToken;
+pub struct VirtioTxToken {
+    pool: *mut Vec<Vec<u8>>,
+}
 
 impl RxToken for VirtioRxToken {
     fn consume<R, F>(self, f: F) -> R
@@ -111,7 +128,16 @@ impl RxToken for VirtioRxToken {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut frame = self.frame;
-        f(&mut frame)
+        let result = f(&mut frame);
+        if !self.pool.is_null() {
+            unsafe {
+                frame.clear();
+                if (*self.pool).len() < RX_POOL_SIZE && frame.capacity() <= FRAME_BUF_SIZE {
+                    (*self.pool).push(frame);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -120,10 +146,27 @@ impl TxToken for VirtioTxToken {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut frame = vec![0u8; len];
+        let mut frame = if !self.pool.is_null() {
+            unsafe { (*self.pool).pop().unwrap_or_else(|| Vec::with_capacity(len)) }
+        } else {
+            Vec::with_capacity(len)
+        };
+
+        if frame.capacity() < len {
+            frame.reserve(len - frame.capacity());
+        }
+        frame.resize(len, 0);
         let result = f(&mut frame);
         if !virtio::send_frame(&frame) {
             serial::write(format_args!("smoltcp: tx drop\n"));
+        }
+        if !self.pool.is_null() {
+            unsafe {
+                frame.clear();
+                if (*self.pool).len() < TX_POOL_SIZE && frame.capacity() <= FRAME_BUF_SIZE {
+                    (*self.pool).push(frame);
+                }
+            }
         }
         result
     }
@@ -134,12 +177,38 @@ impl Device for VirtioDevice {
     type TxToken<'a> = VirtioTxToken where Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let frame = virtio::recv_frame()?;
-        Some((VirtioRxToken { frame }, VirtioTxToken))
+        let (rx_pool, tx_pool) = (&mut self.rx_pool, &mut self.tx_pool);
+        let mut frame = rx_pool.pop().unwrap_or_else(|| Vec::with_capacity(FRAME_BUF_SIZE));
+        if frame.capacity() < FRAME_BUF_SIZE {
+            frame.reserve(FRAME_BUF_SIZE - frame.capacity());
+        }
+        frame.resize(FRAME_BUF_SIZE, 0);
+        let len = match virtio::recv_frame_into(&mut frame) {
+            Some(len) => len,
+            None => {
+                frame.clear();
+                if rx_pool.len() < RX_POOL_SIZE && frame.capacity() <= FRAME_BUF_SIZE {
+                    rx_pool.push(frame);
+                }
+                return None;
+            }
+        };
+        frame.resize(len, 0);
+        Some((
+            VirtioRxToken {
+                frame,
+                pool: rx_pool as *mut _,
+            },
+            VirtioTxToken {
+                pool: tx_pool as *mut _,
+            },
+        ))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Some(VirtioTxToken)
+        Some(VirtioTxToken {
+            pool: &mut self.tx_pool as *mut _,
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
