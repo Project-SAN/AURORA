@@ -5,6 +5,7 @@ use uefi::table::boot::{MemoryMap, MemoryType};
 pub const PAGE_SIZE: u64 = 4096;
 const MIN_USABLE_ADDR: u64 = PAGE_SIZE; // avoid returning phys 0
 const MAX_PHYS_ADDR: u64 = 0x1_0000_0000; // 4 GiB limit for current paging
+const DMA_LIMIT: u64 = 0x1000_0000 - 1; // 256 MiB for DMA-safe allocations
 
 #[derive(Clone, Copy, Debug)]
 struct Region {
@@ -13,9 +14,7 @@ struct Region {
 }
 
 pub struct MemoryManager {
-    regions: Vec<Region>,
-    region_index: usize,
-    next_frame: u64,
+    free: Vec<Region>,
     total_usable: u64,
 }
 
@@ -55,19 +54,33 @@ pub fn init(map: &MemoryMap) -> MemoryStats {
 }
 
 pub fn alloc_frame() -> Option<u64> {
-    with_manager(|mgr| mgr.alloc_contiguous(1))?
+    with_manager(|mgr| mgr.alloc_contiguous_range(1, MIN_USABLE_ADDR, MAX_PHYS_ADDR - 1))?
 }
 
 pub fn alloc_contiguous(pages: usize) -> Option<u64> {
-    with_manager(|mgr| mgr.alloc_contiguous(pages))?
+    with_manager(|mgr| mgr.alloc_contiguous_range(pages, MIN_USABLE_ADDR, MAX_PHYS_ADDR - 1))?
 }
 
 pub fn alloc_dma_pages(pages: usize) -> Option<DmaBuffer> {
-    let phys = alloc_contiguous(pages)?;
+    let phys = with_manager(|mgr| mgr.alloc_contiguous_range(pages, MIN_USABLE_ADDR, DMA_LIMIT))??;
     Some(DmaBuffer {
         phys,
         size: pages * PAGE_SIZE as usize,
     })
+}
+
+pub fn alloc_normal_pages(pages: usize) -> Option<u64> {
+    with_manager(|mgr| mgr.alloc_contiguous_range(pages, DMA_LIMIT + 1, MAX_PHYS_ADDR - 1))?
+}
+
+pub fn free_frame(addr: u64) {
+    free_contiguous(addr, 1);
+}
+
+pub fn free_contiguous(addr: u64, pages: usize) {
+    let _ = with_manager(|mgr| {
+        mgr.free_range(addr, pages);
+    });
 }
 
 /// Temporary: assumes an identity mapping between physical and virtual memory.
@@ -107,9 +120,7 @@ impl MemoryManager {
         let regions = coalesce(regions);
 
         Self {
-            regions,
-            region_index: 0,
-            next_frame: 0,
+            free: regions,
             total_usable: total,
         }
     }
@@ -117,31 +128,57 @@ impl MemoryManager {
     fn stats(&self) -> MemoryStats {
         MemoryStats {
             total_usable: self.total_usable,
-            region_count: self.regions.len(),
+            region_count: self.free.len(),
         }
     }
 
-    fn alloc_contiguous(&mut self, pages: usize) -> Option<u64> {
+    fn alloc_contiguous_range(&mut self, pages: usize, min: u64, max: u64) -> Option<u64> {
         if pages == 0 {
             return None;
         }
         let size = (pages as u64).saturating_mul(PAGE_SIZE);
-        while self.region_index < self.regions.len() {
-            let region = self.regions[self.region_index];
-            let cursor = if self.next_frame < region.start {
-                region.start
-            } else {
-                self.next_frame
-            };
-            let cursor = align_up(cursor, PAGE_SIZE);
-            if cursor.saturating_add(size) <= region.end {
-                self.next_frame = cursor + size;
-                return Some(cursor);
+        if min > max || size == 0 {
+            return None;
+        }
+        for idx in 0..self.free.len() {
+            let region = self.free[idx];
+            let usable_start = align_up(region.start.max(min), PAGE_SIZE);
+            let usable_end = region.end.min(max.saturating_add(1));
+            if usable_start.saturating_add(size) <= usable_end {
+                let alloc_start = usable_start;
+                let alloc_end = alloc_start + size;
+
+                if alloc_start == region.start && alloc_end == region.end {
+                    self.free.remove(idx);
+                } else if alloc_start == region.start {
+                    self.free[idx].start = alloc_end;
+                } else if alloc_end == region.end {
+                    self.free[idx].end = alloc_start;
+                } else {
+                    let tail = Region {
+                        start: alloc_end,
+                        end: region.end,
+                    };
+                    self.free[idx].end = alloc_start;
+                    self.free.insert(idx + 1, tail);
+                }
+                return Some(alloc_start);
             }
-            self.region_index += 1;
-            self.next_frame = 0;
         }
         None
+    }
+
+    fn free_range(&mut self, addr: u64, pages: usize) {
+        if pages == 0 {
+            return;
+        }
+        let start = align_up(addr, PAGE_SIZE);
+        let end = start.saturating_add((pages as u64).saturating_mul(PAGE_SIZE));
+        if start >= end {
+            return;
+        }
+        self.free.push(Region { start, end });
+        self.free = coalesce(self.free.clone());
     }
 }
 
