@@ -11,6 +11,7 @@ const FLAGS: u64 = PRESENT | WRITABLE;
 
 pub const KERNEL_BASE: u64 = 0xffff_8000_0000_0000;
 const KERNEL_PML4_INDEX: usize = ((KERNEL_BASE >> 39) & 0x1ff) as usize;
+const HUGE_PAGE_SIZE: u64 = 0x20_0000;
 
 #[inline]
 pub fn to_higher_half(phys: u64) -> u64 {
@@ -46,6 +47,56 @@ pub fn init_identity_4g() -> Option<u64> {
 
 pub unsafe fn switch_to(pml4_phys: u64) {
     core::arch::asm!("mov cr3, {}", in(reg) pml4_phys, options(nostack, preserves_flags));
+}
+
+pub fn map_mmio(phys: u64) {
+    let virt = to_higher_half(phys);
+    let pml4_phys = current_pml4();
+    if pml4_phys == 0 {
+        return;
+    }
+    let pml4 = memory::phys_to_virt(pml4_phys) as *mut u64;
+    let pml4_index = ((virt >> 39) & 0x1ff) as usize;
+    let mut pml4e = unsafe { core::ptr::read_volatile(pml4.add(pml4_index)) };
+    if (pml4e & PRESENT) == 0 {
+        let pdpt_phys = match memory::alloc_contiguous(1) {
+            Some(p) => p,
+            None => return,
+        };
+        zero_page(pdpt_phys);
+        pml4e = pdpt_phys | FLAGS;
+        unsafe { write_volatile(pml4.add(pml4_index), pml4e) };
+    }
+    let pdpt_phys = pml4e & 0x000f_ffff_ffff_f000;
+    let pdpt = memory::phys_to_virt(pdpt_phys) as *mut u64;
+    let pdpt_index = ((virt >> 30) & 0x1ff) as usize;
+    let mut pdpt_entry = unsafe { core::ptr::read_volatile(pdpt.add(pdpt_index)) };
+    if (pdpt_entry & PRESENT) == 0 {
+        let pd_phys = match memory::alloc_contiguous(1) {
+            Some(p) => p,
+            None => return,
+        };
+        zero_page(pd_phys);
+        pdpt_entry = pd_phys | FLAGS;
+        unsafe { write_volatile(pdpt.add(pdpt_index), pdpt_entry) };
+    }
+    let pd_phys = pdpt_entry & 0x000f_ffff_ffff_f000;
+    let pd = memory::phys_to_virt(pd_phys) as *mut u64;
+    let pd_index = ((virt >> 21) & 0x1ff) as usize;
+    let phys_aligned = phys & !(HUGE_PAGE_SIZE - 1);
+    let entry = phys_aligned | FLAGS | HUGE_PAGE;
+    unsafe {
+        write_volatile(pd.add(pd_index), entry);
+        core::arch::asm!("invlpg [{}]", in(reg) virt as *const u8, options(nostack));
+    }
+}
+
+fn current_pml4() -> u64 {
+    let value: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value & 0x000f_ffff_ffff_f000
 }
 
 fn populate_pd(pd_phys: u64, pd_index: u64) {
