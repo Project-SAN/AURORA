@@ -90,6 +90,23 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     serial::write(format_args!("Entered higher-half\n"));
 
+    if rsdp_addr != 0 {
+        if let Some(info) = acpi::init(rsdp_addr) {
+            serial::write(format_args!(
+                "ACPI: LAPIC={:#x} IOAPIC={:?} HPET={:?}\n",
+                info.lapic_addr, info.ioapic_addr, info.hpet_addr
+            ));
+            if interrupts::init(&info) {
+                serial::write(format_args!("APIC/HPET timer enabled\n"));
+                interrupts::enable_net_irq();
+            } else {
+                serial::write(format_args!("APIC/HPET timer not configured\n"));
+            }
+        } else {
+            serial::write(format_args!("ACPI parse failed; timer not configured\n"));
+        }
+    }
+
     let pci_count = pci::scan();
     serial::write(format_args!("PCI scan complete: {} devices\n", pci_count));
     if let Some(dev) = pci::find_virtio_net() {
@@ -112,28 +129,17 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         }
     };
 
-    if rsdp_addr != 0 {
-        if let Some(info) = acpi::init(rsdp_addr) {
-            serial::write(format_args!(
-                "ACPI: LAPIC={:#x} IOAPIC={:?} HPET={:?}\n",
-                info.lapic_addr, info.ioapic_addr, info.hpet_addr
-            ));
-            if interrupts::init(&info) {
-                serial::write(format_args!("APIC/HPET timer enabled\n"));
-            } else {
-                serial::write(format_args!("APIC/HPET timer not configured\n"));
-            }
-        } else {
-            serial::write(format_args!("ACPI parse failed; timer not configured\n"));
-        }
-    }
-
     let mut last_tick = 0;
+    let mut last_poll = 0;
     loop {
         unsafe { core::arch::asm!("hlt"); }
         let now = interrupts::ticks();
         if let Some(stack) = net_stack.as_mut() {
-            stack.poll(&mut net_device, net::now());
+            let due = now.saturating_sub(last_poll) >= 10;
+            if interrupts::net_irq_pending() || due {
+                stack.poll(&mut net_device, net::now());
+                last_poll = now;
+            }
         }
         virtio::reclaim_tx();
         if now != last_tick && now % 100 == 0 {
