@@ -155,6 +155,10 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         }
     };
 
+    if let Some(stack) = net_stack.as_mut() {
+        syscall::install_yield(stack as *mut _, &mut net_device as *mut _);
+    }
+
     if RUN_USERLAND {
         if let Some(image) = user::load_user_image(user::USER_ELF) {
             serial::write(format_args!(
@@ -169,7 +173,8 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     let mut next_poll_tick = None;
     if let Some(stack) = net_stack.as_mut() {
-        next_poll_tick = schedule_next_poll(interrupts::ticks(), stack.poll(&mut net_device, net::now()));
+        next_poll_tick =
+            schedule_next_poll(interrupts::ticks(), stack.poll(&mut net_device, net::now()));
     }
 
     let mut last_tick = 0;
