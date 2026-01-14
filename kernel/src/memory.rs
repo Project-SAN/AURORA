@@ -2,8 +2,9 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use uefi::table::boot::{MemoryMap, MemoryType};
 
-const PAGE_SIZE: u64 = 4096;
+pub const PAGE_SIZE: u64 = 4096;
 const MIN_USABLE_ADDR: u64 = PAGE_SIZE; // avoid returning phys 0
+const MAX_PHYS_ADDR: u64 = 0x1_0000_0000; // 4 GiB limit for current paging
 
 #[derive(Clone, Copy, Debug)]
 struct Region {
@@ -94,7 +95,8 @@ impl MemoryManager {
                 let start = align_up(desc.phys_start, PAGE_SIZE).max(MIN_USABLE_ADDR);
                 let end = desc
                     .phys_start
-                    .saturating_add(desc.page_count.saturating_mul(PAGE_SIZE));
+                    .saturating_add(desc.page_count.saturating_mul(PAGE_SIZE))
+                    .min(MAX_PHYS_ADDR);
                 if start < end {
                     regions.push(Region { start, end });
                     total = total.saturating_add(end - start);
