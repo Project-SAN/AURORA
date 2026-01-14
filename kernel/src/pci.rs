@@ -12,7 +12,6 @@ const PCI_CAP_ID_MSIX: u8 = 0x11;
 
 const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
-const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
 const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -25,7 +24,6 @@ pub struct VirtioPciDevice {
     pub common_cfg: Option<u64>,
     pub notify_cfg: Option<u64>,
     pub notify_off_multiplier: u32,
-    pub isr_cfg: Option<u64>,
     pub device_cfg: Option<u64>,
     pub msix_table: Option<u64>,
     pub msix_table_size: u16,
@@ -104,7 +102,6 @@ pub fn find_virtio_net() -> Option<VirtioPciDevice> {
                         common_cfg: caps.common_cfg,
                         notify_cfg: caps.notify_cfg,
                         notify_off_multiplier: caps.notify_off_multiplier,
-                        isr_cfg: caps.isr_cfg,
                         device_cfg: caps.device_cfg,
                         msix_table: caps.msix_table,
                         msix_table_size: caps.msix_table_size,
@@ -128,7 +125,6 @@ struct VirtioPciCaps {
     common_cfg: Option<u64>,
     notify_cfg: Option<u64>,
     notify_off_multiplier: u32,
-    isr_cfg: Option<u64>,
     device_cfg: Option<u64>,
     msix_table: Option<u64>,
     msix_table_size: u16,
@@ -162,7 +158,6 @@ fn read_virtio_caps(bus: u16, device: u16, function: u16) -> VirtioPciCaps {
                             caps.notify_off_multiplier =
                                 read_u32(bus, device, function, cap_off + 16);
                         }
-                        VIRTIO_PCI_CAP_ISR_CFG => caps.isr_cfg = Some(addr),
                         VIRTIO_PCI_CAP_DEVICE_CFG => caps.device_cfg = Some(addr),
                         _ => {}
                     }

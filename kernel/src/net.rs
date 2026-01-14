@@ -75,7 +75,7 @@ impl NetStack {
         }
     }
 
-    pub fn poll(&mut self, device: &mut VirtioDevice, now: Instant) {
+    pub fn poll(&mut self, device: &mut VirtioDevice, now: Instant) -> Option<u64> {
         let _ = self.iface.poll(now, device, &mut self.sockets);
 
         let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
@@ -93,6 +93,9 @@ impl NetStack {
                 let _ = socket.send_slice(&buf[..copied]);
             }
         }
+        self.iface
+            .poll_delay(now, &self.sockets)
+            .map(|d| d.total_millis())
     }
 }
 

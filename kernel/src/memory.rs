@@ -53,10 +53,6 @@ pub fn init(map: &MemoryMap) -> MemoryStats {
     stats
 }
 
-pub fn alloc_frame() -> Option<u64> {
-    with_manager(|mgr| mgr.alloc_contiguous_range(1, MIN_USABLE_ADDR, MAX_PHYS_ADDR - 1))?
-}
-
 pub fn alloc_contiguous(pages: usize) -> Option<u64> {
     with_manager(|mgr| mgr.alloc_contiguous_range(pages, MIN_USABLE_ADDR, MAX_PHYS_ADDR - 1))?
 }
@@ -71,10 +67,6 @@ pub fn alloc_dma_pages(pages: usize) -> Option<DmaBuffer> {
 
 pub fn alloc_normal_pages(pages: usize) -> Option<u64> {
     with_manager(|mgr| mgr.alloc_contiguous_range(pages, DMA_LIMIT + 1, MAX_PHYS_ADDR - 1))?
-}
-
-pub fn free_frame(addr: u64) {
-    free_contiguous(addr, 1);
 }
 
 pub fn free_contiguous(addr: u64, pages: usize) {

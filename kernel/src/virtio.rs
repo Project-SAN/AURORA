@@ -316,7 +316,6 @@ fn read_status(common: *mut VirtioPciCommonCfg) -> u8 {
 }
 
 struct QueueMem {
-    phys: u64,
     _size: usize,
     queue: VirtQueue,
 }
@@ -404,7 +403,6 @@ fn allocate_queue(qsize: u16) -> Option<QueueMem> {
     let used_phys = mem.phys + used_offset as u64;
 
     Some(QueueMem {
-        phys: mem.phys,
         _size: total,
         queue: VirtQueue {
             size: qsize,
