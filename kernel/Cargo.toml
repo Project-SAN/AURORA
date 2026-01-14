@@ -1,0 +1,8 @@
+[package]
+name = "aurora-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uefi = { version = "0.27", default-features = false }
+smoltcp = { version = "0.11", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp"] }
