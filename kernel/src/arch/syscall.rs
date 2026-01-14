@@ -105,17 +105,10 @@ extern "C" fn syscall_entry() -> ! {
         "pop r14",
         "pop r15",
         "add rsp, 8",
-        "mov rdx, qword ptr gs:[8]",
+        "mov rsp, qword ptr gs:[8]",
         "swapgs",
-        "push {user_ss}",
-        "push rdx",
-        "push r11",
-        "push {user_cs}",
-        "push rcx",
-        "iretq",
+        "sysretq",
         dispatch = sym crate::syscall::dispatch,
-        user_cs = const (gdt::USER_CODE as u64 | 3),
-        user_ss = const (gdt::USER_DATA as u64 | 3),
     );
 }
 
