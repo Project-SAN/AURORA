@@ -98,7 +98,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
             ));
             if interrupts::init(&info) {
                 serial::write(format_args!("APIC/HPET timer enabled\n"));
-                interrupts::enable_net_irq();
+                interrupts::enable_net_irqs();
             } else {
                 serial::write(format_args!("APIC/HPET timer not configured\n"));
             }
@@ -139,7 +139,8 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         unsafe { core::arch::asm!("hlt"); }
         let now = interrupts::ticks();
         if let Some(stack) = net_stack.as_mut() {
-            let irq = interrupts::net_irq_pending();
+            let (rx_irq, tx_irq) = interrupts::net_pending();
+            let irq = rx_irq || tx_irq;
             let due = next_poll_tick.map_or(false, |t| now >= t);
             if irq || due {
                 next_poll_tick = schedule_next_poll(now, stack.poll(&mut net_device, net::now()));
@@ -148,6 +149,26 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         virtio::reclaim_tx();
         if now != last_tick && now % 100 == 0 {
             serial::write(format_args!("tick={}\n", now));
+            if now % 1000 == 0 {
+                let stats = virtio::stats_snapshot();
+                if stats.rx_drops != 0
+                    || stats.rx_overflow != 0
+                    || stats.tx_drops != 0
+                    || stats.tx_overflow != 0
+                {
+                    serial::write(format_args!(
+                        "net stats: rx={} bytes={} drop={} ovf={} tx={} bytes={} drop={} ovf={}\n",
+                        stats.rx_packets,
+                        stats.rx_bytes,
+                        stats.rx_drops,
+                        stats.rx_overflow,
+                        stats.tx_packets,
+                        stats.tx_bytes,
+                        stats.tx_drops,
+                        stats.tx_overflow
+                    ));
+                }
+            }
         }
         last_tick = now;
     }
