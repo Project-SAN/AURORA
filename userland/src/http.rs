@@ -89,12 +89,47 @@ pub struct HttpClient {
     chunk: ChunkDecoder,
     pending: [u8; CHUNK_PENDING_MAX],
     pending_len: usize,
+    rx_buf: [u8; READ_BUF_SIZE],
+    scratch: [u8; CHUNK_SCRATCH_MAX],
     sink: StdoutSink,
     done: Option<HttpResponse>,
     error: Option<HttpError>,
 }
 
 impl HttpClient {
+    pub unsafe fn init_in_place(
+        slot: *mut core::mem::MaybeUninit<Self>,
+        ip: [u8; 4],
+        port: u16,
+        path: &'static str,
+        host: &'static str,
+    ) -> Result<(), HttpError> {
+        let ptr = (*slot).as_mut_ptr();
+        core::ptr::write_bytes(ptr as *mut u8, 0, core::mem::size_of::<Self>());
+        let socket = TcpSocket::new().map_err(|_| HttpError::Socket)?;
+        core::ptr::write(&mut (*ptr).ip, ip);
+        core::ptr::write(&mut (*ptr).port, port);
+        core::ptr::write(&mut (*ptr).path, path);
+        core::ptr::write(&mut (*ptr).host, host);
+        core::ptr::write(&mut (*ptr).socket, socket);
+        core::ptr::write(&mut (*ptr).state, ClientState::Connecting);
+        core::ptr::write(&mut (*ptr).send_phase, SendPhase::Get);
+        core::ptr::write(&mut (*ptr).send_off, 0usize);
+        core::ptr::write(&mut (*ptr).header_len, 0usize);
+        core::ptr::write(&mut (*ptr).parsed, None);
+        core::ptr::write(&mut (*ptr).content_len, None);
+        core::ptr::write(&mut (*ptr).chunked, false);
+        core::ptr::write(&mut (*ptr).body_written, 0usize);
+        core::ptr::write(&mut (*ptr).idle, 0u32);
+        core::ptr::write(&mut (*ptr).chunk, ChunkDecoder::new());
+        core::ptr::write(&mut (*ptr).pending_len, 0usize);
+        core::ptr::write(&mut (*ptr).sink, StdoutSink);
+        core::ptr::write(&mut (*ptr).done, None);
+        core::ptr::write(&mut (*ptr).error, None);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
     pub fn new(
         ip: [u8; 4],
         port: u16,
@@ -121,6 +156,8 @@ impl HttpClient {
             chunk: ChunkDecoder::new(),
             pending: [0u8; CHUNK_PENDING_MAX],
             pending_len: 0,
+            rx_buf: [0u8; READ_BUF_SIZE],
+            scratch: [0u8; CHUNK_SCRATCH_MAX],
             sink: StdoutSink,
             done: None,
             error: None,
@@ -222,8 +259,7 @@ impl HttpClient {
     }
 
     fn poll_recv(&mut self) -> Result<Option<HttpResponse>, HttpError> {
-        let mut buf = [0u8; READ_BUF_SIZE];
-        let n = match self.socket.recv(&mut buf) {
+        let n = match self.socket.recv(&mut self.rx_buf) {
             Ok(n) => n,
             Err(_) => return Err(HttpError::Recv),
         };
@@ -249,7 +285,7 @@ impl HttpClient {
             if self.header_len + n > self.header_buf.len() {
                 return Err(HttpError::HeaderTooLarge);
             }
-            self.header_buf[self.header_len..self.header_len + n].copy_from_slice(&buf[..n]);
+            self.header_buf[self.header_len..self.header_len + n].copy_from_slice(&self.rx_buf[..n]);
             self.header_len += n;
             match parse_headers(&self.header_buf[..self.header_len]) {
                 Ok(None) => {}
@@ -264,6 +300,7 @@ impl HttpClient {
                                 &mut self.chunk,
                                 &mut self.pending,
                                 &mut self.pending_len,
+                                &mut self.scratch,
                                 body,
                                 &mut self.sink,
                             )? {
@@ -293,12 +330,13 @@ impl HttpClient {
                 Err(_) => return Err(HttpError::Malformed),
             }
         } else {
-            let mut body = &buf[..n];
+            let mut body = &self.rx_buf[..n];
             if self.chunked {
                 if consume_chunked(
                     &mut self.chunk,
                     &mut self.pending,
                     &mut self.pending_len,
+                    &mut self.scratch,
                     body,
                     &mut self.sink,
                 )? {
@@ -403,6 +441,7 @@ pub fn http_get_with<S: BodySink>(
     let mut chunk = ChunkDecoder::new();
     let mut pending = [0u8; CHUNK_PENDING_MAX];
     let mut pending_len = 0usize;
+    let mut scratch = [0u8; CHUNK_SCRATCH_MAX];
 
     loop {
         let mut buf = [0u8; READ_BUF_SIZE];
@@ -437,7 +476,14 @@ pub fn http_get_with<S: BodySink>(
                     if header_len > info.header_end {
                         let body = &header_buf[info.header_end..header_len];
                         if chunked {
-                            if consume_chunked(&mut chunk, &mut pending, &mut pending_len, body, sink)? {
+                            if consume_chunked(
+                                &mut chunk,
+                                &mut pending,
+                                &mut pending_len,
+                                &mut scratch,
+                                body,
+                                sink,
+                            )? {
                                 break;
                             }
                         } else {
@@ -460,7 +506,14 @@ pub fn http_get_with<S: BodySink>(
         } else {
             let mut body = &buf[..n];
             if chunked {
-                if consume_chunked(&mut chunk, &mut pending, &mut pending_len, body, sink)? {
+                if consume_chunked(
+                    &mut chunk,
+                    &mut pending,
+                    &mut pending_len,
+                    &mut scratch,
+                    body,
+                    sink,
+                )? {
                     break;
                 }
             } else {
@@ -519,10 +572,10 @@ fn consume_chunked<S: BodySink>(
     chunk: &mut ChunkDecoder,
     pending: &mut [u8; CHUNK_PENDING_MAX],
     pending_len: &mut usize,
+    scratch: &mut [u8; CHUNK_SCRATCH_MAX],
     data: &[u8],
     sink: &mut S,
 ) -> Result<bool, HttpError> {
-    let mut scratch = [0u8; CHUNK_SCRATCH_MAX];
     let mut total = 0usize;
     if *pending_len > 0 {
         scratch[..*pending_len].copy_from_slice(&pending[..*pending_len]);

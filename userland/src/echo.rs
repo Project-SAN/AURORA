@@ -7,7 +7,8 @@ const BUF_SIZE: usize = 512;
 
 #[derive(Copy, Clone)]
 struct ClientSlot {
-    socket: Option<TcpSocket>,
+    socket: TcpSocket,
+    socket_valid: bool,
     buf: [u8; BUF_SIZE],
     pending_len: usize,
     pending_off: usize,
@@ -16,7 +17,8 @@ struct ClientSlot {
 impl ClientSlot {
     const fn new() -> Self {
         Self {
-            socket: None,
+            socket: TcpSocket { handle: 0 },
+            socket_valid: false,
             buf: [0u8; BUF_SIZE],
             pending_len: 0,
             pending_off: 0,
@@ -24,7 +26,7 @@ impl ClientSlot {
     }
 
     fn clear(&mut self) {
-        self.socket = None;
+        self.socket_valid = false;
         self.pending_len = 0;
         self.pending_off = 0;
     }
@@ -44,10 +46,22 @@ impl EchoServer {
         })
     }
 
+    pub unsafe fn init_in_place(
+        slot: *mut core::mem::MaybeUninit<Self>,
+        port: u16,
+    ) -> Result<(), SocketError> {
+        let ptr = (*slot).as_mut_ptr();
+        core::ptr::write_bytes(ptr as *mut u8, 0, core::mem::size_of::<Self>());
+        let listener = TcpListener::listen(port)?;
+        core::ptr::write(&mut (*ptr).listener, listener);
+        Ok(())
+    }
+
     pub fn poll(&mut self) {
         if let Ok(Some(socket)) = self.listener.accept() {
-            if let Some(slot) = self.clients.iter_mut().find(|c| c.socket.is_none()) {
-                slot.socket = Some(socket);
+            if let Some(slot) = self.clients.iter_mut().find(|c| !c.socket_valid) {
+                slot.socket = socket;
+                slot.socket_valid = true;
                 slot.pending_len = 0;
                 slot.pending_off = 0;
             } else {
@@ -56,10 +70,10 @@ impl EchoServer {
         }
 
         for slot in self.clients.iter_mut() {
-            let socket = match slot.socket {
-                Some(sock) => sock,
-                None => continue,
-            };
+            if !slot.socket_valid {
+                continue;
+            }
+            let socket = slot.socket;
 
             if slot.pending_len > slot.pending_off {
                 let data = &slot.buf[slot.pending_off..slot.pending_len];
