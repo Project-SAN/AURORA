@@ -3,11 +3,10 @@ use core::arch::asm;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 2;
 pub const SYS_SLEEP: u64 = 4;
-pub const SYS_NET_LISTEN: u64 = 10;
-pub const SYS_NET_ACCEPT: u64 = 11;
 pub const SYS_NET_RECV: u64 = 12;
 pub const SYS_NET_SEND: u64 = 13;
 pub const SYS_NET_CLOSE: u64 = 14;
+pub const SYS_NET_CONNECT: u64 = 15;
 
 pub fn write(fd: u64, buf: &[u8]) -> u64 {
     unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64) }

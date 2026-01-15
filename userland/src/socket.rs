@@ -5,35 +5,17 @@ pub enum Error {
     SysError,
 }
 
-pub struct TcpSocket {
-    listened: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectState {
+    InProgress,
+    Connected,
 }
+
+pub struct TcpSocket;
 
 impl TcpSocket {
     pub const fn new() -> Self {
-        Self { listened: false }
-    }
-
-    pub fn listen(&mut self, port: u16) -> Result<(), Error> {
-        let ret = unsafe { sys::syscall1(sys::SYS_NET_LISTEN, port as u64) };
-        if ret == 0 {
-            self.listened = true;
-            Ok(())
-        } else {
-            Err(Error::SysError)
-        }
-    }
-
-    pub fn accept(&self) -> Result<bool, Error> {
-        if !self.listened {
-            return Ok(false);
-        }
-        let ret = unsafe { sys::syscall0(sys::SYS_NET_ACCEPT) };
-        if ret == u64::MAX {
-            Err(Error::SysError)
-        } else {
-            Ok(ret == 1)
-        }
+        Self
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize, Error> {
@@ -63,6 +45,18 @@ impl TcpSocket {
             Err(Error::SysError)
         } else {
             Ok(())
+        }
+    }
+
+    pub fn connect(&self, ip: [u8; 4], port: u16) -> Result<ConnectState, Error> {
+        let ip = u32::from_be_bytes(ip);
+        let ret = unsafe { sys::syscall2(sys::SYS_NET_CONNECT, ip as u64, port as u64) };
+        if ret == u64::MAX {
+            Err(Error::SysError)
+        } else if ret == 0 {
+            Ok(ConnectState::Connected)
+        } else {
+            Ok(ConnectState::InProgress)
         }
     }
 }
