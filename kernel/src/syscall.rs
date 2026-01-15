@@ -16,6 +16,7 @@ const SYS_NET_ACCEPT: u64 = 11;
 const SYS_NET_RECV: u64 = 12;
 const SYS_NET_SEND: u64 = 13;
 const SYS_NET_CLOSE: u64 = 14;
+const SYS_NET_CONNECT: u64 = 15;
 const TICK_MS: u64 = 10;
 
 struct YieldContext {
@@ -49,6 +50,7 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
         SYS_NET_RECV => sys_net_recv(frame.rdi, frame.rsi),
         SYS_NET_SEND => sys_net_send(frame.rdi, frame.rsi),
         SYS_NET_CLOSE => sys_net_close(),
+        SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi),
         _ => u64::MAX,
     };
 }
@@ -150,6 +152,24 @@ fn sys_net_close() -> u64 {
         let _ = stack.poll(device, net::now());
         stack.close();
         0
+    })
+}
+
+fn sys_net_connect(ip: u64, port: u64) -> u64 {
+    if port == 0 || port > u16::MAX as u64 || ip == 0 {
+        return u64::MAX;
+    }
+    let ip = (ip as u32).to_be_bytes();
+    let port = port as u16;
+    with_net_ctx(u64::MAX, |stack, device| {
+        let _ = stack.poll(device, net::now());
+        let result = match stack.connect(ip, port) {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(_) => u64::MAX,
+        };
+        let _ = stack.poll(device, net::now());
+        result
     })
 }
 

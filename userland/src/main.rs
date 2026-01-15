@@ -3,10 +3,14 @@
 
 use core::arch::asm;
 
+mod http;
 mod socket;
 mod sys;
 
-const LISTEN_PORT: u16 = 1234;
+const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
+const HTTP_PORT: u16 = 8080;
+const HTTP_PATH: &str = "/";
+const HTTP_HOST: &str = "10.0.2.2";
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -14,35 +18,10 @@ pub extern "C" fn _start() -> ! {
     sys::write(1, msg);
     let _ = unsafe { sys::syscall1(sys::SYS_EXIT, 0) };
 
-    let mut socket = socket::TcpSocket::new();
-    loop {
-        if let Err(_) = socket.listen(LISTEN_PORT) {
-            sys::sleep(10);
-            unsafe { asm!("pause"); }
-            continue;
-        }
+    let _ = http::http_get(HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST);
 
-        match socket.accept() {
-            Ok(true) => {
-                let mut buf = [0u8; 512];
-                match socket.recv(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let _ = socket.send(&buf[..n]);
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        let _ = socket.close();
-                    }
-                }
-            }
-            Ok(false) => {
-                sys::sleep(10);
-            }
-            Err(_) => {
-                let _ = socket.close();
-                sys::sleep(10);
-            }
-        }
+    loop {
+        sys::sleep(1000);
         unsafe { asm!("pause"); }
     }
 }

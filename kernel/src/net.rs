@@ -5,7 +5,7 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
 use crate::interrupts;
 use crate::serial;
@@ -18,6 +18,8 @@ const TX_BUF_SIZE: usize = 4096;
 const FRAME_BUF_SIZE: usize = 2048;
 const RX_POOL_SIZE: usize = 64;
 const TX_POOL_SIZE: usize = 64;
+const EPHEMERAL_START: u16 = 49152;
+const EPHEMERAL_END: u16 = 65534;
 
 pub fn now() -> Instant {
     let ms = interrupts::ticks().saturating_mul(10);
@@ -48,6 +50,7 @@ pub struct NetStack {
     sockets: SocketSet<'static>,
     tcp: SocketHandle,
     listen_port: u16,
+    next_ephemeral: u16,
 }
 
 impl NetStack {
@@ -86,6 +89,7 @@ impl NetStack {
             sockets,
             tcp: tcp_handle,
             listen_port: 0,
+            next_ephemeral: EPHEMERAL_START,
         }
     }
 
@@ -145,6 +149,45 @@ impl NetStack {
     pub fn close(&mut self) {
         let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
         socket.close();
+    }
+
+    pub fn connect(&mut self, ip: [u8; 4], port: u16) -> Result<bool, ()> {
+        if port == 0 {
+            return Err(());
+        }
+        {
+            let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+            if socket.is_listening() {
+                socket.abort();
+                self.listen_port = 0;
+            }
+            if socket.may_send() {
+                return Ok(true);
+            }
+            if socket.is_open() {
+                return Ok(false);
+            }
+        }
+        let local_port = self.alloc_ephemeral_port();
+        let remote = (IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), port);
+        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+        if socket
+            .connect(self.iface.context(), remote, local_port)
+            .is_err()
+        {
+            return Err(());
+        }
+        Ok(false)
+    }
+
+    fn alloc_ephemeral_port(&mut self) -> u16 {
+        let port = self.next_ephemeral;
+        self.next_ephemeral = if port >= EPHEMERAL_END {
+            EPHEMERAL_START
+        } else {
+            port + 1
+        };
+        port
     }
 }
 

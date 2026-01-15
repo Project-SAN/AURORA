@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::memory;
 use crate::paging;
 use crate::serial;
@@ -57,6 +59,7 @@ pub fn load_elf(bytes: &[u8]) -> Option<u64> {
         return None;
     }
 
+    let mut mapped_pages: Vec<u64> = Vec::new();
     for i in 0..phnum {
         let off = phoff + i * phentsize;
         let ph = unsafe { read_struct::<Elf64Phdr>(bytes.as_ptr().add(off))? };
@@ -72,15 +75,18 @@ pub fn load_elf(bytes: &[u8]) -> Option<u64> {
         let seg_end = align_up(ph.p_vaddr + ph.p_memsz, memory::PAGE_SIZE);
         let mut addr = seg_start;
         while addr < seg_end {
-            let phys = match memory::alloc_contiguous(1) {
-                Some(p) => p,
-                None => return None,
-            };
-            if !paging::map_user_page(addr, phys, writable) {
-                return None;
-            }
-            unsafe {
-                core::ptr::write_bytes(addr as *mut u8, 0, memory::PAGE_SIZE as usize);
+            if !mapped_pages.iter().any(|&p| p == addr) {
+                let phys = match memory::alloc_contiguous(1) {
+                    Some(p) => p,
+                    None => return None,
+                };
+                if !paging::map_user_page(addr, phys, writable) {
+                    return None;
+                }
+                unsafe {
+                    core::ptr::write_bytes(addr as *mut u8, 0, memory::PAGE_SIZE as usize);
+                }
+                mapped_pages.push(addr);
             }
             addr += memory::PAGE_SIZE;
         }
