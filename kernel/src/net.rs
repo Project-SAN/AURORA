@@ -20,6 +20,7 @@ const RX_POOL_SIZE: usize = 64;
 const TX_POOL_SIZE: usize = 64;
 const EPHEMERAL_START: u16 = 49152;
 const EPHEMERAL_END: u16 = 65534;
+const MAX_SOCKETS: usize = 8;
 
 pub fn now() -> Instant {
     let ms = interrupts::ticks().saturating_mul(10);
@@ -45,11 +46,28 @@ impl VirtioDevice {
     }
 }
 
+type SocketId = u64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SocketState {
+    Free,
+    Idle,
+    Listening,
+    Connecting,
+    Established,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SocketEntry {
+    handle: SocketHandle,
+    state: SocketState,
+    listen_port: u16,
+}
+
 pub struct NetStack {
     iface: Interface,
     sockets: SocketSet<'static>,
-    tcp: SocketHandle,
-    listen_port: u16,
+    entries: Vec<SocketEntry>,
     next_ephemeral: u16,
 }
 
@@ -60,7 +78,8 @@ impl NetStack {
 
         let mut iface = Interface::new(config, device, now);
         iface.update_ip_addrs(|addrs| {
-            let cidr = IpCidr::new(Ipv4Address::new(IP_ADDR[0], IP_ADDR[1], IP_ADDR[2], IP_ADDR[3]).into(), 24);
+            let cidr =
+                IpCidr::new(Ipv4Address::new(IP_ADDR[0], IP_ADDR[1], IP_ADDR[2], IP_ADDR[3]).into(), 24);
             let _ = addrs.push(cidr);
         });
         let _ = iface
@@ -68,10 +87,18 @@ impl NetStack {
             .add_default_ipv4_route(Ipv4Address::new(GW_ADDR[0], GW_ADDR[1], GW_ADDR[2], GW_ADDR[3]));
 
         let mut sockets = SocketSet::new(vec![]);
-        let tcp_rx = tcp::SocketBuffer::new(vec![0u8; RX_BUF_SIZE]);
-        let tcp_tx = tcp::SocketBuffer::new(vec![0u8; TX_BUF_SIZE]);
-        let tcp = tcp::Socket::new(tcp_rx, tcp_tx);
-        let tcp_handle = sockets.add(tcp);
+        let mut entries = Vec::with_capacity(MAX_SOCKETS);
+        for _ in 0..MAX_SOCKETS {
+            let tcp_rx = tcp::SocketBuffer::new(vec![0u8; RX_BUF_SIZE]);
+            let tcp_tx = tcp::SocketBuffer::new(vec![0u8; TX_BUF_SIZE]);
+            let tcp = tcp::Socket::new(tcp_rx, tcp_tx);
+            let handle = sockets.add(tcp);
+            entries.push(SocketEntry {
+                handle,
+                state: SocketState::Free,
+                listen_port: 0,
+            });
+        }
 
         serial::write(format_args!(
             "smoltcp: ip={}.{}.{}.{} gw={}.{}.{}.{}\n",
@@ -87,8 +114,7 @@ impl NetStack {
         Self {
             iface,
             sockets,
-            tcp: tcp_handle,
-            listen_port: 0,
+            entries,
             next_ephemeral: EPHEMERAL_START,
         }
     }
@@ -100,32 +126,84 @@ impl NetStack {
             .map(|d| d.total_millis())
     }
 
-    pub fn listen(&mut self, port: u16) -> bool {
-        if port == 0 {
-            return false;
-        }
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
-        if socket.is_listening() && self.listen_port == port {
+    pub fn socket(&mut self) -> Option<SocketId> {
+        self.take_free_entry().map(|idx| idx as SocketId)
+    }
+
+    pub fn listen(&mut self, id: SocketId, port: u16) -> bool {
+        let idx = match self.valid_index(id) {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let state = self.entries[idx].state;
+        if state == SocketState::Listening && self.entries[idx].listen_port == port {
             return true;
         }
-        if socket.is_open() && !socket.is_listening() {
+        if matches!(state, SocketState::Connecting | SocketState::Established) {
             return false;
         }
-        if socket.listen(port).is_ok() {
-            self.listen_port = port;
-            true
-        } else {
-            false
+
+        let handle = self.entries[idx].handle;
+        {
+            let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+            socket.abort();
+            if socket.listen(port).is_err() {
+                return false;
+            }
         }
+        self.entries[idx].state = SocketState::Listening;
+        self.entries[idx].listen_port = port;
+        true
     }
 
-    pub fn accept(&mut self) -> bool {
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
-        socket.is_active()
+    pub fn accept(&mut self, listener_id: SocketId) -> Result<Option<SocketId>, ()> {
+        let listener_idx = self.valid_index(listener_id).ok_or(())?;
+        if self.entries[listener_idx].state != SocketState::Listening {
+            return Err(());
+        }
+        let listen_port = self.entries[listener_idx].listen_port;
+        let listener_handle = self.entries[listener_idx].handle;
+        let active = {
+            let socket = self.sockets.get_mut::<tcp::Socket>(listener_handle);
+            socket.is_active() && !socket.is_listening()
+        };
+        if !active {
+            return Ok(None);
+        }
+
+        let free_idx = match self.take_free_entry_except(listener_idx) {
+            Some(idx) => idx,
+            None => {
+                let socket = self.sockets.get_mut::<tcp::Socket>(listener_handle);
+                socket.abort();
+                let _ = socket.listen(listen_port);
+                return Err(());
+            }
+        };
+
+        let free_handle = self.entries[free_idx].handle;
+        self.entries[free_idx].handle = listener_handle;
+        self.entries[free_idx].state = SocketState::Established;
+        self.entries[free_idx].listen_port = 0;
+
+        self.entries[listener_idx].handle = free_handle;
+        self.entries[listener_idx].state = SocketState::Listening;
+        self.entries[listener_idx].listen_port = listen_port;
+        {
+            let socket = self.sockets.get_mut::<tcp::Socket>(free_handle);
+            socket.abort();
+            let _ = socket.listen(listen_port);
+        }
+
+        Ok(Some(free_idx as SocketId))
     }
 
-    pub fn recv(&mut self, buf: &mut [u8]) -> usize {
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+    pub fn recv(&mut self, id: SocketId, buf: &mut [u8]) -> usize {
+        let handle = match self.socket_handle(id) {
+            Some(handle) => handle,
+            None => return 0,
+        };
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
         if !socket.can_recv() {
             return 0;
         }
@@ -135,8 +213,12 @@ impl NetStack {
         }
     }
 
-    pub fn send(&mut self, buf: &[u8]) -> usize {
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
+    pub fn send(&mut self, id: SocketId, buf: &[u8]) -> usize {
+        let handle = match self.socket_handle(id) {
+            Some(handle) => handle,
+            None => return 0,
+        };
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
         if !socket.can_send() {
             return 0;
         }
@@ -146,38 +228,93 @@ impl NetStack {
         }
     }
 
-    pub fn close(&mut self) {
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
-        socket.close();
+    pub fn close(&mut self, id: SocketId) {
+        let idx = match self.valid_index(id) {
+            Some(idx) => idx,
+            None => return,
+        };
+        let handle = self.entries[idx].handle;
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        socket.abort();
+        self.entries[idx].state = SocketState::Idle;
+        self.entries[idx].listen_port = 0;
     }
 
-    pub fn connect(&mut self, ip: [u8; 4], port: u16) -> Result<bool, ()> {
-        if port == 0 {
+    pub fn connect(&mut self, id: SocketId, ip: [u8; 4], port: u16) -> Result<bool, ()> {
+        let idx = self.valid_index(id).ok_or(())?;
+        if self.entries[idx].state == SocketState::Listening {
             return Err(());
         }
-        {
-            let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
-            if socket.is_listening() {
-                socket.abort();
-                self.listen_port = 0;
-            }
+
+        let handle = self.entries[idx].handle;
+        let mut needs_connect = false;
+        let connected = {
+            let socket = self.sockets.get_mut::<tcp::Socket>(handle);
             if socket.may_send() {
-                return Ok(true);
+                true
+            } else if socket.is_open() {
+                false
+            } else {
+                needs_connect = true;
+                false
             }
-            if socket.is_open() {
-                return Ok(false);
+        };
+        if needs_connect {
+            let local_port = self.alloc_ephemeral_port();
+            let remote = (IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), port);
+            let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+            if socket
+                .connect(self.iface.context(), remote, local_port)
+                .is_err()
+            {
+                return Err(());
             }
         }
-        let local_port = self.alloc_ephemeral_port();
-        let remote = (IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), port);
-        let socket = self.sockets.get_mut::<tcp::Socket>(self.tcp);
-        if socket
-            .connect(self.iface.context(), remote, local_port)
-            .is_err()
-        {
-            return Err(());
+        self.entries[idx].state = if connected {
+            SocketState::Established
+        } else {
+            SocketState::Connecting
+        };
+        Ok(connected)
+    }
+
+    fn valid_index(&self, id: SocketId) -> Option<usize> {
+        let idx = usize::try_from(id).ok()?;
+        if idx >= self.entries.len() {
+            return None;
         }
-        Ok(false)
+        if self.entries[idx].state == SocketState::Free {
+            return None;
+        }
+        Some(idx)
+    }
+
+    fn socket_handle(&self, id: SocketId) -> Option<SocketHandle> {
+        let idx = self.valid_index(id)?;
+        Some(self.entries[idx].handle)
+    }
+
+    fn take_free_entry(&mut self) -> Option<usize> {
+        self.take_free_entry_except(usize::MAX)
+    }
+
+    fn take_free_entry_except(&mut self, except: usize) -> Option<usize> {
+        for idx in 0..self.entries.len() {
+            if idx == except {
+                continue;
+            }
+            if self.entries[idx].state == SocketState::Free {
+                let handle = self.entries[idx].handle;
+                {
+                    let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+                    socket.abort();
+                }
+                self.entries[idx].state = SocketState::Idle;
+                self.entries[idx].listen_port = 0;
+                return Some(idx);
+            }
+        }
+        None
     }
 
     fn alloc_ephemeral_port(&mut self) -> u16 {

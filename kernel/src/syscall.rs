@@ -11,6 +11,7 @@ const SYS_WRITE: u64 = 1;
 const SYS_EXIT: u64 = 2;
 const SYS_YIELD: u64 = 3;
 const SYS_SLEEP: u64 = 4;
+const SYS_NET_SOCKET: u64 = 9;
 const SYS_NET_LISTEN: u64 = 10;
 const SYS_NET_ACCEPT: u64 = 11;
 const SYS_NET_RECV: u64 = 12;
@@ -46,12 +47,13 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
         SYS_EXIT => sys_exit(frame.rdi),
         SYS_YIELD => sys_yield(),
         SYS_SLEEP => sys_sleep(frame.rdi),
-        SYS_NET_LISTEN => sys_net_listen(frame.rdi),
-        SYS_NET_ACCEPT => sys_net_accept(),
-        SYS_NET_RECV => sys_net_recv(frame.rdi, frame.rsi),
-        SYS_NET_SEND => sys_net_send(frame.rdi, frame.rsi),
-        SYS_NET_CLOSE => sys_net_close(),
-        SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi),
+        SYS_NET_SOCKET => sys_net_socket(),
+        SYS_NET_LISTEN => sys_net_listen(frame.rdi, frame.rsi),
+        SYS_NET_ACCEPT => sys_net_accept(frame.rdi),
+        SYS_NET_RECV => sys_net_recv(frame.rdi, frame.rsi, frame.rdx),
+        SYS_NET_SEND => sys_net_send(frame.rdi, frame.rsi, frame.rdx),
+        SYS_NET_CLOSE => sys_net_close(frame.rdi),
+        SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi, frame.rdx),
         SYS_TIME_EPOCH => sys_time_epoch(),
         _ => u64::MAX,
     };
@@ -106,14 +108,21 @@ fn sys_sleep(ms: u64) -> u64 {
     0
 }
 
-fn sys_net_listen(port: u64) -> u64 {
+fn sys_net_socket() -> u64 {
+    with_net_ctx(u64::MAX, |stack, device| {
+        let _ = stack.poll(device, net::now());
+        stack.socket().unwrap_or(u64::MAX)
+    })
+}
+
+fn sys_net_listen(handle: u64, port: u64) -> u64 {
     if port == 0 || port > u16::MAX as u64 {
         return u64::MAX;
     }
     let port = port as u16;
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
-        if stack.listen(port) {
+        if stack.listen(handle, port) {
             0
         } else {
             u64::MAX
@@ -121,18 +130,18 @@ fn sys_net_listen(port: u64) -> u64 {
     })
 }
 
-fn sys_net_accept() -> u64 {
+fn sys_net_accept(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
-        if stack.accept() {
-            1
-        } else {
-            0
+        match stack.accept(handle) {
+            Ok(Some(id)) => id,
+            Ok(None) => 0,
+            Err(_) => u64::MAX,
         }
     })
 }
 
-fn sys_net_recv(buf: u64, len: u64) -> u64 {
+fn sys_net_recv(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
     }
@@ -140,11 +149,11 @@ fn sys_net_recv(buf: u64, len: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         let slice = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, max_len) };
-        stack.recv(slice) as u64
+        stack.recv(handle, slice) as u64
     })
 }
 
-fn sys_net_send(buf: u64, len: u64) -> u64 {
+fn sys_net_send(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
     }
@@ -152,19 +161,19 @@ fn sys_net_send(buf: u64, len: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         let slice = unsafe { core::slice::from_raw_parts(buf as *const u8, max_len) };
-        stack.send(slice) as u64
+        stack.send(handle, slice) as u64
     })
 }
 
-fn sys_net_close() -> u64 {
+fn sys_net_close(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
-        stack.close();
+        stack.close(handle);
         0
     })
 }
 
-fn sys_net_connect(ip: u64, port: u64) -> u64 {
+fn sys_net_connect(handle: u64, ip: u64, port: u64) -> u64 {
     if port == 0 || port > u16::MAX as u64 || ip == 0 {
         return u64::MAX;
     }
@@ -172,7 +181,7 @@ fn sys_net_connect(ip: u64, port: u64) -> u64 {
     let port = port as u16;
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
-        let result = match stack.connect(ip, port) {
+        let result = match stack.connect(handle, ip, port) {
             Ok(true) => 0,
             Ok(false) => 1,
             Err(_) => u64::MAX,
