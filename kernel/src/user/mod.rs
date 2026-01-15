@@ -5,7 +5,7 @@ use crate::paging;
 use crate::serial;
 
 pub const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_f000;
-const USER_STACK_PAGES: usize = 4;
+const USER_STACK_PAGES: usize = 8;
 
 #[cfg(feature = "userland")]
 pub const USER_ELF: &[u8] = include_bytes!(concat!(
