@@ -7,6 +7,15 @@ AURORA is the renamed, experimental Rust implementation of a verifiable onion-ro
 - `src/` – core AURORA transport, policy client, and demo sender implementation
 - `docs/zkmb-hornet-protocol.md` – detailed protocol draft (legacy filename) covering actors, data formats, and verifier expectations
 - `src/policy/` – policy capsule types, Merkle blocklist utilities, JSON loader, and proof-client wiring
+- `kernel/` – UEFI-based experimental kernel + userland runtime (no_std, virtio-net, smoltcp)
+
+## Kernel / Userland (experimental)
+
+UEFI 起動の実験カーネルでは、ブート時に UEFI `GetTime` を取得して Unix epoch 秒に変換し、以降は tick から積算して返す簡易時刻 syscall を提供します。
+
+- `SYS_TIME_EPOCH` (syscall番号 16): epoch 秒（UTC）を返します  
+  - `GetTime` が取得できない/無効な場合は **`u64::MAX`** を返します
+  - UEFI が `time_zone` 未指定 (`None`) の場合は **UTC扱い**にしています
 
 ## AURORA Overview
 
