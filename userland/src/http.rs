@@ -4,6 +4,7 @@ use core::arch::asm;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HttpError {
+    Socket,
     Send,
     Recv,
     HeaderTooLarge,
@@ -61,7 +62,7 @@ pub fn http_get_with<S: BodySink>(
     host: &str,
     sink: &mut S,
 ) -> Result<HttpResponse, HttpError> {
-    let socket = TcpSocket::new();
+    let socket = TcpSocket::new().map_err(|_| HttpError::Socket)?;
     loop {
         match socket.connect(ip, port) {
             Ok(ConnectState::Connected) => break,
@@ -424,6 +425,7 @@ pub fn print_response(resp: &HttpResponse) {
 pub fn print_error(err: HttpError) {
     let _ = sys::write(1, b"\nHTTP error: ");
     match err {
+        HttpError::Socket => { let _ = sys::write(1, b"socket"); }
         HttpError::Send => { let _ = sys::write(1, b"send"); }
         HttpError::Recv => { let _ = sys::write(1, b"recv"); }
         HttpError::HeaderTooLarge => { let _ = sys::write(1, b"header-too-large"); }

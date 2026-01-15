@@ -2,6 +2,11 @@ use core::arch::asm;
 
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_SLEEP: u64 = 4;
+pub const SYS_NET_SOCKET: u64 = 9;
+#[allow(dead_code)]
+pub const SYS_NET_LISTEN: u64 = 10;
+#[allow(dead_code)]
+pub const SYS_NET_ACCEPT: u64 = 11;
 pub const SYS_NET_RECV: u64 = 12;
 pub const SYS_NET_SEND: u64 = 13;
 pub const SYS_NET_CLOSE: u64 = 14;
@@ -61,6 +66,7 @@ pub unsafe fn syscall1(num: u64, a1: u64) -> u64 {
     ret
 }
 
+#[allow(dead_code)]
 pub unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
     let ret: u64;
     asm!(
