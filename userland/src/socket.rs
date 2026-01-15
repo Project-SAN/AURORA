@@ -13,7 +13,7 @@ pub enum ConnectState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TcpSocket {
-    handle: u64,
+    pub(crate) handle: u64,
 }
 
 #[allow(dead_code)]

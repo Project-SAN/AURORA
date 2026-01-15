@@ -2,6 +2,9 @@
 #![no_main]
 
 use core::arch::asm;
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 mod http;
 mod echo;
@@ -28,41 +31,43 @@ pub extern "C" fn _start() -> ! {
         let _ = sys::write(1, b"epoch=unavailable\n");
     }
 
-    let mut echo_server = if RUN_ECHO_SERVER {
-        match echo::EchoServer::new(ECHO_PORT) {
-            Ok(server) => Some(server),
-            Err(_) => None,
+    if RUN_ECHO_SERVER {
+        let ok = unsafe { echo::EchoServer::init_in_place(ECHO_SERVER.get(), ECHO_PORT).is_ok() };
+        if ok {
+            ECHO_READY.store(true, Ordering::Release);
         }
-    } else {
-        None
-    };
-
-    let mut http_client = if RUN_HTTP_CLIENT {
-        match http::HttpClient::new(HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST) {
-            Ok(client) => Some(client),
-            Err(err) => {
-                http::print_error(err);
-                None
-            }
+    }
+    if RUN_HTTP_CLIENT {
+        let ok = unsafe {
+            http::HttpClient::init_in_place(HTTP_CLIENT.get(), HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST).is_ok()
+        };
+        if ok {
+            HTTP_READY.store(true, Ordering::Release);
+        } else {
+            http::print_error(http::HttpError::Socket);
         }
-    } else {
-        None
-    };
+    }
 
     loop {
-        if let Some(server) = echo_server.as_mut() {
-            server.poll();
+        if ECHO_READY.load(Ordering::Acquire) {
+            unsafe {
+                let server = &mut *(*ECHO_SERVER.get()).as_mut_ptr();
+                server.poll();
+            }
         }
-        if let Some(client) = http_client.as_mut() {
-            match client.poll() {
-                http::ClientPoll::InProgress => {}
-                http::ClientPoll::Done(resp) => {
-                    http::print_response(&resp);
-                    http_client = None;
-                }
-                http::ClientPoll::Error(err) => {
-                    http::print_error(err);
-                    http_client = None;
+        if HTTP_READY.load(Ordering::Acquire) {
+            unsafe {
+                let client = &mut *(*HTTP_CLIENT.get()).as_mut_ptr();
+                match client.poll() {
+                    http::ClientPoll::InProgress => {}
+                    http::ClientPoll::Done(resp) => {
+                        http::print_response(&resp);
+                        HTTP_READY.store(false, Ordering::Release);
+                    }
+                    http::ClientPoll::Error(err) => {
+                        http::print_error(err);
+                        HTTP_READY.store(false, Ordering::Release);
+                    }
                 }
             }
         }
@@ -70,6 +75,25 @@ pub extern "C" fn _start() -> ! {
         unsafe { asm!("pause"); }
     }
 }
+
+struct StaticCell<T>(UnsafeCell<MaybeUninit<T>>);
+
+unsafe impl<T> Sync for StaticCell<T> {}
+
+impl<T> StaticCell<T> {
+    const fn new() -> Self {
+        Self(UnsafeCell::new(MaybeUninit::uninit()))
+    }
+
+    fn get(&self) -> *mut MaybeUninit<T> {
+        self.0.get()
+    }
+}
+
+static ECHO_SERVER: StaticCell<echo::EchoServer> = StaticCell::new();
+static HTTP_CLIENT: StaticCell<http::HttpClient> = StaticCell::new();
+static ECHO_READY: AtomicBool = AtomicBool::new(false);
+static HTTP_READY: AtomicBool = AtomicBool::new(false);
 
 fn write_decimal(mut value: u64) {
     let mut buf = [0u8; 20];
