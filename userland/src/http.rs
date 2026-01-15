@@ -15,13 +15,52 @@ pub struct HeaderInfo {
     pub status_code: u16,
     pub content_length: Option<usize>,
     pub header_end: usize,
+    pub chunked: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HttpResponse {
+    pub status_code: u16,
+    pub content_length: Option<usize>,
+    pub chunked: bool,
 }
 
 const HEADER_MAX: usize = 2048;
+const CHUNK_LINE_MAX: usize = 32;
 const READ_BUF_SIZE: usize = 512;
 const IDLE_LIMIT: u32 = 200;
+const CHUNK_PENDING_MAX: usize = CHUNK_LINE_MAX + 2;
+const CHUNK_SCRATCH_MAX: usize = HEADER_MAX + CHUNK_PENDING_MAX;
 
-pub fn http_get(ip: [u8; 4], port: u16, path: &str, host: &str) -> Result<(), HttpError> {
+pub trait BodySink {
+    fn on_data(&mut self, data: &[u8]);
+}
+
+pub struct StdoutSink;
+
+impl BodySink for StdoutSink {
+    fn on_data(&mut self, data: &[u8]) {
+        let _ = sys::write(1, data);
+    }
+}
+
+pub fn http_get(
+    ip: [u8; 4],
+    port: u16,
+    path: &str,
+    host: &str,
+) -> Result<HttpResponse, HttpError> {
+    let mut sink = StdoutSink;
+    http_get_with(ip, port, path, host, &mut sink)
+}
+
+pub fn http_get_with<S: BodySink>(
+    ip: [u8; 4],
+    port: u16,
+    path: &str,
+    host: &str,
+    sink: &mut S,
+) -> Result<HttpResponse, HttpError> {
     let socket = TcpSocket::new();
     loop {
         match socket.connect(ip, port) {
@@ -50,8 +89,12 @@ pub fn http_get(ip: [u8; 4], port: u16, path: &str, host: &str) -> Result<(), Ht
     let mut header_len = 0usize;
     let mut parsed: Option<HeaderInfo> = None;
     let mut content_len: Option<usize> = None;
+    let mut chunked = false;
     let mut body_written = 0usize;
     let mut idle = 0u32;
+    let mut chunk = ChunkDecoder::new();
+    let mut pending = [0u8; CHUNK_PENDING_MAX];
+    let mut pending_len = 0usize;
 
     loop {
         let mut buf = [0u8; READ_BUF_SIZE];
@@ -80,20 +123,27 @@ pub fn http_get(ip: [u8; 4], port: u16, path: &str, host: &str) -> Result<(), Ht
             match parse_headers(&header_buf[..header_len]) {
                 Ok(None) => {}
                 Ok(Some(info)) => {
+                    chunked = info.chunked;
                     parsed = Some(info);
-                    content_len = info.content_length;
-                    print_header_info(&info, &header_buf[..info.header_end]);
+                    content_len = if info.chunked { None } else { info.content_length };
                     if header_len > info.header_end {
-                        let mut body = &header_buf[info.header_end..header_len];
-                        if let Some(total) = content_len {
-                            let remaining = total.saturating_sub(body_written);
-                            if body.len() > remaining {
-                                body = &body[..remaining];
+                        let body = &header_buf[info.header_end..header_len];
+                        if chunked {
+                            if consume_chunked(&mut chunk, &mut pending, &mut pending_len, body, sink)? {
+                                break;
                             }
-                        }
-                        if !body.is_empty() {
-                            let _ = sys::write(1, body);
-                            body_written = body_written.saturating_add(body.len());
+                        } else {
+                            let mut body = body;
+                            if let Some(total) = content_len {
+                                let remaining = total.saturating_sub(body_written);
+                                if body.len() > remaining {
+                                    body = &body[..remaining];
+                                }
+                            }
+                            if !body.is_empty() {
+                                sink.on_data(body);
+                                body_written = body_written.saturating_add(body.len());
+                            }
                         }
                     }
                 }
@@ -101,18 +151,24 @@ pub fn http_get(ip: [u8; 4], port: u16, path: &str, host: &str) -> Result<(), Ht
             }
         } else {
             let mut body = &buf[..n];
-            if let Some(total) = content_len {
-                let remaining = total.saturating_sub(body_written);
-                if remaining == 0 {
+            if chunked {
+                if consume_chunked(&mut chunk, &mut pending, &mut pending_len, body, sink)? {
                     break;
                 }
-                if body.len() > remaining {
-                    body = &body[..remaining];
+            } else {
+                if let Some(total) = content_len {
+                    let remaining = total.saturating_sub(body_written);
+                    if remaining == 0 {
+                        break;
+                    }
+                    if body.len() > remaining {
+                        body = &body[..remaining];
+                    }
                 }
-            }
-            if !body.is_empty() {
-                let _ = sys::write(1, body);
-                body_written = body_written.saturating_add(body.len());
+                if !body.is_empty() {
+                    sink.on_data(body);
+                    body_written = body_written.saturating_add(body.len());
+                }
             }
         }
 
@@ -125,7 +181,12 @@ pub fn http_get(ip: [u8; 4], port: u16, path: &str, host: &str) -> Result<(), Ht
     }
 
     let _ = socket.close();
-    Ok(())
+    let info = parsed.ok_or(HttpError::Malformed)?;
+    Ok(HttpResponse {
+        status_code: info.status_code,
+        content_length: info.content_length,
+        chunked,
+    })
 }
 
 fn send_all(socket: &TcpSocket, data: &[u8]) -> Result<(), HttpError> {
@@ -145,6 +206,38 @@ fn send_all(socket: &TcpSocket, data: &[u8]) -> Result<(), HttpError> {
     Ok(())
 }
 
+fn consume_chunked<S: BodySink>(
+    chunk: &mut ChunkDecoder,
+    pending: &mut [u8; CHUNK_PENDING_MAX],
+    pending_len: &mut usize,
+    data: &[u8],
+    sink: &mut S,
+) -> Result<bool, HttpError> {
+    let mut scratch = [0u8; CHUNK_SCRATCH_MAX];
+    let mut total = 0usize;
+    if *pending_len > 0 {
+        scratch[..*pending_len].copy_from_slice(&pending[..*pending_len]);
+        total = *pending_len;
+        *pending_len = 0;
+    }
+    if total + data.len() > scratch.len() {
+        return Err(HttpError::HeaderTooLarge);
+    }
+    scratch[total..total + data.len()].copy_from_slice(data);
+    total += data.len();
+
+    let used = chunk.consume(&scratch[..total], sink)?;
+    if used < total {
+        let remaining = total - used;
+        if remaining > pending.len() {
+            return Err(HttpError::HeaderTooLarge);
+        }
+        pending[..remaining].copy_from_slice(&scratch[used..total]);
+        *pending_len = remaining;
+    }
+    Ok(chunk.is_done())
+}
+
 fn parse_headers(buf: &[u8]) -> Result<Option<HeaderInfo>, HttpError> {
     let header_end = match find_header_end(buf) {
         Some(end) => end,
@@ -153,6 +246,7 @@ fn parse_headers(buf: &[u8]) -> Result<Option<HeaderInfo>, HttpError> {
     let status_line_end = find_crlf(buf).ok_or(HttpError::Malformed)?;
     let status = parse_status_code(&buf[..status_line_end]).ok_or(HttpError::Malformed)?;
     let mut content_length: Option<usize> = None;
+    let mut chunked = false;
 
     let mut line_start = status_line_end + 2;
     while line_start + 1 < header_end {
@@ -164,6 +258,9 @@ fn parse_headers(buf: &[u8]) -> Result<Option<HeaderInfo>, HttpError> {
         if let Some(len) = parse_content_length(line) {
             content_length = Some(len);
         }
+        if parse_transfer_encoding_chunked(line) {
+            chunked = true;
+        }
         line_start = line_end + 2;
     }
 
@@ -171,6 +268,7 @@ fn parse_headers(buf: &[u8]) -> Result<Option<HeaderInfo>, HttpError> {
         status_code: status,
         content_length,
         header_end,
+        chunked,
     }))
 }
 
@@ -250,6 +348,45 @@ fn parse_content_length(line: &[u8]) -> Option<usize> {
     if found { Some(value) } else { None }
 }
 
+fn parse_transfer_encoding_chunked(line: &[u8]) -> bool {
+    const KEY: &[u8] = b"Transfer-Encoding:";
+    if line.len() < KEY.len() {
+        return false;
+    }
+    if !starts_with_ignore_ascii_case(line, KEY) {
+        return false;
+    }
+    let mut i = KEY.len();
+    while i < line.len() && (line[i] == b' ' || line[i] == b'\t') {
+        i += 1;
+    }
+    if i >= line.len() {
+        return false;
+    }
+    contains_token_ignore_ascii_case(&line[i..], b"chunked")
+}
+
+fn contains_token_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i + needle.len() <= haystack.len() {
+        let mut matched = true;
+        for j in 0..needle.len() {
+            if to_lower(haystack[i + j]) != to_lower(needle[j]) {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn starts_with_ignore_ascii_case(line: &[u8], prefix: &[u8]) -> bool {
     if line.len() < prefix.len() {
         return false;
@@ -270,17 +407,29 @@ fn to_lower(b: u8) -> u8 {
     }
 }
 
-fn print_header_info(info: &HeaderInfo, raw: &[u8]) {
-    let _ = sys::write(1, b"\n--- HTTP HEADER ---\n");
-    let _ = sys::write(1, raw);
-    let _ = sys::write(1, b"\n");
+pub fn print_response(resp: &HttpResponse) {
+    let _ = sys::write(1, b"\n--- HTTP RESPONSE ---\n");
     let _ = sys::write(1, b"status=");
-    write_decimal(info.status_code as usize);
-    if let Some(len) = info.content_length {
+    write_decimal(resp.status_code as usize);
+    if let Some(len) = resp.content_length {
         let _ = sys::write(1, b" content-length=");
         write_decimal(len);
     }
+    if resp.chunked {
+        let _ = sys::write(1, b" transfer-encoding=chunked");
+    }
     let _ = sys::write(1, b"\n--- HTTP BODY ---\n");
+}
+
+pub fn print_error(err: HttpError) {
+    let _ = sys::write(1, b"\nHTTP error: ");
+    match err {
+        HttpError::Send => { let _ = sys::write(1, b"send"); }
+        HttpError::Recv => { let _ = sys::write(1, b"recv"); }
+        HttpError::HeaderTooLarge => { let _ = sys::write(1, b"header-too-large"); }
+        HttpError::Malformed => { let _ = sys::write(1, b"malformed"); }
+    }
+    let _ = sys::write(1, b"\n");
 }
 
 fn write_decimal(mut value: usize) {
@@ -299,4 +448,121 @@ fn write_decimal(mut value: usize) {
     }
     buf[..i].reverse();
     let _ = sys::write(1, &buf[..i]);
+}
+
+struct ChunkDecoder {
+    state: ChunkState,
+    line: [u8; CHUNK_LINE_MAX],
+    line_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChunkState {
+    Size,
+    Data { remaining: usize },
+    CrLf,
+    Done,
+}
+
+impl ChunkDecoder {
+    fn new() -> Self {
+        Self {
+            state: ChunkState::Size,
+            line: [0u8; CHUNK_LINE_MAX],
+            line_len: 0,
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        self.state == ChunkState::Done
+    }
+
+    fn consume<S: BodySink>(&mut self, mut data: &[u8], sink: &mut S) -> Result<usize, HttpError> {
+        let original_len = data.len();
+        while !data.is_empty() {
+            match self.state {
+                ChunkState::Size => {
+                    while !data.is_empty() {
+                        if self.line_len >= self.line.len() {
+                            return Err(HttpError::HeaderTooLarge);
+                        }
+                        let b = data[0];
+                        self.line[self.line_len] = b;
+                        self.line_len += 1;
+                        data = &data[1..];
+                        if self.line_len >= 2
+                            && self.line[self.line_len - 2] == b'\r'
+                            && self.line[self.line_len - 1] == b'\n'
+                        {
+                            let line = &self.line[..self.line_len - 2];
+                            let size = parse_chunk_size(line).ok_or(HttpError::Malformed)?;
+                            self.line_len = 0;
+                            if size == 0 {
+                                self.state = ChunkState::Done;
+                                return Ok(original_len - data.len());
+                            }
+                            self.state = ChunkState::Data { remaining: size };
+                            break;
+                        }
+                    }
+                }
+                ChunkState::Data { remaining } => {
+                    let take = core::cmp::min(remaining, data.len());
+                    if take > 0 {
+                        sink.on_data(&data[..take]);
+                        data = &data[take..];
+                    }
+                    let left = remaining - take;
+                    if left == 0 {
+                        self.state = ChunkState::CrLf;
+                    } else {
+                        self.state = ChunkState::Data { remaining: left };
+                    }
+                }
+                ChunkState::CrLf => {
+                    if data.len() < 2 {
+                        break;
+                    }
+                    if data[0] != b'\r' || data[1] != b'\n' {
+                        return Err(HttpError::Malformed);
+                    }
+                    data = &data[2..];
+                    self.state = ChunkState::Size;
+                }
+                ChunkState::Done => {
+                    return Ok(original_len - data.len());
+                }
+            }
+        }
+        Ok(original_len - data.len())
+    }
+}
+
+fn parse_chunk_size(line: &[u8]) -> Option<usize> {
+    let mut i = 0usize;
+    while i < line.len() && (line[i] == b' ' || line[i] == b'\t') {
+        i += 1;
+    }
+    let mut value: usize = 0;
+    let mut found = false;
+    while i < line.len() {
+        let b = line[i];
+        if b == b';' || b == b' ' || b == b'\t' {
+            break;
+        }
+        let digit = hex_value(b)?;
+        value = value.saturating_mul(16).saturating_add(digit as usize);
+        found = true;
+        i += 1;
+    }
+    if found { Some(value) } else { None }
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }

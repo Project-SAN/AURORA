@@ -16,9 +16,11 @@ const HTTP_HOST: &str = "10.0.2.2";
 pub extern "C" fn _start() -> ! {
     let msg = b"Hello from userland\n";
     sys::write(1, msg);
-    let _ = unsafe { sys::syscall1(sys::SYS_EXIT, 0) };
 
-    let _ = http::http_get(HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST);
+    match http::http_get(HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST) {
+        Ok(resp) => http::print_response(&resp),
+        Err(err) => http::print_error(err),
+    }
 
     loop {
         sys::sleep(1000);
