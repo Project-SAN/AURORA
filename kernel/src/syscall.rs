@@ -1,7 +1,7 @@
 use crate::arch::syscall::SyscallFrame;
 use crate::interrupts;
 use crate::serial;
-use crate::{net, virtio};
+use crate::{net, time, virtio};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +17,7 @@ const SYS_NET_RECV: u64 = 12;
 const SYS_NET_SEND: u64 = 13;
 const SYS_NET_CLOSE: u64 = 14;
 const SYS_NET_CONNECT: u64 = 15;
+const SYS_TIME_EPOCH: u64 = 16;
 const TICK_MS: u64 = 10;
 
 struct YieldContext {
@@ -51,6 +52,7 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
         SYS_NET_SEND => sys_net_send(frame.rdi, frame.rsi),
         SYS_NET_CLOSE => sys_net_close(),
         SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi),
+        SYS_TIME_EPOCH => sys_time_epoch(),
         _ => u64::MAX,
     };
 }
@@ -68,6 +70,13 @@ fn sys_write(_fd: u64, buf: u64, len: u64) -> u64 {
 
 fn sys_exit(_code: u64) -> u64 {
     0
+}
+
+fn sys_time_epoch() -> u64 {
+    match time::epoch_seconds_now(interrupts::ticks()) {
+        Some(val) => val,
+        None => u64::MAX,
+    }
 }
 
 fn sys_yield() -> u64 {

@@ -18,6 +18,7 @@ mod pci;
 mod port;
 mod serial;
 mod syscall;
+mod time;
 mod user;
 mod virtio;
 
@@ -31,6 +32,19 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     serial::init();
     heap::init();
     serial::write(format_args!("Hello from AURORA UEFI kernel\n"));
+
+    match system_table.runtime_services().get_time() {
+        Ok(time) => {
+            if time::init_from_uefi(time, interrupts::ticks()) {
+                serial::write(format_args!("UEFI time captured\n"));
+            } else {
+                serial::write(format_args!("UEFI time invalid\n"));
+            }
+        }
+        Err(_) => {
+            serial::write(format_args!("UEFI time unavailable\n"));
+        }
+    }
 
     let rsdp_addr = find_rsdp(&system_table);
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
