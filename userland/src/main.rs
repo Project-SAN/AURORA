@@ -4,6 +4,7 @@
 use core::arch::asm;
 
 mod http;
+mod echo;
 mod socket;
 mod sys;
 
@@ -11,6 +12,9 @@ const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
 const HTTP_PORT: u16 = 8080;
 const HTTP_PATH: &str = "/";
 const HTTP_HOST: &str = "10.0.2.2";
+const ECHO_PORT: u16 = 1234;
+const RUN_HTTP_CLIENT: bool = true;
+const RUN_ECHO_SERVER: bool = true;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -24,13 +28,45 @@ pub extern "C" fn _start() -> ! {
         let _ = sys::write(1, b"epoch=unavailable\n");
     }
 
-    match http::http_get(HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST) {
-        Ok(resp) => http::print_response(&resp),
-        Err(err) => http::print_error(err),
-    }
+    let mut echo_server = if RUN_ECHO_SERVER {
+        match echo::EchoServer::new(ECHO_PORT) {
+            Ok(server) => Some(server),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    let mut http_client = if RUN_HTTP_CLIENT {
+        match http::HttpClient::new(HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST) {
+            Ok(client) => Some(client),
+            Err(err) => {
+                http::print_error(err);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     loop {
-        sys::sleep(1000);
+        if let Some(server) = echo_server.as_mut() {
+            server.poll();
+        }
+        if let Some(client) = http_client.as_mut() {
+            match client.poll() {
+                http::ClientPoll::InProgress => {}
+                http::ClientPoll::Done(resp) => {
+                    http::print_response(&resp);
+                    http_client = None;
+                }
+                http::ClientPoll::Error(err) => {
+                    http::print_error(err);
+                    http_client = None;
+                }
+            }
+        }
+        sys::sleep(1);
         unsafe { asm!("pause"); }
     }
 }
