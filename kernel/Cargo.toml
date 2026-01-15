@@ -2,6 +2,7 @@
 name = "aurora-kernel"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [features]
 userland = []
