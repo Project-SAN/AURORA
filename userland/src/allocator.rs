@@ -1,48 +1,81 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-// Simple bump allocator for userland. Adjust size as needed.
-const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB
+extern "C" {
+    static _heap_start: u8;
+    static _heap_end: u8;
+}
 
-#[repr(align(16))]
-struct AlignedHeap([u8; HEAP_SIZE]);
-
-static mut HEAP: AlignedHeap = AlignedHeap([0; HEAP_SIZE]);
+static HEAP_START: AtomicUsize = AtomicUsize::new(0);
+static HEAP_END: AtomicUsize = AtomicUsize::new(0);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-struct BumpAlloc;
+pub fn init() {
+    if INITIALIZED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let start = unsafe { core::ptr::addr_of!(_heap_start) as usize };
+    let end = unsafe { core::ptr::addr_of!(_heap_end) as usize };
+    HEAP_START.store(start, Ordering::Release);
+    HEAP_END.store(end, Ordering::Release);
+    NEXT.store(start, Ordering::Release);
+}
 
-unsafe impl GlobalAlloc for BumpAlloc {
+struct BumpAllocator;
+
+unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if !INITIALIZED.load(Ordering::Acquire) {
+            init();
+        }
+        let start = HEAP_START.load(Ordering::Acquire);
+        let end = HEAP_END.load(Ordering::Acquire);
+        if start == 0 || end <= start {
+            return null_mut();
+        }
         let align = layout.align().max(1);
         let size = layout.size().max(1);
         let mut current = NEXT.load(Ordering::Relaxed);
         loop {
-            let aligned = (current + (align - 1)) & !(align - 1);
+            let aligned = align_up(current.max(start), align);
             let next = match aligned.checked_add(size) {
                 Some(val) => val,
                 None => return null_mut(),
             };
-            if next > HEAP_SIZE {
+            if next > end {
                 return null_mut();
             }
             match NEXT.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return HEAP.0.as_mut_ptr().add(aligned),
+                Ok(_) => return aligned as *mut u8,
                 Err(prev) => current = prev,
             }
         }
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = self.alloc(layout);
+        if !ptr.is_null() {
+            core::ptr::write_bytes(ptr, 0, layout.size());
+        }
+        ptr
+    }
 }
 
 #[global_allocator]
-static ALLOCATOR: BumpAlloc = BumpAlloc;
+static ALLOCATOR: BumpAllocator = BumpAllocator;
 
 #[alloc_error_handler]
 fn oom(_layout: Layout) -> ! {
     loop {
         unsafe { core::arch::asm!("hlt"); }
     }
+}
+
+#[inline]
+const fn align_up(value: usize, align: usize) -> usize {
+    (value + (align - 1)) & !(align - 1)
 }

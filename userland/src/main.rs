@@ -27,6 +27,7 @@ const RUN_ECHO_SERVER: bool = true;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    allocator::init();
     let msg = b"Hello from userland\n";
     sys::write(1, msg);
     fs_persist_test();
