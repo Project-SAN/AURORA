@@ -3,4 +3,9 @@ rustflags = [
   "-C", "link-arg=-Tuserland/linker.ld",
   "-C", "relocation-model=static",
   "-C", "link-arg=-no-pie",
+  "-C", "target-feature=-aes",
+  "--cfg", "aes_force_soft",
 ]
+
+[env]
+CARGO_CFG_CURVE25519_DALEK_BACKEND = "serial"

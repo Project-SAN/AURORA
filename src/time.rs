@@ -3,18 +3,25 @@ pub trait TimeProvider {
     fn now_coarse(&self) -> u32;
 }
 
-#[cfg(feature = "std")]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+pub struct EpochSecondsProvider<F> {
+    now: F,
+}
 
-#[cfg(feature = "std")]
-pub struct SystemTimeProvider;
+impl<F> EpochSecondsProvider<F>
+where
+    F: Fn() -> u64,
+{
+    pub const fn new(now: F) -> Self {
+        Self { now }
+    }
+}
 
-#[cfg(feature = "std")]
-impl TimeProvider for SystemTimeProvider {
+impl<F> TimeProvider for EpochSecondsProvider<F>
+where
+    F: Fn() -> u64,
+{
     fn now_coarse(&self) -> u32 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0));
-        now.as_secs() as u32
+        let secs = (self.now)();
+        secs.min(u32::MAX as u64) as u32
     }
 }
