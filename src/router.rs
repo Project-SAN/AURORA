@@ -203,12 +203,13 @@ impl Router {
         })
     }
 
-    pub fn process_forward_packet(
-        &self,
+    pub fn process_forward_packet<'p, 'io, 'e>(
+        &'p self,
         sv: crate::types::Sv,
-        now: &dyn crate::time::TimeProvider,
-        forward: &mut dyn crate::forward::Forward,
-        replay: &mut dyn crate::node::ReplayFilter,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        exit: Option<&'e mut dyn crate::node::ExitTransport>,
+        replay: &'io mut dyn crate::node::ReplayFilter,
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
@@ -221,16 +222,17 @@ impl Router {
             forward,
             replay,
             policy,
+            exit,
         };
         node::forward::process_data(&mut ctx, chdr, ahdr, payload)
     }
 
-    pub fn process_backward_packet(
-        &self,
+    pub fn process_backward_packet<'p, 'io>(
+        &'p self,
         sv: crate::types::Sv,
-        now: &dyn crate::time::TimeProvider,
-        forward: &mut dyn crate::forward::Forward,
-        replay: &mut dyn crate::node::ReplayFilter,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        replay: &'io mut dyn crate::node::ReplayFilter,
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
@@ -243,6 +245,7 @@ impl Router {
             forward,
             replay,
             policy,
+            exit: None,
         };
         node::backward::process_data(&mut ctx, chdr, ahdr, payload)
     }

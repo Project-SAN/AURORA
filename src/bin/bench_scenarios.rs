@@ -165,6 +165,7 @@ fn run_forward_chain(
             forward: &mut forward,
             replay: &mut replay,
             policy,
+            exit: None,
         };
         hornet::node::forward::process_data(&mut ctx, chdr, ahdr, payload)?;
         if let Some(next) = slot.borrow_mut().take() {
