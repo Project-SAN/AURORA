@@ -2,6 +2,7 @@
 use hornet::time::TimeProvider;
 
 #[cfg(feature = "hornet-time")]
+#[allow(dead_code)]
 pub struct SysTimeProvider;
 
 #[cfg(feature = "hornet-time")]

@@ -3,17 +3,22 @@ use alloc::vec::Vec;
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
-    routing::{self, RouteElem},
     policy::PolicyCapsule,
-    crypto::prg,
+    routing::{self, RouteElem},
     sphinx::derive_tau_tag,
-    types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv, PacketType},
+    types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
 };
+#[cfg(feature = "std")]
+use crate::{crypto::prg, types::PacketType};
 pub type Result<T> = core::result::Result<T, Error>;
 
+#[cfg(feature = "std")]
 const TAG_EXACT: u8 = 0x01;
+#[cfg(feature = "std")]
 const TAG_PREFIX: u8 = 0x02;
+#[cfg(feature = "std")]
 const TAG_CIDR: u8 = 0x03;
+#[cfg(feature = "std")]
 const TAG_RANGE: u8 = 0x04;
 
 pub fn process_data(
@@ -193,6 +198,7 @@ fn derive_exit_iv(ctx: &NodeCtx, ahdr: &Ahdr) -> [u8; 16] {
     }
 }
 
+#[cfg(feature = "std")]
 fn leaf_len(bytes: &[u8]) -> Result<usize> {
     if bytes.is_empty() {
         return Err(Error::Length);

@@ -11,11 +11,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod config;
-#[cfg(feature = "std")]
 pub mod io;
 pub mod penalty;
 pub mod runtime;
-#[cfg(feature = "std")]
 pub mod storage;
 pub mod sync;
 

@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 hornet = { package = "aurora", path = "..", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
 
 [features]
 hornet-time = ["dep:hornet"]
+hornet-router = ["dep:hornet", "dep:serde", "dep:serde_json"]

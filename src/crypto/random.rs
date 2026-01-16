@@ -38,8 +38,7 @@ impl fmt::Display for XdrbgError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for XdrbgError {}
+
 
 /// Parameter set for an XDRBG instantiation.
 ///
