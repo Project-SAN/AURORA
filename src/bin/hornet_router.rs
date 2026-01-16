@@ -47,7 +47,7 @@ fn main() {
     let mut listener = TcpPacketListener::bind(&bind_addr, secrets.sv).expect("bind listener");
     loop {
         match listener.next() {
-            Ok(mut packet) => {
+            Ok(Some(mut packet)) => {
                 if packet.chdr.typ == PacketType::Setup {
                     if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
                         eprintln!("setup packet handling failed: {:?}", err);
@@ -95,6 +95,7 @@ fn main() {
                     }
                 }
             }
+            Ok(None) => continue,
             Err(err) => {
                 eprintln!("listener error: {err:?}");
                 break;

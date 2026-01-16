@@ -16,8 +16,8 @@ pub fn init() {
     if INITIALIZED.swap(true, Ordering::AcqRel) {
         return;
     }
-    let start = unsafe { core::ptr::addr_of!(_heap_start) as usize };
-    let end = unsafe { core::ptr::addr_of!(_heap_end) as usize };
+    let start = core::ptr::addr_of!(_heap_start) as usize;
+    let end = core::ptr::addr_of!(_heap_end) as usize;
     HEAP_START.store(start, Ordering::Release);
     HEAP_END.store(end, Ordering::Release);
     NEXT.store(start, Ordering::Release);

@@ -21,12 +21,6 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256, Sha512};
 use spin::Mutex;
-#[cfg(feature = "std")]
-use std::fs;
-#[cfg(feature = "std")]
-use std::path::Path;
-#[cfg(feature = "std")]
-use std::path::PathBuf;
 
 #[derive(Clone, Default)]
 struct BlocklistCircuit {
@@ -141,9 +135,9 @@ impl PlonkPolicy {
             let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
             let pp = match PublicParameters::setup(capacity, &mut rng) {
                 Ok(pp) => pp,
-                Err(err) => {
+                Err(_err) => {
                     #[cfg(feature = "std")]
-                    eprintln!("blocklist setup failed (capacity={}): {:?}", capacity, err);
+                    eprintln!("blocklist setup failed (capacity={}): {:?}", capacity, _err);
                     continue;
                 }
             };
@@ -152,9 +146,9 @@ impl PlonkPolicy {
                     compiled = Some((prover, verifier.to_bytes()));
                     break;
                 }
-                Err(err) => {
+                Err(_err) => {
                     #[cfg(feature = "std")]
-                    eprintln!("blocklist compile failed (capacity={}): {:?}", capacity, err);
+                    eprintln!("blocklist compile failed (capacity={}): {:?}", capacity, _err);
                 }
             }
         }
@@ -299,9 +293,9 @@ impl PlonkPolicy {
                 .ok_or(Error::Crypto)?;
             let (proof, public_inputs) = prover
                 .prove(&mut rng, &circuit)
-                .map_err(|err| {
+                .map_err(|_err| {
                     #[cfg(feature = "std")]
-                    eprintln!("keybinding prove error: {:?}", err);
+                    eprintln!("keybinding prove error: {:?}", _err);
                     Error::Crypto
                 })?;
             #[cfg(feature = "std")]
@@ -444,9 +438,29 @@ fn hash_to_seed(data: &[u8]) -> [u8; 32] {
     seed
 }
 
+pub trait VerifierCache: Send + Sync {
+    fn load_keybinding_verifier(&self) -> Option<Vec<u8>>;
+    fn save_keybinding_verifier(&self, bytes: &[u8]);
+}
+
+static VERIFIER_CACHE: Mutex<Option<Arc<dyn VerifierCache>>> = Mutex::new(None);
+static KEYBINDING_CAP_OVERRIDE: Mutex<Option<Vec<usize>>> = Mutex::new(None);
+static BLOCKLIST_CAP_OVERRIDE: Mutex<Option<Vec<usize>>> = Mutex::new(None);
 static POLICY_STORE: Mutex<BTreeMap<PolicyId, Arc<PlonkPolicy>>> = Mutex::new(BTreeMap::new());
 static VERIFIER_STORE: Mutex<BTreeMap<PolicyId, Vec<VerifierEntry>>> = Mutex::new(BTreeMap::new());
 static KEYBINDING_CACHE: Mutex<Option<(Prover, Vec<u8>)>> = Mutex::new(None);
+
+pub fn set_keybinding_verifier_cache(cache: Arc<dyn VerifierCache>) {
+    *VERIFIER_CACHE.lock() = Some(cache);
+}
+
+pub fn set_keybinding_capacities(capacities: Vec<usize>) {
+    *KEYBINDING_CAP_OVERRIDE.lock() = Some(capacities);
+}
+
+pub fn set_blocklist_capacities(capacities: Vec<usize>) {
+    *BLOCKLIST_CAP_OVERRIDE.lock() = Some(capacities);
+}
 
 fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
     if let Some((prover, verifier)) = KEYBINDING_CACHE.lock().as_ref() {
@@ -467,9 +481,9 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
         let mut rng = ChaCha20Rng::from_seed(hash_to_seed(label));
         let pp = match PublicParameters::setup(capacity, &mut rng) {
             Ok(pp) => pp,
-            Err(err) => {
+            Err(_err) => {
                 #[cfg(feature = "std")]
-                eprintln!("keybinding setup failed (capacity={}): {:?}", capacity, err);
+                eprintln!("keybinding setup failed (capacity={}): {:?}", capacity, _err);
                 continue;
             }
         };
@@ -478,9 +492,9 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
                 compiled = Some((prover, verifier.to_bytes()));
                 break;
             }
-            Err(err) => {
+            Err(_err) => {
                 #[cfg(feature = "std")]
-                eprintln!("keybinding compile failed (capacity={}): {:?}", capacity, err);
+                eprintln!("keybinding compile failed (capacity={}): {:?}", capacity, _err);
             }
         }
     }
@@ -498,35 +512,15 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
 }
 
 fn keybinding_capacities() -> Vec<usize> {
-    #[cfg(feature = "std")]
-    {
-        if let Ok(raw) = std::env::var("HORNET_KEYBINDING_LOG2") {
-            if let Ok(log2) = raw.parse::<usize>() {
-                return vec![1usize << log2];
-            }
-        }
-        if let Ok(raw) = std::env::var("HORNET_KEYBINDING_CAPACITY") {
-            if let Ok(capacity) = raw.parse::<usize>() {
-                return vec![capacity];
-            }
-        }
+    if let Some(capacities) = KEYBINDING_CAP_OVERRIDE.lock().as_ref() {
+        return capacities.clone();
     }
     vec![1 << 15, 1 << 16]
 }
 
 fn blocklist_capacities(len: usize) -> Vec<usize> {
-    #[cfg(feature = "std")]
-    {
-        if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_LOG2") {
-            if let Ok(log2) = raw.parse::<u32>() {
-                return vec![1usize << log2];
-            }
-        }
-        if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_CAPACITY") {
-            if let Ok(capacity) = raw.parse::<usize>() {
-                return vec![capacity];
-            }
-        }
+    if let Some(capacities) = BLOCKLIST_CAP_OVERRIDE.lock().as_ref() {
+        return capacities.clone();
     }
     let mut capacities = Vec::new();
     let mut cap = 1usize << 8;
@@ -541,33 +535,16 @@ fn blocklist_capacities(len: usize) -> Vec<usize> {
     capacities
 }
 
-#[cfg(feature = "std")]
 fn load_keybinding_verifier() -> Option<Vec<u8>> {
-    let path = keybinding_verifier_path();
-    fs::read(path).ok()
+    let cache = VERIFIER_CACHE.lock().clone();
+    cache.and_then(|cache| cache.load_keybinding_verifier())
 }
 
-#[cfg(not(feature = "std"))]
-fn load_keybinding_verifier() -> Option<Vec<u8>> {
-    None
-}
-
-#[cfg(feature = "std")]
 fn save_keybinding_verifier(bytes: &[u8]) {
-    let path = keybinding_verifier_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    let cache = VERIFIER_CACHE.lock().clone();
+    if let Some(cache) = cache {
+        cache.save_keybinding_verifier(bytes);
     }
-    let _ = fs::write(path, bytes);
-}
-
-#[cfg(not(feature = "std"))]
-fn save_keybinding_verifier(_bytes: &[u8]) {}
-
-#[cfg(feature = "std")]
-fn keybinding_verifier_path() -> PathBuf {
-    let filename = "keybinding-verifier-poseidon.bin";
-    Path::new("target").join(filename)
 }
 
 

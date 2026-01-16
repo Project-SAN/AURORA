@@ -1,9 +1,12 @@
 use crate::policy::PolicyMetadata;
 use crate::setup::directory::RouteAnnouncement;
 use crate::types::{Result, RoutingSegment, Sv};
+use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "std")]
 use std::fs;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
@@ -26,16 +29,19 @@ pub trait RouterStorage {
     fn save(&self, state: &StoredState) -> Result<()>;
 }
 
+#[cfg(feature = "std")]
 pub struct FileRouterStorage {
     path: PathBuf,
 }
 
+#[cfg(feature = "std")]
 impl FileRouterStorage {
     pub fn new<P: Into<PathBuf>>(path: P) -> Self {
         Self { path: path.into() }
     }
 }
 
+#[cfg(feature = "std")]
 impl RouterStorage for FileRouterStorage {
     fn load(&self) -> Result<StoredState> {
         let data = fs::read(&self.path).map_err(|_| crate::types::Error::Crypto)?;

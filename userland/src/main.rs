@@ -15,6 +15,10 @@ mod sys;
 mod allocator;
 #[cfg(feature = "hornet-time")]
 mod time_provider;
+#[cfg(feature = "hornet-router")]
+mod router_storage;
+#[cfg(feature = "hornet-router")]
+mod router_io;
 
 const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
 const HTTP_PORT: u16 = 8080;
