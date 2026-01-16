@@ -6,6 +6,7 @@ const CONFIG_DATA: u16 = 0xCFC;
 
 const VENDOR_VIRTIO: u16 = 0x1AF4;
 const DEVICE_VIRTIO_NET_MODERN: u16 = 0x1041;
+const DEVICE_VIRTIO_BLK_MODERN: u16 = 0x1042;
 const PCI_STATUS_CAPABILITIES: u16 = 1 << 4;
 const PCI_CAP_ID_VENDOR: u8 = 0x09;
 const PCI_CAP_ID_MSIX: u8 = 0x11;
@@ -87,6 +88,66 @@ pub fn find_virtio_net() -> Option<VirtioPciDevice> {
                         } else {
                             let addr = (bar & 0xFFFF_FFF0) as u64;
                             // Skip tiny MSI-X/PBA-style BARs; prefer the main MMIO window.
+                            if addr >= 0x1000 && mmio_base.is_none() {
+                                mmio_base = Some(addr);
+                            }
+                        }
+                    }
+                    let caps = read_virtio_caps(bus, device, function);
+                    return Some(VirtioPciDevice {
+                        bus,
+                        device,
+                        function,
+                        io_base,
+                        mmio_base,
+                        common_cfg: caps.common_cfg,
+                        notify_cfg: caps.notify_cfg,
+                        notify_off_multiplier: caps.notify_off_multiplier,
+                        device_cfg: caps.device_cfg,
+                        msix_table: caps.msix_table,
+                        msix_table_size: caps.msix_table_size,
+                        msix_cap_offset: caps.msix_cap_offset,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn find_virtio_blk() -> Option<VirtioPciDevice> {
+    for bus in 0u16..=255 {
+        for device in 0u16..32 {
+            let vendor = read_u16(bus, device, 0, 0x00);
+            if vendor == 0xFFFF {
+                continue;
+            }
+            let header = read_u8(bus, device, 0, 0x0E);
+            let functions = if header & 0x80 != 0 { 8 } else { 1 };
+            for function in 0u16..functions {
+                let vendor = read_u16(bus, device, function, 0x00);
+                if vendor == 0xFFFF {
+                    continue;
+                }
+                let device_id = read_u16(bus, device, function, 0x02);
+                let class = read_u8(bus, device, function, 0x0B);
+                if vendor == VENDOR_VIRTIO
+                    && device_id == DEVICE_VIRTIO_BLK_MODERN
+                    && class == 0x01
+                {
+                    let bars = read_bars(bus, device, function);
+                    let mut io_base = None;
+                    let mut mmio_base = None;
+                    for bar in bars {
+                        if bar == 0 {
+                            continue;
+                        }
+                        if bar & 0x1 == 0x1 {
+                            if io_base.is_none() {
+                                io_base = Some((bar & 0xFFFC) as u16);
+                            }
+                        } else {
+                            let addr = (bar & 0xFFFF_FFF0) as u64;
                             if addr >= 0x1000 && mmio_base.is_none() {
                                 mmio_base = Some(addr);
                             }

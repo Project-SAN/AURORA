@@ -2,7 +2,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB for now
+const HEAP_SIZE: usize = 128 * 1024 * 1024; // 128 MiB for FS + networking
 
 static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 

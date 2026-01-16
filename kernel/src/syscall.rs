@@ -1,9 +1,10 @@
 use crate::arch::syscall::SyscallFrame;
 use crate::interrupts;
 use crate::serial;
-use crate::{net, time, virtio};
+use crate::{fs, net, time, virtio};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+use core::str;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::arch::asm;
 
@@ -19,6 +20,14 @@ const SYS_NET_SEND: u64 = 13;
 const SYS_NET_CLOSE: u64 = 14;
 const SYS_NET_CONNECT: u64 = 15;
 const SYS_TIME_EPOCH: u64 = 16;
+const SYS_FS_OPEN: u64 = 32;
+const SYS_FS_READ: u64 = 33;
+const SYS_FS_WRITE: u64 = 34;
+const SYS_FS_CLOSE: u64 = 35;
+const SYS_FS_MKDIR: u64 = 36;
+const SYS_FS_OPENDIR: u64 = 37;
+const SYS_FS_READDIR: u64 = 38;
+const SYS_FS_SYNC: u64 = 39;
 const TICK_MS: u64 = 10;
 
 struct YieldContext {
@@ -55,6 +64,14 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
         SYS_NET_CLOSE => sys_net_close(frame.rdi),
         SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi, frame.rdx),
         SYS_TIME_EPOCH => sys_time_epoch(),
+        SYS_FS_OPEN => sys_fs_open(frame.rdi, frame.rsi, frame.rdx as u32),
+        SYS_FS_READ => sys_fs_read(frame.rdi, frame.rsi, frame.rdx),
+        SYS_FS_WRITE => sys_fs_write(frame.rdi, frame.rsi, frame.rdx),
+        SYS_FS_CLOSE => sys_fs_close(frame.rdi),
+        SYS_FS_MKDIR => sys_fs_mkdir(frame.rdi, frame.rsi),
+        SYS_FS_OPENDIR => sys_fs_opendir(frame.rdi, frame.rsi),
+        SYS_FS_READDIR => sys_fs_readdir(frame.rdi, frame.rsi, frame.rdx),
+        SYS_FS_SYNC => sys_fs_sync(),
         _ => u64::MAX,
     };
 }
@@ -78,6 +95,92 @@ fn sys_time_epoch() -> u64 {
     match time::epoch_seconds_now(interrupts::ticks()) {
         Some(val) => val,
         None => u64::MAX,
+    }
+}
+
+fn sys_fs_open(path: u64, len: u64, flags: u32) -> u64 {
+    let path = match get_user_str(path, len) {
+        Some(p) => p,
+        None => return u64::MAX,
+    };
+    match fs::open(path, flags) {
+        Some(handle) => handle,
+        None => u64::MAX,
+    }
+}
+
+fn sys_fs_read(handle: u64, buf: u64, len: u64) -> u64 {
+    if buf == 0 || len == 0 {
+        return 0;
+    }
+    let max_len = usize::try_from(len).unwrap_or(usize::MAX);
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, max_len) };
+    match fs::read(handle, slice) {
+        Some(n) => n as u64,
+        None => u64::MAX,
+    }
+}
+
+fn sys_fs_write(handle: u64, buf: u64, len: u64) -> u64 {
+    if buf == 0 || len == 0 {
+        return 0;
+    }
+    let max_len = usize::try_from(len).unwrap_or(usize::MAX);
+    let slice = unsafe { core::slice::from_raw_parts(buf as *const u8, max_len) };
+    match fs::write(handle, slice) {
+        Some(n) => n as u64,
+        None => u64::MAX,
+    }
+}
+
+fn sys_fs_close(handle: u64) -> u64 {
+    if fs::close(handle) {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_fs_mkdir(path: u64, len: u64) -> u64 {
+    let path = match get_user_str(path, len) {
+        Some(p) => p,
+        None => return u64::MAX,
+    };
+    if fs::mkdir(path) {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_fs_opendir(path: u64, len: u64) -> u64 {
+    let path = match get_user_str(path, len) {
+        Some(p) => p,
+        None => return u64::MAX,
+    };
+    match fs::opendir(path) {
+        Some(handle) => handle,
+        None => u64::MAX,
+    }
+}
+
+fn sys_fs_readdir(handle: u64, buf: u64, len: u64) -> u64 {
+    if buf == 0 || len < core::mem::size_of::<fs::Dirent>() as u64 {
+        return u64::MAX;
+    }
+    let entry = unsafe { &mut *(buf as *mut fs::Dirent) };
+    match fs::readdir(handle, entry) {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => u64::MAX,
+    }
+}
+
+fn sys_fs_sync() -> u64 {
+    if fs::sync() {
+        0
+    } else {
+        u64::MAX
     }
 }
 
@@ -210,4 +313,13 @@ fn read_rflags() -> u64 {
         asm!("pushfq; pop {}", out(reg) rflags, options(nomem, preserves_flags));
     }
     rflags
+}
+
+fn get_user_str(ptr: u64, len: u64) -> Option<&'static str> {
+    if ptr == 0 || len == 0 {
+        return None;
+    }
+    let max_len = usize::try_from(len).ok()?;
+    let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, max_len) };
+    str::from_utf8(slice).ok()
 }
