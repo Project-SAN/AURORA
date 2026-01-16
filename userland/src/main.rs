@@ -29,9 +29,9 @@ const HTTP_HOST: &str = "10.0.2.2";
 const ECHO_PORT: u16 = 1234;
 const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 const RUN_HTTP_CLIENT: bool = true;
-const RUN_ECHO_SERVER: bool = true;
+const RUN_ECHO_SERVER: bool = false;
 #[cfg(feature = "hornet-router")]
-const RUN_ROUTER: bool = false;
+const RUN_ROUTER: bool = true;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
