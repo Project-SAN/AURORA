@@ -11,9 +11,9 @@ resolver = "2"
 name = "hornet"
 
 [features]
-default = ["http-client", "std"]
-http-client = ["dep:ureq"]
+default = []
 std = []
+http-client = ["std", "dep:ureq"]
 bench = []
 regex-policy = ["std", "dep:regex"]
 pcd-nova = ["std", "dep:nova-snark", "dep:bincode", "dep:num-bigint"]

@@ -2,6 +2,7 @@ use hornet::router::storage::StoredState;
 use hornet::setup::directory;
 use hornet::setup::wire;
 use hornet::types::{Chdr, PacketType};
+use hornet::utils::decode_hex;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_core::RngCore;
@@ -41,9 +42,13 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     let node_pubs = load_node_pubs(&info.routers)?;
     let directory_body = fs::read_to_string(&entry.directory_path)
         .map_err(|err| format!("failed to read {}: {err}", entry.directory_path))?;
-    let announcement =
-        directory::from_signed_json(&directory_body, info.directory_secret.as_bytes())
-            .map_err(|err| format!("failed to verify directory: {err:?}"))?;
+    let public_key = decode_hex(&info.directory_public_key)
+        .map_err(|err| format!("invalid directory_public_key hex: {err}"))?;
+    if public_key.len() != 32 {
+        return Err("directory_public_key must be 32 bytes".into());
+    }
+    let announcement = directory::from_signed_json(&directory_body, &public_key)
+        .map_err(|err| format!("failed to verify directory: {err:?}"))?;
 
     let mut rng = SmallRng::seed_from_u64(derive_seed());
     let mut source_secret = [0u8; 32];
@@ -138,7 +143,7 @@ fn send_frame(bind: &str, frame: &[u8]) -> Result<(), String> {
 
 #[derive(Deserialize)]
 struct PolicyInfo {
-    directory_secret: String,
+    directory_public_key: String,
     routers: Vec<RouterInfo>,
 }
 

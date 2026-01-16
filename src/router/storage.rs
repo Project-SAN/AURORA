@@ -4,10 +4,6 @@ use crate::types::{Result, RoutingSegment, Sv};
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "std")]
-use std::fs;
-#[cfg(feature = "std")]
-use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct StoredState {
@@ -30,31 +26,9 @@ pub trait RouterStorage {
 }
 
 #[cfg(feature = "std")]
-pub struct FileRouterStorage {
-    path: PathBuf,
-}
-
+mod storage_std;
 #[cfg(feature = "std")]
-impl FileRouterStorage {
-    pub fn new<P: Into<PathBuf>>(path: P) -> Self {
-        Self { path: path.into() }
-    }
-}
-
-#[cfg(feature = "std")]
-impl RouterStorage for FileRouterStorage {
-    fn load(&self) -> Result<StoredState> {
-        let data = fs::read(&self.path).map_err(|_| crate::types::Error::Crypto)?;
-        let state: StoredState =
-            serde_json::from_slice(&data).map_err(|_| crate::types::Error::Crypto)?;
-        Ok(state)
-    }
-
-    fn save(&self, state: &StoredState) -> Result<()> {
-        let data = serde_json::to_vec_pretty(state).map_err(|_| crate::types::Error::Crypto)?;
-        fs::write(&self.path, data).map_err(|_| crate::types::Error::Crypto)
-    }
-}
+pub use storage_std::FileRouterStorage;
 
 impl StoredState {
     pub fn new(
