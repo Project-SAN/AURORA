@@ -14,10 +14,15 @@ pub fn process_data(
     ahdr: &mut Ahdr,
     payload: &mut Vec<u8>,
 ) -> Result<()> {
-    eprintln!("[BACKWARD] Processing backward packet: ahdr_len={}, payload_len={}", 
-              ahdr.bytes.len(), payload.len());
+    #[cfg(feature = "std")]
+    eprintln!(
+        "[BACKWARD] Processing backward packet: ahdr_len={}, payload_len={}",
+        ahdr.bytes.len(),
+        payload.len()
+    );
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
+    #[cfg(feature = "std")]
     eprintln!("[BACKWARD] proc_ahdr succeeded, r_len={}", res.r.0.len());
     let tau = derive_tau_tag(&res.s);
     if !ctx.replay.insert(tau) {
@@ -31,7 +36,10 @@ pub fn process_data(
     let mut iv = chdr.specific;
     onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    eprintln!("[BACKWARD] Added onion layer, forwarding {} bytes", payload.len());
+    #[cfg(feature = "std")]
+    eprintln!(
+        "[BACKWARD] Added onion layer, forwarding {} bytes",
+        payload.len()
+    );
     ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Backward)
 }
-

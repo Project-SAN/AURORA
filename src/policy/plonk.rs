@@ -142,6 +142,7 @@ impl PlonkPolicy {
             let pp = match PublicParameters::setup(capacity, &mut rng) {
                 Ok(pp) => pp,
                 Err(err) => {
+                    #[cfg(feature = "std")]
                     eprintln!("blocklist setup failed (capacity={}): {:?}", capacity, err);
                     continue;
                 }
@@ -152,6 +153,7 @@ impl PlonkPolicy {
                     break;
                 }
                 Err(err) => {
+                    #[cfg(feature = "std")]
                     eprintln!("blocklist compile failed (capacity={}): {:?}", capacity, err);
                 }
             }
@@ -298,12 +300,17 @@ impl PlonkPolicy {
             let (proof, public_inputs) = prover
                 .prove(&mut rng, &circuit)
                 .map_err(|err| {
+                    #[cfg(feature = "std")]
                     eprintln!("keybinding prove error: {:?}", err);
                     Error::Crypto
                 })?;
+            #[cfg(feature = "std")]
             eprintln!(
                 "keybinding proof public_inputs: {:?}",
-                public_inputs.iter().map(|v| v.to_bytes()).collect::<Vec<_>>()
+                public_inputs
+                    .iter()
+                    .map(|v| v.to_bytes())
+                    .collect::<Vec<_>>()
             );
             if public_inputs.len() != 2 || public_inputs[0] != salt || public_inputs[1] != hkey {
                 return Err(Error::Crypto);
@@ -453,6 +460,7 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
         BlsScalar::zero(),
     );
     let capacities = keybinding_capacities();
+    #[cfg(feature = "std")]
     eprintln!("keybinding capacities: {:?}", capacities);
     let mut compiled: Option<(Prover, Vec<u8>)> = None;
     for capacity in capacities {
@@ -460,6 +468,7 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
         let pp = match PublicParameters::setup(capacity, &mut rng) {
             Ok(pp) => pp,
             Err(err) => {
+                #[cfg(feature = "std")]
                 eprintln!("keybinding setup failed (capacity={}): {:?}", capacity, err);
                 continue;
             }
@@ -470,6 +479,7 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
                 break;
             }
             Err(err) => {
+                #[cfg(feature = "std")]
                 eprintln!("keybinding compile failed (capacity={}): {:?}", capacity, err);
             }
         }
@@ -477,6 +487,7 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
     let (prover, verifier_bytes) = match compiled {
         Some(value) => value,
         None => {
+            #[cfg(feature = "std")]
             eprintln!("keybinding compile failed for all capacities");
             return Err(Error::Crypto);
         }
@@ -504,14 +515,17 @@ fn keybinding_capacities() -> Vec<usize> {
 }
 
 fn blocklist_capacities(len: usize) -> Vec<usize> {
-    if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_LOG2") {
-        if let Ok(log2) = raw.parse::<u32>() {
-            return vec![1usize << log2];
+    #[cfg(feature = "std")]
+    {
+        if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_LOG2") {
+            if let Ok(log2) = raw.parse::<u32>() {
+                return vec![1usize << log2];
+            }
         }
-    }
-    if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_CAPACITY") {
-        if let Ok(capacity) = raw.parse::<usize>() {
-            return vec![capacity];
+        if let Ok(raw) = std::env::var("HORNET_BLOCKLIST_CAPACITY") {
+            if let Ok(capacity) = raw.parse::<usize>() {
+                return vec![capacity];
+            }
         }
     }
     let mut capacities = Vec::new();
