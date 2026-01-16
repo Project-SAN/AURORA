@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -11,6 +12,7 @@ mod echo;
 mod fs;
 mod socket;
 mod sys;
+mod allocator;
 #[cfg(feature = "hornet-time")]
 mod time_provider;
 
