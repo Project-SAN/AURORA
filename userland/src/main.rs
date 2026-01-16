@@ -19,6 +19,8 @@ mod time_provider;
 mod router_storage;
 #[cfg(feature = "hornet-router")]
 mod router_io;
+#[cfg(feature = "hornet-router")]
+mod router_app;
 
 const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
 const HTTP_PORT: u16 = 8080;
@@ -28,12 +30,18 @@ const ECHO_PORT: u16 = 1234;
 const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 const RUN_HTTP_CLIENT: bool = true;
 const RUN_ECHO_SERVER: bool = true;
+#[cfg(feature = "hornet-router")]
+const RUN_ROUTER: bool = false;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     allocator::init();
     let msg = b"Hello from userland\n";
     sys::write(1, msg);
+    #[cfg(feature = "hornet-router")]
+    if RUN_ROUTER {
+        router_app::run_router();
+    }
     fs_persist_test();
     if let Some(epoch) = sys::time_epoch() {
         let _ = sys::write(1, b"epoch=");
