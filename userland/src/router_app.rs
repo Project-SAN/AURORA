@@ -16,7 +16,7 @@ use hornet::router::Router;
 use hornet::setup::wire;
 use hornet::types::{self, PacketDirection, PacketType, Result as HornetResult};
 
-use crate::router_io::{UserlandForward, UserlandPacketListener};
+use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketListener};
 use crate::router_storage::UserlandRouterStorage;
 use crate::fs;
 use crate::sys;
@@ -43,6 +43,7 @@ pub fn run_router() -> ! {
     let mut cli = CliServer::listen(config.cli_port);
     let time = time_provider();
     let mut forward = UserlandForward::new();
+    let mut exit = UserlandExitTransport::new();
     let mut replay = ReplayCache::new();
 
     loop {
@@ -60,6 +61,7 @@ pub fn run_router() -> ! {
                         packet.sv,
                         &time,
                         &mut forward,
+                        Some(&mut exit),
                         &mut replay,
                         &mut packet.chdr,
                         &mut packet.ahdr,

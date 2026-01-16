@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use crate::socket::{ConnectState, TcpListener, TcpSocket};
 use crate::sys;
 use hornet::forward::Forward;
+use hornet::node::ExitTransport;
 use hornet::router::io::{encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader};
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
@@ -94,6 +95,34 @@ impl Forward for UserlandForward {
     }
 }
 
+pub struct UserlandExitTransport;
+
+impl UserlandExitTransport {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ExitTransport for UserlandExitTransport {
+    fn send(&mut self, addr: &IpAddr, port: u16, tls: bool, request: &[u8]) -> Result<Vec<u8>> {
+        if tls {
+            return Err(Error::NotImplemented);
+        }
+
+        let ip = match addr {
+            IpAddr::V4(octets) => *octets,
+            IpAddr::V6(_) => return Err(Error::NotImplemented),
+        };
+
+        let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
+        connect_ipv4(&socket, ip, port)?;
+        send_all(&socket, request)?;
+        let response = recv_to_idle(&socket)?;
+        let _ = socket.close();
+        Ok(response)
+    }
+}
+
 fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16) -> Result<()> {
     let mut state = socket.connect(ip, port).map_err(|_| Error::Crypto)?;
     let mut spins = 0u32;
@@ -118,4 +147,27 @@ fn send_all(socket: &TcpSocket, buf: &[u8]) -> Result<()> {
         offset += written;
     }
     Ok(())
+}
+
+fn recv_to_idle(socket: &TcpSocket) -> Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut buf = [0u8; 512];
+    let mut idle_spins = 0u32;
+    loop {
+        match socket.recv(&mut buf) {
+            Ok(0) => {
+                idle_spins = idle_spins.saturating_add(1);
+                if idle_spins > 200 {
+                    break;
+                }
+                sys::sleep(1);
+            }
+            Ok(n) => {
+                idle_spins = 0;
+                response.extend_from_slice(&buf[..n]);
+            }
+            Err(_) => return Err(Error::Crypto),
+        }
+    }
+    Ok(response)
 }

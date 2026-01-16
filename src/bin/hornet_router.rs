@@ -1,5 +1,6 @@
 use hornet::application::setup::RegistrySetupPipeline;
 use hornet::node::NoReplay;
+use hornet::node::exit::TcpExitTransport;
 use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
 use hornet::router::config::RouterConfig;
 use hornet::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
@@ -45,6 +46,7 @@ fn main() {
     let time = StdTimeProvider;
     let bind_addr = env::var("HORNET_ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:7000".into());
     let mut listener = TcpPacketListener::bind(&bind_addr, secrets.sv).expect("bind listener");
+    let mut exit = TcpExitTransport::new();
     loop {
         match listener.next() {
             Ok(Some(mut packet)) => {
@@ -60,12 +62,13 @@ fn main() {
                     move || Box::new(TcpForward::new()),
                     || Box::new(NoReplay),
                 );
-                if let Err(err) = runtime.process(
+                if let Err(err) = runtime.process_with_exit(
                     packet.direction,
                     packet.sv,
                     &mut packet.chdr,
                     &mut packet.ahdr,
                     &mut packet.payload,
+                    Some(&mut exit),
                 ) {
                     eprintln!("packet processing failed: {:?}", err);
                     eprintln!("  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}", 

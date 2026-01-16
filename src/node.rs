@@ -1,4 +1,5 @@
 pub mod backward;
+pub mod exit;
 pub mod forward;
 
 use alloc::collections::BTreeSet;
@@ -8,6 +9,7 @@ use crate::sphinx::*;
 use crate::types::{Chdr, Result, RoutingSegment, Sv};
 use crate::policy::{PolicyId, PolicyRole};
 use alloc::collections::BTreeMap;
+pub use exit::ExitTransport;
 
 pub trait ReplayFilter {
     fn insert(&mut self, tag: [u8; TAU_TAG_BYTES]) -> bool;
@@ -53,13 +55,14 @@ pub struct PolicyRuntime<'a> {
     pub roles: &'a BTreeMap<PolicyId, PolicyRole>,
 }
 
-pub struct NodeCtx<'a> {
+pub struct NodeCtx<'p, 'io, 'e> {
     pub sv: Sv,
-    pub now: &'a dyn crate::time::TimeProvider,
+    pub now: &'io dyn crate::time::TimeProvider,
     // Forwarding abstraction: implementor sends to next hop
-    pub forward: &'a mut dyn crate::forward::Forward,
-    pub replay: &'a mut dyn ReplayFilter,
-    pub policy: Option<PolicyRuntime<'a>>,
+    pub forward: &'io mut dyn crate::forward::Forward,
+    pub replay: &'io mut dyn ReplayFilter,
+    pub policy: Option<PolicyRuntime<'p>>,
+    pub exit: Option<&'e mut dyn ExitTransport>,
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

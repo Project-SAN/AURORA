@@ -9,7 +9,7 @@ use crate::{
 pub type Result<T> = core::result::Result<T, Error>;
 
 pub fn process_data(
-    ctx: &mut NodeCtx,
+    ctx: &mut NodeCtx<'_, '_, '_>,
     chdr: &mut Chdr,
     ahdr: &mut Ahdr,
     payload: &mut Vec<u8>,
