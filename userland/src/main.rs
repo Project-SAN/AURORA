@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 mod http;
 mod echo;
+mod fs;
 mod socket;
 mod sys;
 
@@ -16,6 +17,7 @@ const HTTP_PORT: u16 = 8080;
 const HTTP_PATH: &str = "/";
 const HTTP_HOST: &str = "10.0.2.2";
 const ECHO_PORT: u16 = 1234;
+const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 const RUN_HTTP_CLIENT: bool = true;
 const RUN_ECHO_SERVER: bool = true;
 
@@ -23,6 +25,7 @@ const RUN_ECHO_SERVER: bool = true;
 pub extern "C" fn _start() -> ! {
     let msg = b"Hello from userland\n";
     sys::write(1, msg);
+    fs_persist_test();
     if let Some(epoch) = sys::time_epoch() {
         let _ = sys::write(1, b"epoch=");
         write_decimal(epoch);
@@ -73,6 +76,57 @@ pub extern "C" fn _start() -> ! {
         }
         sys::sleep(1);
         unsafe { asm!("pause"); }
+    }
+}
+
+fn fs_persist_test() {
+    let _ = sys::write(1, b"fs: persist test\n");
+
+    if let Some(fd) = fs::open(FS_TEST_PATH, fs::O_READ) {
+        let mut buf = [0u8; 128];
+        if let Some(n) = fs::read(fd, &mut buf) {
+            let _ = sys::write(1, b"fs: prev=");
+            let _ = sys::write(1, &buf[..n]);
+            let _ = sys::write(1, b"\n");
+        }
+        let _ = fs::close(fd);
+    } else {
+        let _ = sys::write(1, b"fs: prev=<none>\n");
+    }
+
+    if let Some(fd) = fs::open(FS_TEST_PATH, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC) {
+        let _ = sys::write(1, b"fs: write\n");
+        let _ = fs::write(fd, b"boot epoch=");
+        if let Some(epoch) = sys::time_epoch() {
+            let mut buf = [0u8; 32];
+            let mut i = 0usize;
+            let mut v = epoch;
+            if v == 0 {
+                buf[0] = b'0';
+                i = 1;
+            } else {
+                while v > 0 && i < buf.len() {
+                    buf[i] = b'0' + (v % 10) as u8;
+                    v /= 10;
+                    i += 1;
+                }
+                buf[..i].reverse();
+            }
+            let _ = fs::write(fd, &buf[..i]);
+        }
+        let _ = fs::write(fd, b"\n");
+        let _ = fs::close(fd);
+        let _ = fs::sync();
+    }
+
+    if let Some(fd) = fs::open(FS_TEST_PATH, fs::O_READ) {
+        let mut buf = [0u8; 128];
+        if let Some(n) = fs::read(fd, &mut buf) {
+            let _ = sys::write(1, b"fs: now=");
+            let _ = sys::write(1, &buf[..n]);
+            let _ = sys::write(1, b"\n");
+        }
+        let _ = fs::close(fd);
     }
 }
 

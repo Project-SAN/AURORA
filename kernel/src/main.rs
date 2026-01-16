@@ -9,6 +9,7 @@ mod heap;
 mod arch;
 mod acpi;
 mod apic;
+mod fs;
 mod hpet;
 mod interrupts;
 mod memory;
@@ -149,6 +150,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     let pci_count = pci::scan();
     serial::write(format_args!("PCI scan complete: {} devices\n", pci_count));
+    let _ = fs::init();
     if let Some(dev) = pci::find_virtio_net() {
         serial::write(format_args!(
             "virtio-net at {:02x}:{:02x}.{} io={:?} mmio={:?}\n",
