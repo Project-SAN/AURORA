@@ -9,7 +9,6 @@ use hornet::router::sync::client::{sync_once, DirectoryClient};
 use hornet::router::Router;
 use hornet::application::forward_pcd::PcdForwardPipeline;
 use hornet::setup::wire;
-use hornet::time::SystemTimeProvider;
 use hornet::types::{self, PacketType, Result as HornetResult};
 use hornet::control::{self, ControlMessage};
 use std::env;
@@ -43,7 +42,7 @@ fn main() {
     } else {
         persist_state(&storage, &router, &secrets);
     }
-    let time = SystemTimeProvider;
+    let time = StdTimeProvider;
     let bind_addr = env::var("HORNET_ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:7000".into());
     let mut listener = TcpPacketListener::bind(&bind_addr, secrets.sv).expect("bind listener");
     loop {
@@ -101,6 +100,18 @@ fn main() {
                 break;
             }
         }
+    }
+}
+
+struct StdTimeProvider;
+
+impl hornet::time::TimeProvider for StdTimeProvider {
+    fn now_coarse(&self) -> u32 {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+        now.as_secs() as u32
     }
 }
 

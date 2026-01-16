@@ -11,6 +11,8 @@ mod echo;
 mod fs;
 mod socket;
 mod sys;
+#[cfg(feature = "hornet-time")]
+mod time_provider;
 
 const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
 const HTTP_PORT: u16 = 8080;

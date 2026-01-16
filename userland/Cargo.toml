@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+hornet = { package = "aurora", path = "..", default-features = false, optional = true }
+
+[features]
+hornet-time = ["dep:hornet"]
