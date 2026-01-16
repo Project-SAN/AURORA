@@ -1,9 +1,10 @@
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
 use hornet::routing::{self, IpAddr, RouteElem};
-use hornet::setup::directory::to_signed_json;
+use hornet::setup::directory::{public_key_from_seed, to_signed_json};
 use hornet::setup::directory::{DirectoryAnnouncement, RouteAnnouncement};
 use hornet::utils::encode_hex;
+use sha2::{Digest, Sha256};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -68,7 +69,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let policy_info = PolicyInfo {
         policy_id: encode_hex(&metadata.policy_id),
-        directory_secret: LOCAL_SECRET.to_string(),
+        directory_public_key: encode_hex(&local_public_key()),
         routers: routers
             .iter()
             .map(|spec| RouterInfo {
@@ -98,7 +99,7 @@ fn write_directory(
         segment,
         interface: Some(spec.name.to_string()),
     });
-    let signed = to_signed_json(&directory, LOCAL_SECRET.as_bytes(), DIRECTORY_EPOCH)
+    let signed = to_signed_json(&directory, &local_private_key(), DIRECTORY_EPOCH)
         .map_err(|err| format!("directory signing failed for {}: {err:?}", spec.name))?;
     let path = format!("config/localnet/{}.directory.json", spec.name);
     fs::write(path, signed)?;
@@ -108,14 +109,14 @@ fn write_directory(
 fn write_env(spec: &RouterSpec) -> Result<(), Box<dyn std::error::Error>> {
     let env_contents = format!(
         "HORNET_DIR_URL=https://localnet.invalid/{name}\n\
-HORNET_DIR_SECRET={secret}\n\
+HORNET_DIR_PUBKEY={pubkey}\n\
 HORNET_ROUTER_ID={name}\n\
 HORNET_ROUTER_BIND={bind}\n\
 HORNET_STORAGE_PATH={storage}\n\
 HORNET_DIRECTORY_PATH=config/localnet/{name}.directory.json\n\
 HORNET_DIR_INTERVAL=5\n",
         name = spec.name,
-        secret = LOCAL_SECRET,
+        pubkey = encode_hex(&local_public_key()),
         bind = spec.bind,
         storage = spec.storage_path,
     );
@@ -130,6 +131,20 @@ fn parse_ipv4(addr: &str) -> [u8; 4] {
         .parse::<Ipv4Addr>()
         .unwrap_or(Ipv4Addr::new(127, 0, 0, 1));
     parsed.octets()
+}
+
+fn local_private_key() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(LOCAL_SECRET.as_bytes());
+    let hash = hasher.finalize();
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&hash[..32]);
+    seed
+}
+
+fn local_public_key() -> [u8; 32] {
+    let seed = local_private_key();
+    public_key_from_seed(&seed)
 }
 
 #[derive(Clone)]
@@ -152,6 +167,6 @@ struct RouterInfo {
 #[derive(Serialize)]
 struct PolicyInfo {
     policy_id: String,
-    directory_secret: String,
+    directory_public_key: String,
     routers: Vec<RouterInfo>,
 }

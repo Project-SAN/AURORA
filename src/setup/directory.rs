@@ -4,11 +4,11 @@ use crate::types::{Error, Result, RoutingSegment};
 use alloc::string::{String, ToString};
 use alloc::{vec, vec::Vec};
 use core::net::{Ipv4Addr, Ipv6Addr};
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
+use sha2::{Digest, Sha512};
+use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+use curve25519_dalek::edwards::CompressedEdwardsY;
+use curve25519_dalek::scalar::Scalar;
 
 pub struct DirectoryAnnouncement {
     policy_entries: Vec<PolicyMetadata>,
@@ -94,7 +94,7 @@ struct DirectoryMessage {
 
 pub fn to_signed_json(
     announcement: &DirectoryAnnouncement,
-    secret: &[u8],
+    private_key: &[u8],
     issued_at: u64,
 ) -> Result<String> {
     let unsigned = DirectoryMessage {
@@ -109,7 +109,8 @@ pub fn to_signed_json(
         signature: String::new(),
     };
     let serialized = serde_json::to_string(&unsigned).map_err(|_| Error::Crypto)?;
-    let signature = hex_encode(&compute_hmac(secret, serialized.as_bytes()));
+    let signature = ed25519_sign(&key32(private_key)?, serialized.as_bytes());
+    let signature = hex_encode(&signature);
     let signed = DirectoryMessage {
         signature,
         ..unsigned
@@ -117,7 +118,7 @@ pub fn to_signed_json(
     serde_json::to_string(&signed).map_err(|_| Error::Crypto)
 }
 
-pub fn from_signed_json(body: &str, secret: &[u8]) -> Result<DirectoryAnnouncement> {
+pub fn from_signed_json(body: &str, public_key: &[u8]) -> Result<DirectoryAnnouncement> {
     let signed: DirectoryMessage = serde_json::from_str(body).map_err(|_| Error::Crypto)?;
     let expected_sig = signed.signature.clone();
     let unsigned = DirectoryMessage {
@@ -125,9 +126,7 @@ pub fn from_signed_json(body: &str, secret: &[u8]) -> Result<DirectoryAnnounceme
         ..signed.clone()
     };
     let serialized = serde_json::to_string(&unsigned).map_err(|_| Error::Crypto)?;
-    if !verify_hmac(secret, serialized.as_bytes(), &expected_sig) {
-        return Err(Error::Crypto);
-    }
+    verify_signature(public_key, serialized.as_bytes(), &expected_sig)?;
     let routes = signed
         .routes
         .iter()
@@ -295,20 +294,106 @@ fn parse_ipv6(input: &str) -> Result<Ipv6Addr> {
     input.parse().map_err(|_| Error::Length)
 }
 
-fn compute_hmac(secret: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key");
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
+fn verify_signature(public_key: &[u8], data: &[u8], signature: &str) -> Result<()> {
+    let key_bytes = key32(public_key)?;
+    let sig_bytes = hex_decode(signature)?;
+    if sig_bytes.len() != 64 {
+        return Err(Error::Length);
+    }
+    let mut sig_arr = [0u8; 64];
+    sig_arr.copy_from_slice(&sig_bytes);
+    if ed25519_verify(&key_bytes, data, &sig_arr) {
+        Ok(())
+    } else {
+        Err(Error::Crypto)
+    }
 }
 
-fn verify_hmac(secret: &[u8], data: &[u8], signature: &str) -> bool {
-    if let Ok(expected) = hex_decode(signature) {
-        if let Ok(mut mac) = HmacSha256::new_from_slice(secret) {
-            mac.update(data);
-            return mac.verify_slice(&expected).is_ok();
-        }
+fn key32(input: &[u8]) -> Result<[u8; 32]> {
+    if input.len() != 32 {
+        return Err(Error::Length);
     }
-    false
+    let mut out = [0u8; 32];
+    out.copy_from_slice(input);
+    Ok(out)
+}
+
+pub fn public_key_from_seed(seed: &[u8; 32]) -> [u8; 32] {
+    let (scalar, _) = expand_ed25519_seed(seed);
+    let public = &ED25519_BASEPOINT_POINT * &scalar;
+    public.compress().to_bytes()
+}
+
+fn ed25519_sign(seed: &[u8; 32], msg: &[u8]) -> [u8; 64] {
+    let (scalar, prefix) = expand_ed25519_seed(seed);
+    let public = (&ED25519_BASEPOINT_POINT * &scalar).compress().to_bytes();
+
+    let r = Scalar::from_bytes_mod_order_wide(&hash512(&[&prefix, msg]));
+    let r_point = &ED25519_BASEPOINT_POINT * &r;
+    let r_bytes = r_point.compress().to_bytes();
+
+    let k = Scalar::from_bytes_mod_order_wide(&hash512(&[&r_bytes, &public, msg]));
+    let s = r + k * scalar;
+    let s_bytes = s.to_bytes();
+
+    let mut sig = [0u8; 64];
+    sig[..32].copy_from_slice(&r_bytes);
+    sig[32..].copy_from_slice(&s_bytes);
+    sig
+}
+
+fn ed25519_verify(public: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
+    let r_bytes: [u8; 32] = sig[..32].try_into().unwrap_or([0u8; 32]);
+    let s_bytes: [u8; 32] = sig[32..].try_into().unwrap_or([0u8; 32]);
+
+    let r = match CompressedEdwardsY(r_bytes).decompress() {
+        Some(point) => point,
+        None => return false,
+    };
+    if r.is_small_order() {
+        return false;
+    }
+    let a = match CompressedEdwardsY(*public).decompress() {
+        Some(point) => point,
+        None => return false,
+    };
+    if a.is_small_order() {
+        return false;
+    }
+
+    let s = match Scalar::from_canonical_bytes(s_bytes) {
+        Some(s) => s,
+        None => return false,
+    };
+    let k = Scalar::from_bytes_mod_order_wide(&hash512(&[&r_bytes, public, msg]));
+    let s_b = &ED25519_BASEPOINT_POINT * &s;
+    let r_plus_ka = r + k * a;
+    s_b == r_plus_ka
+}
+
+fn expand_ed25519_seed(seed: &[u8; 32]) -> (Scalar, [u8; 32]) {
+    let mut hasher = Sha512::new();
+    hasher.update(seed);
+    let digest = hasher.finalize();
+    let mut scalar_bytes = [0u8; 32];
+    scalar_bytes.copy_from_slice(&digest[..32]);
+    scalar_bytes[0] &= 248;
+    scalar_bytes[31] &= 63;
+    scalar_bytes[31] |= 64;
+    let mut prefix = [0u8; 32];
+    prefix.copy_from_slice(&digest[32..64]);
+    (Scalar::from_bits(scalar_bytes), prefix)
+}
+
+fn hash512(chunks: &[&[u8]]) -> [u8; 64] {
+    let mut hasher = Sha512::new();
+    for chunk in chunks {
+        hasher.update(chunk);
+    }
+    let digest = hasher.finalize();
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&digest);
+    out
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -383,11 +468,13 @@ mod tests {
             }],
         };
         let directory = DirectoryAnnouncement::with_policy(meta.clone());
-        let secret = b"directory-shared-secret";
-        let body = to_signed_json(&directory, secret, 1234).expect("signed json");
-        let parsed = from_signed_json(&body, secret).expect("verify");
+        let secret = [0x11u8; 32];
+        let body = to_signed_json(&directory, &secret, 1234).expect("signed json");
+        let public = public_key_from_seed(&secret);
+        let parsed = from_signed_json(&body, &public).expect("verify");
         assert_eq!(parsed.policies()[0], meta);
-        assert!(from_signed_json(&body, b"wrong").is_err());
+        let wrong = [0x22u8; 32];
+        assert!(from_signed_json(&body, &wrong).is_err());
     }
 
     #[test]
@@ -413,9 +500,10 @@ mod tests {
             segment: segment.clone(),
             interface: Some("wan0".to_string()),
         });
-        let secret = b"route-secret";
-        let body = to_signed_json(&directory, secret, 123).expect("sign");
-        let parsed = from_signed_json(&body, secret).expect("verify");
+        let secret = [0x33u8; 32];
+        let body = to_signed_json(&directory, &secret, 123).expect("sign");
+        let public = public_key_from_seed(&secret);
+        let parsed = from_signed_json(&body, &public).expect("verify");
         assert_eq!(parsed.policies()[0], meta);
         assert_eq!(parsed.routes().len(), 1);
         let first = &parsed.routes()[0];

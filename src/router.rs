@@ -117,10 +117,10 @@ impl Router {
         Ok(())
     }
 
-    /// Verifies a signed directory announcement (HMAC/HKDF per spec) and installs
+    /// Verifies a signed directory announcement (Ed25519) and installs
     /// all contained policy metadata entries on success.
-    pub fn install_signed_directory(&mut self, body: &str, secret: &[u8]) -> Result<()> {
-        let directory = from_signed_json(body, secret)?;
+    pub fn install_signed_directory(&mut self, body: &str, public_key: &[u8]) -> Result<()> {
+        let directory = from_signed_json(body, public_key)?;
         self.install_directory(&directory)
     }
 
@@ -322,12 +322,13 @@ mod tests {
         let policy = sample_metadata();
         let mut directory = DirectoryAnnouncement::new();
         directory.push_policy(policy.clone());
-        let secret = b"shared-secret";
-        let signed = to_signed_json(&directory, secret, 1_700_000_000).expect("sign");
+        let secret = [0x11u8; 32];
+        let signed = to_signed_json(&directory, &secret, 1_700_000_000).expect("sign");
+        let public = crate::setup::directory::public_key_from_seed(&secret);
 
         let mut router = Router::new();
         router
-            .install_signed_directory(&signed, secret)
+            .install_signed_directory(&signed, &public)
             .expect("install signed directory");
         assert!(router.registry().get(&policy.policy_id).is_some());
     }
