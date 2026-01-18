@@ -8,6 +8,7 @@ pub trait ExitTransport {
 }
 
 #[cfg(feature = "std")]
+#[path = "exit_std.rs"]
 mod exit_std;
 #[cfg(feature = "std")]
 pub use exit_std::TcpExitTransport;

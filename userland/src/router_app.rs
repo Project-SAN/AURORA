@@ -13,8 +13,10 @@ use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
 use hornet::router::io::PacketListener;
 use hornet::router::storage::{RouterStorage, StoredState};
 use hornet::router::Router;
+use hornet::setup::directory::from_signed_json;
 use hornet::setup::wire;
 use hornet::types::{self, PacketDirection, PacketType, Result as HornetResult};
+use hornet::utils::decode_hex;
 
 use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketListener};
 use crate::router_storage::UserlandRouterStorage;
@@ -25,6 +27,12 @@ use crate::sys;
 use crate::time_provider::SysTimeProvider;
 
 const ROUTER_CONFIG_PATH: &str = "/router_config.json";
+const ROUTER_CONFIG_PATH_FALLBACK: &str = "/ROUTER~1.JSO";
+const ROUTER_CONFIG_PATH_FALLBACK_NO_SLASH: &str = "ROUTER~1.JSO";
+const ROUTER_CONFIG_PATH_SHORT: &str = "/ROUTER_C.JSO";
+const ROUTER_CONFIG_PATH_SHORT_NO_SLASH: &str = "ROUTER_C.JSO";
+const DIRECTORY_PATH_FALLBACK: &str = "/DIRECT~1.JSO";
+const DIRECTORY_PATH_FALLBACK_NO_SLASH: &str = "DIRECT~1.JSO";
 const DEFAULT_LISTEN_PORT: u16 = 7000;
 const DEFAULT_CLI_PORT: u16 = 7001;
 const DEFAULT_STORAGE_PATH: &str = "/router_state.json";
@@ -34,6 +42,7 @@ pub fn run_router() -> ! {
     let storage = UserlandRouterStorage::new(config.storage_path.clone());
     let mut router = Router::new();
     let secrets = load_state(&storage, &mut router);
+    load_directory_if_configured(&mut router, &storage, &secrets, &config);
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
         Ok(listener) => listener,
         Err(_) => loop {
@@ -95,6 +104,8 @@ struct RouterConfig {
     listen_port: u16,
     storage_path: String,
     cli_port: u16,
+    directory_path: Option<String>,
+    directory_public_key: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -102,6 +113,8 @@ struct RouterConfigFile {
     listen_port: Option<u16>,
     storage_path: Option<String>,
     cli_port: Option<u16>,
+    directory_path: Option<String>,
+    directory_public_key: Option<String>,
 }
 
 fn load_config() -> RouterConfig {
@@ -109,20 +122,59 @@ fn load_config() -> RouterConfig {
         listen_port: DEFAULT_LISTEN_PORT,
         storage_path: DEFAULT_STORAGE_PATH.into(),
         cli_port: DEFAULT_CLI_PORT,
+        directory_path: None,
+        directory_public_key: None,
     };
-    let data = match read_all(ROUTER_CONFIG_PATH) {
+    let data = match read_all_any(&[
+        ROUTER_CONFIG_PATH_FALLBACK,
+        ROUTER_CONFIG_PATH_FALLBACK_NO_SLASH,
+        ROUTER_CONFIG_PATH_SHORT,
+        ROUTER_CONFIG_PATH_SHORT_NO_SLASH,
+        ROUTER_CONFIG_PATH,
+    ]) {
         Ok(bytes) => bytes,
-        Err(_) => return default,
+        Err(_) => {
+            log_line("config: using defaults");
+            return default;
+        }
     };
     let parsed: RouterConfigFile = match serde_json::from_slice(&data) {
         Ok(cfg) => cfg,
-        Err(_) => return default,
+        Err(_) => {
+            if let Ok(bytes) = read_all_any(&[ROUTER_CONFIG_CONTENT_PATH]) {
+                if let Ok(cfg) = serde_json::from_slice::<RouterConfigFile>(&bytes) {
+                    return RouterConfig {
+                        listen_port: cfg.listen_port.unwrap_or(DEFAULT_LISTEN_PORT),
+                        storage_path: cfg
+                            .storage_path
+                            .unwrap_or_else(|| DEFAULT_STORAGE_PATH.into()),
+                        cli_port: cfg.cli_port.unwrap_or(DEFAULT_CLI_PORT),
+                        directory_path: cfg.directory_path,
+                        directory_public_key: cfg.directory_public_key,
+                    };
+                }
+            }
+            return default;
+        }
     };
     RouterConfig {
         listen_port: parsed.listen_port.unwrap_or(DEFAULT_LISTEN_PORT),
         storage_path: parsed.storage_path.unwrap_or_else(|| DEFAULT_STORAGE_PATH.into()),
         cli_port: parsed.cli_port.unwrap_or(DEFAULT_CLI_PORT),
+        directory_path: parsed.directory_path,
+        directory_public_key: parsed.directory_public_key,
     }
+}
+
+fn read_all_any(paths: &[&str]) -> HornetResult<Vec<u8>> {
+    let mut last_err = None;
+    for path in paths {
+        match read_all(path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(last_err.unwrap_or(types::Error::Crypto))
 }
 
 fn read_all(path: &str) -> HornetResult<Vec<u8>> {
@@ -172,6 +224,8 @@ fn save_config(config: &RouterConfig) -> HornetResult<()> {
         listen_port: Some(config.listen_port),
         storage_path: Some(config.storage_path.clone()),
         cli_port: Some(config.cli_port),
+        directory_path: config.directory_path.clone(),
+        directory_public_key: config.directory_public_key.clone(),
     };
     let data = serde_json::to_vec_pretty(&file).map_err(|_| types::Error::Crypto)?;
     write_all(ROUTER_CONFIG_PATH, &data)
@@ -257,7 +311,10 @@ fn handle_cli_command(
         "help" | "?" => {
             let _ = send_line(socket, "show running-config | startup-config | routes | policies");
             let _ = send_line(socket, "configure terminal");
-            let _ = send_line(socket, "set listen_port <port> | storage_path <path> | cli_port <port>");
+            let _ = send_line(
+                socket,
+                "set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex>",
+            );
             let _ = send_line(socket, "commit | rollback | write memory | exit");
         }
         "show" => {
@@ -304,8 +361,19 @@ fn handle_cli_command(
                         let _ = send_line(socket, "invalid port");
                     }
                 }
+                (Some("directory_path"), Some(value)) => {
+                    config.directory_path = Some(value.into());
+                    let _ = send_line(socket, "ok (takes effect on restart)");
+                }
+                (Some("directory_public_key"), Some(value)) => {
+                    config.directory_public_key = Some(value.into());
+                    let _ = send_line(socket, "ok (takes effect on restart)");
+                }
                 _ => {
-                    let _ = send_line(socket, "usage: set listen_port <port> | storage_path <path> | cli_port <port>");
+                    let _ = send_line(
+                        socket,
+                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex>",
+                    );
                 }
             }
         }
@@ -358,6 +426,12 @@ fn show_running_config(socket: &crate::socket::TcpSocket, config: &RouterConfig)
     let _ = send_kv_u16(socket, "listen_port", config.listen_port);
     let _ = send_kv_u16(socket, "cli_port", config.cli_port);
     let _ = send_kv_str(socket, "storage_path", &config.storage_path);
+    if let Some(path) = &config.directory_path {
+        let _ = send_kv_str(socket, "directory_path", path);
+    }
+    if let Some(key) = &config.directory_public_key {
+        let _ = send_kv_str(socket, "directory_public_key", key);
+    }
 }
 
 fn show_startup_config(socket: &crate::socket::TcpSocket) {
@@ -512,6 +586,65 @@ fn load_state(storage: &dyn RouterStorage, router: &mut Router) -> RouterSecrets
     }
 }
 
+fn load_directory_if_configured(
+    router: &mut Router,
+    storage: &dyn RouterStorage,
+    secrets: &RouterSecrets,
+    config: &RouterConfig,
+) {
+    let path = match config.directory_path.as_deref() {
+        Some(path) if !path.is_empty() => path,
+        _ => return,
+    };
+    let key_hex = match config.directory_public_key.as_deref() {
+        Some(key) if !key.is_empty() => key,
+        _ => return,
+    };
+
+    let body_bytes = match read_all_any(&[
+        path,
+        DIRECTORY_PATH_FALLBACK,
+        DIRECTORY_PATH_FALLBACK_NO_SLASH,
+    ]) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            log_line("directory: read failed");
+            return;
+        }
+    };
+    let body = match core::str::from_utf8(&body_bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            log_line("directory: invalid utf-8");
+            return;
+        }
+    };
+    let key_bytes = match decode_hex(key_hex) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            log_line("directory: bad public key hex");
+            return;
+        }
+    };
+    if key_bytes.len() != 32 {
+        log_line("directory: public key length invalid");
+        return;
+    }
+    match from_signed_json(body, &key_bytes) {
+        Ok(directory) => {
+            if router.install_directory(&directory).is_ok() {
+                persist_state(storage, router, secrets);
+                log_line("directory: loaded");
+            } else {
+                log_line("directory: install failed");
+            }
+        }
+        Err(_) => {
+            log_line("directory: signature invalid");
+        }
+    }
+}
+
 fn persist_state(storage: &dyn RouterStorage, router: &Router, secrets: &RouterSecrets) {
     let state = StoredState::new(
         router.policies(),
@@ -520,6 +653,11 @@ fn persist_state(storage: &dyn RouterStorage, router: &Router, secrets: &RouterS
         secrets.node_secret,
     );
     let _ = storage.save(&state);
+}
+
+fn log_line(msg: &str) {
+    let _ = sys::write(1, msg.as_bytes());
+    let _ = sys::write(1, b"\n");
 }
 
 fn handle_setup_packet(
@@ -561,3 +699,4 @@ fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
     }
     None
 }
+const ROUTER_CONFIG_CONTENT_PATH: &str = "/ROUTER_C.JSO";

@@ -36,4 +36,5 @@ impl RouterConfig {
 }
 
 #[cfg(feature = "std")]
+#[path = "config_std.rs"]
 mod config_std;

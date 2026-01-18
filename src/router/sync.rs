@@ -1,10 +1,6 @@
 use crate::router::Router;
 use crate::setup::directory::{self, DirectoryAnnouncement};
 use crate::types::Result;
-#[cfg(feature = "std")]
-use crate::types::Error;
-#[cfg(feature = "std")]
-use crate::utils::decode_hex;
 
 /// Applies a directory JSON string (already verified) to the router.
 pub fn apply_announcement(router: &mut Router, announcement: &DirectoryAnnouncement) -> Result<()> {
@@ -26,7 +22,9 @@ pub fn apply_signed_announcement(
 pub mod client {
     use super::apply_signed_announcement;
     use crate::router::{config::RouterConfig, Router};
+    use crate::types::Error;
     use crate::types::Result;
+    use crate::utils::decode_hex;
 
     pub trait DirectoryClient {
         fn fetch_signed(&self) -> Result<String>;
