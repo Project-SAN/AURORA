@@ -1,4 +1,5 @@
 pub mod dh;
+pub mod ctr;
 pub mod kdf;
 pub mod mac;
 pub mod prg;

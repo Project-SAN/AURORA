@@ -10,6 +10,7 @@ pub mod core;
 pub mod crypto;
 pub mod forward;
 pub mod fragment;
+pub mod log;
 pub mod node;
 pub mod packet;
 pub mod policy;

@@ -12,3 +12,4 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"], 
 [features]
 hornet-time = ["dep:hornet"]
 hornet-router = ["dep:hornet", "dep:serde", "dep:serde_json"]
+hornet-log = ["dep:hornet", "hornet/hornet-log"]

@@ -226,6 +226,7 @@ fn sys_net_listen(handle: u64, port: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         if stack.listen(handle, port) {
+            serial::write(format_args!("net: listen handle={} port={}\n", handle, port));
             0
         } else {
             u64::MAX
@@ -237,9 +238,15 @@ fn sys_net_accept(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         match stack.accept(handle) {
-            Ok(Some(id)) => id,
+            Ok(Some(id)) => {
+                serial::write(format_args!("net: accept handle={} -> {}\n", handle, id));
+                id
+            }
             Ok(None) => 0,
-            Err(_) => u64::MAX,
+            Err(_) => {
+                serial::write(format_args!("net: accept error handle={}\n", handle));
+                u64::MAX
+            }
         }
     })
 }
