@@ -38,6 +38,11 @@ const DEFAULT_CLI_PORT: u16 = 7001;
 const DEFAULT_STORAGE_PATH: &str = "/router_state.json";
 
 pub fn run_router() -> ! {
+    #[cfg(feature = "hornet-log")]
+    hornet::log::set_hook(|msg| {
+        let _ = sys::write(1, msg.as_bytes());
+        let _ = sys::write(1, b"\n");
+    });
     let mut config = load_config();
     let storage = UserlandRouterStorage::new(config.storage_path.clone());
     let mut router = Router::new();
@@ -62,9 +67,29 @@ pub fn run_router() -> ! {
         match listener.next() {
             Ok(Some(mut packet)) => {
                 if packet.chdr.typ == PacketType::Setup {
-                    let _ = handle_setup_packet(packet, &mut router, &storage, &secrets);
+                    if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets)
+                    {
+                        let mut msg = String::new();
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut msg,
+                            format_args!("router: setup error {:?}", err),
+                        );
+                        log_line(&msg);
+                    }
                     continue;
                 }
+                let mut msg = String::new();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut msg,
+                    format_args!(
+                        "router: begin {:?} hops={} ahdr={} payload={}",
+                        packet.direction,
+                        packet.chdr.hops,
+                        packet.ahdr.bytes.len(),
+                        packet.payload.len()
+                    ),
+                );
+                log_line(&msg);
                 let res = match packet.direction {
                     PacketDirection::Forward => router.process_forward_packet(
                         packet.sv,
@@ -86,7 +111,15 @@ pub fn run_router() -> ! {
                         &mut packet.payload,
                     ),
                 };
-                let _ = res;
+                log_line("router: end packet");
+                if let Err(err) = res {
+                    let mut msg = String::new();
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut msg,
+                        format_args!("router: packet error {:?}", err),
+                    );
+                    log_line(&msg);
+                }
                 let _ = router.handle_async_violations();
             }
             Ok(None) => {
@@ -106,6 +139,7 @@ struct RouterConfig {
     cli_port: u16,
     directory_path: Option<String>,
     directory_public_key: Option<String>,
+    skip_policy: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -115,6 +149,7 @@ struct RouterConfigFile {
     cli_port: Option<u16>,
     directory_path: Option<String>,
     directory_public_key: Option<String>,
+    skip_policy: Option<bool>,
 }
 
 fn load_config() -> RouterConfig {
@@ -124,6 +159,7 @@ fn load_config() -> RouterConfig {
         cli_port: DEFAULT_CLI_PORT,
         directory_path: None,
         directory_public_key: None,
+        skip_policy: false,
     };
     let data = match read_all_any(&[
         ROUTER_CONFIG_PATH_SHORT,
@@ -151,6 +187,7 @@ fn load_config() -> RouterConfig {
                         cli_port: cfg.cli_port.unwrap_or(DEFAULT_CLI_PORT),
                         directory_path: cfg.directory_path,
                         directory_public_key: cfg.directory_public_key,
+                        skip_policy: cfg.skip_policy.unwrap_or(false),
                     };
                 }
             }
@@ -163,6 +200,7 @@ fn load_config() -> RouterConfig {
         cli_port: parsed.cli_port.unwrap_or(DEFAULT_CLI_PORT),
         directory_path: parsed.directory_path,
         directory_public_key: parsed.directory_public_key,
+        skip_policy: parsed.skip_policy.unwrap_or(false),
     }
 }
 
@@ -226,6 +264,7 @@ fn save_config(config: &RouterConfig) -> HornetResult<()> {
         cli_port: Some(config.cli_port),
         directory_path: config.directory_path.clone(),
         directory_public_key: config.directory_public_key.clone(),
+        skip_policy: Some(config.skip_policy),
     };
     let data = serde_json::to_vec_pretty(&file).map_err(|_| types::Error::Crypto)?;
     write_all(ROUTER_CONFIG_PATH_SHORT, &data)
@@ -369,10 +408,23 @@ fn handle_cli_command(
                     config.directory_public_key = Some(value.into());
                     let _ = send_line(socket, "ok (takes effect on restart)");
                 }
+                (Some("skip_policy"), Some(value)) => {
+                    let val = match value {
+                        "1" | "true" | "on" => Some(true),
+                        "0" | "false" | "off" => Some(false),
+                        _ => None,
+                    };
+                    if let Some(val) = val {
+                        config.skip_policy = val;
+                        let _ = send_line(socket, "ok (takes effect on restart)");
+                    } else {
+                        let _ = send_line(socket, "usage: set skip_policy true|false");
+                    }
+                }
                 _ => {
                     let _ = send_line(
                         socket,
-                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex>",
+                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | skip_policy true|false",
                     );
                 }
             }
@@ -432,6 +484,7 @@ fn show_running_config(socket: &crate::socket::TcpSocket, config: &RouterConfig)
     if let Some(key) = &config.directory_public_key {
         let _ = send_kv_str(socket, "directory_public_key", key);
     }
+    let _ = send_kv_str(socket, "skip_policy", if config.skip_policy { "true" } else { "false" });
 }
 
 fn show_startup_config(socket: &crate::socket::TcpSocket) {
@@ -638,9 +691,21 @@ fn load_directory_if_configured(
     }
     match from_signed_json(body, &key_bytes) {
         Ok(directory) => {
-            if router.install_directory(&directory).is_ok() {
+            let installed = if config.skip_policy {
+                let res = router.install_routes(directory.routes());
+                if res.is_ok() {
+                    log_line("directory: routes loaded (policy skipped)");
+                }
+                res
+            } else {
+                let res = router.install_directory(&directory);
+                if res.is_ok() {
+                    log_line("directory: loaded");
+                }
+                res
+            };
+            if installed.is_ok() {
                 persist_state(storage, router, secrets);
-                log_line("directory: loaded");
             } else {
                 log_line("directory: install failed");
             }
