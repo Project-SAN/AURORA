@@ -126,11 +126,11 @@ fn load_config() -> RouterConfig {
         directory_public_key: None,
     };
     let data = match read_all_any(&[
-        ROUTER_CONFIG_PATH_FALLBACK,
-        ROUTER_CONFIG_PATH_FALLBACK_NO_SLASH,
         ROUTER_CONFIG_PATH_SHORT,
         ROUTER_CONFIG_PATH_SHORT_NO_SLASH,
         ROUTER_CONFIG_PATH,
+        ROUTER_CONFIG_PATH_FALLBACK,
+        ROUTER_CONFIG_PATH_FALLBACK_NO_SLASH,
     ]) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -228,7 +228,7 @@ fn save_config(config: &RouterConfig) -> HornetResult<()> {
         directory_public_key: config.directory_public_key.clone(),
     };
     let data = serde_json::to_vec_pretty(&file).map_err(|_| types::Error::Crypto)?;
-    write_all(ROUTER_CONFIG_PATH, &data)
+    write_all(ROUTER_CONFIG_PATH_SHORT, &data)
 }
 
 struct CliServer {
@@ -435,7 +435,13 @@ fn show_running_config(socket: &crate::socket::TcpSocket, config: &RouterConfig)
 }
 
 fn show_startup_config(socket: &crate::socket::TcpSocket) {
-    match read_all(ROUTER_CONFIG_PATH) {
+    match read_all_any(&[
+        ROUTER_CONFIG_PATH_SHORT,
+        ROUTER_CONFIG_PATH_SHORT_NO_SLASH,
+        ROUTER_CONFIG_PATH,
+        ROUTER_CONFIG_PATH_FALLBACK,
+        ROUTER_CONFIG_PATH_FALLBACK_NO_SLASH,
+    ]) {
         Ok(bytes) => {
             let _ = send_line(socket, "startup-config:");
             let _ = send_bytes(socket, &bytes);
