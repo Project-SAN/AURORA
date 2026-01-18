@@ -26,6 +26,7 @@ pub trait RouterStorage {
 }
 
 #[cfg(feature = "std")]
+#[path = "storage_std.rs"]
 mod storage_std;
 #[cfg(feature = "std")]
 pub use storage_std::FileRouterStorage;

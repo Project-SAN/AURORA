@@ -355,33 +355,48 @@ impl FsState {
     fn allocate_clusters(&mut self, count: u32) -> u32 {
         let range = self.fs_info_range();
         let (reserved, fat, _) = self.split_mut();
-        let (mut free_count, mut next_free) = ensure_fs_info(range.clone(), reserved, fat);
-        if free_count == 0 {
-            return 0;
+        let cluster = allocate_clusters_raw(fat, reserved, range.clone(), count);
+        if cluster > 0 {
+            self.mark_dirty_fat();
         }
-        let cluster =
-            Fat32::from_bytes_mut(fat).allocate_clusters(&mut free_count, &mut next_free, count);
-        if let Some(info) = fs_info_mut_range(range, reserved) {
-            info.next_free = next_free;
-            info.free_count = free_count;
-        }
-        self.mark_dirty_fat();
         cluster
     }
 
     fn retain_cluster_chain(&mut self, cluster: u32, length: u32) {
+        if cluster < 2 || length == 0 {
+            return;
+        }
         let range = self.fs_info_range();
-        let (reserved, fat, _) = self.split_mut();
-        let (mut free_count, mut next_free) = ensure_fs_info(range.clone(), reserved, fat);
-        Fat32::from_bytes_mut(fat).retain_cluster_chain(
-            cluster as usize,
-            length,
-            &mut free_count,
-            &mut next_free,
-        );
-        if let Some(info) = fs_info_mut_range(range, reserved) {
-            info.next_free = next_free;
-            info.free_count = free_count;
+        let (reserved, fat_bytes, _) = self.split_mut();
+        let mut count = 1u32;
+        let mut last = cluster;
+        {
+            let fat = Fat32::from_bytes_mut(fat_bytes);
+            let mut current = cluster;
+            while count < length {
+                let next = fat.entries[current as usize] & 0x0FFF_FFFF;
+                if next >= fat::constants::FAT32_CLUSTER_RESERVED {
+                    break;
+                }
+                last = next;
+                current = next;
+                count += 1;
+            }
+        }
+        if count >= length {
+            return;
+        }
+        let needed = length - count;
+        let new_start = allocate_clusters_raw(fat_bytes, reserved, range.clone(), needed);
+        if new_start < 2 {
+            return;
+        }
+        {
+            let fat = Fat32::from_bytes_mut(fat_bytes);
+            let last_idx = last as usize;
+            if last_idx < fat.entries.len() {
+                fat.mark_cluster_as(last_idx, new_start);
+            }
         }
         self.mark_dirty_fat();
     }
@@ -503,7 +518,11 @@ impl FsState {
         {
             let (_, fat_bytes, _) = self.split_mut();
             let fat = Fat32::from_bytes_mut(fat_bytes);
-            fat.link_cluster(last as usize, new_cluster as usize);
+            if last < 2 || last as usize >= fat.entries.len() {
+                return None;
+            }
+            // Be tolerant to stale FAT state; link directly without asserting LAST.
+            fat.mark_cluster_as(last as usize, new_cluster as u32);
             fat.mark_cluster_as(new_cluster as usize, fat::constants::FAT32_CLUSTER_LAST);
         }
         {
@@ -980,7 +999,19 @@ fn ensure_fs_info(
         (0xFFFF_FFFF, 0xFFFF_FFFF)
     };
 
-    if free_count == 0 || free_count == 0xFFFF_FFFF || next_free == 0xFFFF_FFFF {
+    let mut needs_recompute =
+        free_count == 0 || free_count == 0xFFFF_FFFF || next_free == 0xFFFF_FFFF;
+    if !needs_recompute {
+        let fat = Fat32::from_bytes(fat_bytes);
+        let idx = next_free as usize;
+        if idx >= fat.entries.len()
+            || fat.entries[idx] != fat::constants::FAT32_CLUSTER_FREE
+        {
+            needs_recompute = true;
+        }
+    }
+
+    if needs_recompute {
         let (free, next) = recompute_free(fat_bytes);
         free_count = free;
         next_free = next;
@@ -991,6 +1022,96 @@ fn ensure_fs_info(
     }
 
     (free_count, next_free)
+}
+
+fn find_next_free_from(fat: &Fat32, start: u32) -> u32 {
+    let fat_len = fat.entries.len() as u32;
+    if fat_len <= 2 {
+        return 0xFFFF_FFFF;
+    }
+    let mut idx = if start >= 2 && start < fat_len { start } else { 2 };
+    let total = fat_len - 2;
+    for _ in 0..total {
+        if fat.entries[idx as usize] == fat::constants::FAT32_CLUSTER_FREE {
+            return idx;
+        }
+        idx = idx.saturating_add(1);
+        if idx >= fat_len {
+            idx = 2;
+        }
+    }
+    0xFFFF_FFFF
+}
+
+fn allocate_clusters_raw(
+    fat_bytes: &mut [u8],
+    reserved: &mut [u8],
+    range: core::ops::Range<usize>,
+    count: u32,
+) -> u32 {
+    if count == 0 {
+        return 0;
+    }
+    let (mut free_count, mut next_free) = ensure_fs_info(range.clone(), reserved, fat_bytes);
+    if free_count == 0xFFFF_FFFF {
+        let (free, next) = recompute_free(fat_bytes);
+        free_count = free;
+        next_free = next;
+        if let Some(info) = fs_info_mut_range(range.clone(), reserved) {
+            info.free_count = free_count;
+            info.next_free = next_free;
+        }
+    }
+    if free_count < count {
+        return 0;
+    }
+    let fat = Fat32::from_bytes_mut(fat_bytes);
+    let fat_len = fat.entries.len() as u32;
+    if fat_len <= 2 {
+        return 0;
+    }
+    let start = if next_free >= 2 && next_free < fat_len {
+        next_free
+    } else {
+        2
+    };
+    let total = fat_len - 2;
+    let mut allocated: Vec<u32> = Vec::with_capacity(count as usize);
+    let mut idx = start;
+    let mut scanned = 0u32;
+    while scanned < total && (allocated.len() as u32) < count {
+        if idx >= fat_len {
+            idx = 2;
+        }
+        if fat.entries[idx as usize] == fat::constants::FAT32_CLUSTER_FREE {
+            allocated.push(idx);
+        }
+        idx = idx.saturating_add(1);
+        scanned = scanned.saturating_add(1);
+    }
+    if allocated.len() as u32 != count {
+        let (free, next) = recompute_free(fat_bytes);
+        if let Some(info) = fs_info_mut_range(range, reserved) {
+            info.free_count = free;
+            info.next_free = next;
+        }
+        return 0;
+    }
+    for pair in allocated.windows(2) {
+        let base = pair[0] as usize;
+        let next = pair[1];
+        fat.mark_cluster_as(base, next);
+    }
+    if let Some(last) = allocated.last().copied() {
+        fat.mark_cluster_as(last as usize, fat::constants::FAT32_CLUSTER_LAST);
+    }
+    free_count = free_count.saturating_sub(count);
+    let next_free = find_next_free_from(fat, idx);
+    if let Some(info) = fs_info_mut_range(range, reserved) {
+        info.free_count = free_count;
+        info.next_free = next_free;
+    }
+    allocated.first().copied().unwrap_or(0)
 }
 
 fn split_name(name: &str) -> (FatStr<8>, FatStr<3>) {
