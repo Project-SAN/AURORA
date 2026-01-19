@@ -250,18 +250,30 @@ exception_no_error!(non_maskable_interrupt, 2);
 exception_no_error!(breakpoint, 3);
 exception_no_error!(overflow, 4);
 exception_no_error!(bound_range, 5);
-extern "x86-interrupt" fn invalid_opcode(frame: &mut InterruptStackFrame) {
-    let rsp: u64;
+#[unsafe(naked)]
+extern "C" fn invalid_opcode() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, rsp",
+        "jmp {handler}",
+        handler = sym invalid_opcode_handler,
+    );
+}
+
+extern "C" fn invalid_opcode_handler(frame_ptr: *const u64) -> ! {
+    let mut v = [0u64; 5];
     unsafe {
-        asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+        for i in 0..5 {
+            v[i] = core::ptr::read_unaligned(frame_ptr.add(i));
+        }
     }
     crate::serial::write(format_args!(
-        "INVALID OPCODE rip={:#x} cs={:#x} rflags={:#x} frame_ptr={:#x} rsp={:#x}\n",
-        frame.instruction_pointer,
-        frame.code_segment,
-        frame.cpu_flags,
-        frame as *const _ as u64,
-        rsp
+        "INVALID OPCODE frame={:#x} [rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}]\n",
+        frame_ptr as u64,
+        v[0],
+        v[1],
+        v[2],
+        v[3],
+        v[4]
     ));
     loop {
         unsafe { asm!("hlt"); }
@@ -273,21 +285,64 @@ exception_no_error!(coprocessor_segment_overrun, 9);
 exception_with_error!(invalid_tss, 10);
 exception_with_error!(segment_not_present, 11);
 exception_with_error!(stack_segment_fault, 12);
-exception_with_error!(general_protection_fault, 13);
-extern "x86-interrupt" fn page_fault(frame: &mut InterruptStackFrame, code: u64) {
-    let cr2: u64;
-    unsafe {
-        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
-    }
+extern "x86-interrupt" fn general_protection_fault(
+    frame: &mut InterruptStackFrame,
+    code: u64,
+) {
     crate::serial::write(format_args!(
-        "PAGE FAULT err={:#x} rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x} cr2={:#x}\n",
+        "EXCEPTION 13 err={:#x} rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
         code,
         frame.instruction_pointer,
         frame.code_segment,
         frame.cpu_flags,
         frame.stack_pointer,
-        frame.stack_segment,
-        cr2
+        frame.stack_segment
+    ));
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
+#[unsafe(naked)]
+extern "C" fn page_fault() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, rsp",
+        "jmp {handler}",
+        handler = sym page_fault_handler,
+    );
+}
+
+extern "C" fn page_fault_handler(err_ptr: *const u64) -> ! {
+    let mut v = [0u64; 6];
+    unsafe {
+        for i in 0..6 {
+            v[i] = core::ptr::read_volatile(err_ptr.add(i));
+        }
+    }
+    let err = v[0];
+    let rip = v[1];
+    let cs = v[2];
+    let rflags = v[3];
+    let mut rsp = 0u64;
+    let mut ss = 0u64;
+    if (cs & 3) == 3 {
+        rsp = v[4];
+        ss = v[5];
+    }
+    let cr2: u64;
+    unsafe {
+        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+    }
+    crate::serial::write(format_args!(
+        "PAGE FAULT err={:#x} rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x} cr2={:#x} frame={:#x} tss_rsp0={:#x}\n",
+        err,
+        rip,
+        cs,
+        rflags,
+        rsp,
+        ss,
+        cr2,
+        err_ptr as u64,
+        crate::arch::gdt::tss_rsp0()
     ));
     loop {
         unsafe { asm!("hlt"); }

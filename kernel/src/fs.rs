@@ -177,6 +177,11 @@ fn mount_from_storage(mut storage: Vec<u8>, device: FsDevice) -> Option<FsState>
     }
     let bs_bytes = &mut storage[offset..offset + BLOCK_SIZE];
     let raw = RawBootSector::from_bytes((&bs_bytes[..BLOCK_SIZE]).try_into().ok()?);
+    let bytes_per_sector = u16::from_le_bytes(raw.bpb.bytes_per_sector);
+    if bytes_per_sector == 0 {
+        serial::write(format_args!("fs: invalid boot sector (bytes_per_sector=0)\n"));
+        return None;
+    }
     let info = BootSectorInfo::try_from(raw).ok()?;
     let bs = match info {
         BootSectorInfo::Fat32(info) => info,
@@ -670,6 +675,9 @@ impl FsState {
             }
         } else {
             self.retain_cluster_chain(h.cluster, needed_clusters as u32);
+        }
+        if needed_clusters > 0 && h.cluster < 2 {
+            return None;
         }
         let (_, fat_bytes, data) = self.split_mut();
         let fat = Fat32::from_bytes_mut(fat_bytes);

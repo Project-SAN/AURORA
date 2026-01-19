@@ -1,22 +1,8 @@
 use aes::Aes128;
 use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
 
-#[cfg(feature = "hornet-log")]
-macro_rules! hlog {
-    ($($tt:tt)*) => {
-        crate::log::emit(core::format_args!($($tt)*));
-    };
-}
-
-#[cfg(not(feature = "hornet-log"))]
-macro_rules! hlog {
-    ($($tt:tt)*) => {};
-}
-
 pub fn apply_keystream(key: &[u8; 16], iv: &[u8; 16], buf: &mut [u8]) {
-    hlog!("ctr: aes init");
     let cipher = Aes128::new(key.into());
-    hlog!("ctr: aes init done");
     let mut counter = *iv;
     let mut block = [0u8; 16];
     let mut offset = 0usize;
@@ -31,7 +17,6 @@ pub fn apply_keystream(key: &[u8; 16], iv: &[u8; 16], buf: &mut [u8]) {
         incr_be(&mut counter);
         offset += take;
     }
-    hlog!("ctr: done");
 }
 
 fn incr_be(counter: &mut [u8; 16]) {

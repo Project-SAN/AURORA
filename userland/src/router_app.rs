@@ -38,14 +38,9 @@ const DEFAULT_CLI_PORT: u16 = 7001;
 const DEFAULT_STORAGE_PATH: &str = "/router_state.json";
 
 pub fn run_router() -> ! {
-    #[cfg(feature = "hornet-log")]
-    hornet::log::set_hook(|msg| {
-        let _ = sys::write(1, msg.as_bytes());
-        let _ = sys::write(1, b"\n");
-    });
     let mut config = load_config();
     let storage = UserlandRouterStorage::new(config.storage_path.clone());
-    let mut router = Router::new();
+    let mut router = Router::with_node_id(config.router_id.clone());
     let secrets = load_state(&storage, &mut router);
     load_directory_if_configured(&mut router, &storage, &secrets, &config);
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
@@ -78,18 +73,6 @@ pub fn run_router() -> ! {
                     }
                     continue;
                 }
-                let mut msg = String::new();
-                let _ = core::fmt::Write::write_fmt(
-                    &mut msg,
-                    format_args!(
-                        "router: begin {:?} hops={} ahdr={} payload={}",
-                        packet.direction,
-                        packet.chdr.hops,
-                        packet.ahdr.bytes.len(),
-                        packet.payload.len()
-                    ),
-                );
-                log_line(&msg);
                 let res = match packet.direction {
                     PacketDirection::Forward => router.process_forward_packet(
                         packet.sv,
@@ -111,7 +94,6 @@ pub fn run_router() -> ! {
                         &mut packet.payload,
                     ),
                 };
-                log_line("router: end packet");
                 if let Err(err) = res {
                     let mut msg = String::new();
                     let _ = core::fmt::Write::write_fmt(
@@ -139,6 +121,7 @@ struct RouterConfig {
     cli_port: u16,
     directory_path: Option<String>,
     directory_public_key: Option<String>,
+    router_id: Option<String>,
     skip_policy: bool,
 }
 
@@ -149,6 +132,7 @@ struct RouterConfigFile {
     cli_port: Option<u16>,
     directory_path: Option<String>,
     directory_public_key: Option<String>,
+    router_id: Option<String>,
     skip_policy: Option<bool>,
 }
 
@@ -159,6 +143,7 @@ fn load_config() -> RouterConfig {
         cli_port: DEFAULT_CLI_PORT,
         directory_path: None,
         directory_public_key: None,
+        router_id: None,
         skip_policy: false,
     };
     let data = match read_all_any(&[
@@ -187,6 +172,7 @@ fn load_config() -> RouterConfig {
                         cli_port: cfg.cli_port.unwrap_or(DEFAULT_CLI_PORT),
                         directory_path: cfg.directory_path,
                         directory_public_key: cfg.directory_public_key,
+                        router_id: cfg.router_id,
                         skip_policy: cfg.skip_policy.unwrap_or(false),
                     };
                 }
@@ -200,6 +186,7 @@ fn load_config() -> RouterConfig {
         cli_port: parsed.cli_port.unwrap_or(DEFAULT_CLI_PORT),
         directory_path: parsed.directory_path,
         directory_public_key: parsed.directory_public_key,
+        router_id: parsed.router_id,
         skip_policy: parsed.skip_policy.unwrap_or(false),
     }
 }
@@ -264,6 +251,7 @@ fn save_config(config: &RouterConfig) -> HornetResult<()> {
         cli_port: Some(config.cli_port),
         directory_path: config.directory_path.clone(),
         directory_public_key: config.directory_public_key.clone(),
+        router_id: config.router_id.clone(),
         skip_policy: Some(config.skip_policy),
     };
     let data = serde_json::to_vec_pretty(&file).map_err(|_| types::Error::Crypto)?;
@@ -352,7 +340,7 @@ fn handle_cli_command(
             let _ = send_line(socket, "configure terminal");
             let _ = send_line(
                 socket,
-                "set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex>",
+                "set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | router_id <id>",
             );
             let _ = send_line(socket, "commit | rollback | write memory | exit");
         }
@@ -408,6 +396,10 @@ fn handle_cli_command(
                     config.directory_public_key = Some(value.into());
                     let _ = send_line(socket, "ok (takes effect on restart)");
                 }
+                (Some("router_id"), Some(value)) => {
+                    config.router_id = Some(value.into());
+                    let _ = send_line(socket, "ok (takes effect on restart)");
+                }
                 (Some("skip_policy"), Some(value)) => {
                     let val = match value {
                         "1" | "true" | "on" => Some(true),
@@ -424,7 +416,7 @@ fn handle_cli_command(
                 _ => {
                     let _ = send_line(
                         socket,
-                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | skip_policy true|false",
+                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | router_id <id> | skip_policy true|false",
                     );
                 }
             }
@@ -483,6 +475,9 @@ fn show_running_config(socket: &crate::socket::TcpSocket, config: &RouterConfig)
     }
     if let Some(key) = &config.directory_public_key {
         let _ = send_kv_str(socket, "directory_public_key", key);
+    }
+    if let Some(router_id) = &config.router_id {
+        let _ = send_kv_str(socket, "router_id", router_id);
     }
     let _ = send_kv_str(socket, "skip_policy", if config.skip_policy { "true" } else { "false" });
 }

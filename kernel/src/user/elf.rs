@@ -60,6 +60,7 @@ pub fn load_elf(bytes: &[u8]) -> Option<u64> {
     }
 
     let mut mapped_pages: Vec<u64> = Vec::new();
+    let mut entry_phys: Option<u64> = None;
     for i in 0..phnum {
         let off = phoff + i * phentsize;
         let ph = unsafe { read_struct::<Elf64Phdr>(bytes.as_ptr().add(off))? };
@@ -76,12 +77,15 @@ pub fn load_elf(bytes: &[u8]) -> Option<u64> {
         let mut addr = seg_start;
         while addr < seg_end {
             if !mapped_pages.iter().any(|&p| p == addr) {
-                let phys = match memory::alloc_contiguous(1) {
+                let phys = match memory::alloc_normal_pages(1) {
                     Some(p) => p,
                     None => return None,
                 };
                 if !paging::map_user_page(addr, phys, writable) {
                     return None;
+                }
+                if ehdr.e_entry >= addr && ehdr.e_entry < addr + memory::PAGE_SIZE {
+                    entry_phys = Some(phys);
                 }
                 unsafe {
                     core::ptr::write_bytes(addr as *mut u8, 0, memory::PAGE_SIZE as usize);
@@ -107,7 +111,64 @@ pub fn load_elf(bytes: &[u8]) -> Option<u64> {
             }
         }
     }
+    if let Some(phys) = entry_phys {
+        serial::write(format_args!("ELF: entry phys={:#x}\n", phys));
+        super::set_entry_phys(phys);
+        crate::memory::set_watch_phys(phys);
+    }
+    // Debug: show entry bytes from file and mapped memory.
+    if let Some((file_off, avail)) = entry_file_offset(bytes, &ehdr) {
+        let len = core::cmp::min(16, avail);
+        serial::write(format_args!("ELF: entry file bytes:"));
+        for i in 0..len {
+            let b = bytes[file_off + i];
+            serial::write(format_args!(" {:02x}", b));
+        }
+        serial::write(format_args!("\n"));
+    }
+    serial::write(format_args!("ELF: entry mem bytes:"));
+    for i in 0..16u64 {
+        let b = unsafe { core::ptr::read_volatile((ehdr.e_entry + i) as *const u8) };
+        serial::write(format_args!(" {:02x}", b));
+    }
+    serial::write(format_args!("\n"));
+    // Provide a mapped zero page in user space to avoid early null deref faults.
+    if let Some(phys) = memory::alloc_normal_pages(1) {
+        if paging::map_user_page(0, phys, true) {
+            unsafe {
+                let ptr = memory::phys_to_virt(phys);
+                core::ptr::write_bytes(ptr, 0, memory::PAGE_SIZE as usize);
+            }
+        }
+    }
     Some(ehdr.e_entry)
+}
+
+fn entry_file_offset(bytes: &[u8], ehdr: &Elf64Ehdr) -> Option<(usize, usize)> {
+    let phoff = ehdr.e_phoff as usize;
+    let phentsize = ehdr.e_phentsize as usize;
+    let phnum = ehdr.e_phnum as usize;
+    if phoff + phentsize * phnum > bytes.len() {
+        return None;
+    }
+    let entry = ehdr.e_entry;
+    for i in 0..phnum {
+        let off = phoff + i * phentsize;
+        let ph = unsafe { read_struct::<Elf64Phdr>(bytes.as_ptr().add(off))? };
+        if ph.p_type != PT_LOAD || ph.p_filesz == 0 {
+            continue;
+        }
+        let start = ph.p_vaddr;
+        let end = ph.p_vaddr.saturating_add(ph.p_filesz);
+        if entry >= start && entry < end {
+            let file_off = ph.p_offset as usize + (entry - start) as usize;
+            if file_off < bytes.len() {
+                let avail = bytes.len().saturating_sub(file_off);
+                return Some((file_off, avail));
+            }
+        }
+    }
+    None
 }
 
 unsafe fn read_struct<T: Copy>(ptr: *const u8) -> Option<T> {

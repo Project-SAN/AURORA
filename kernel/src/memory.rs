@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU64, Ordering};
+use crate::serial;
 use uefi::table::boot::{MemoryMap, MemoryType};
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -45,6 +47,11 @@ impl MemoryState {
 }
 
 static MEMORY: MemoryState = MemoryState::new();
+static WATCH_PHYS: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_watch_phys(phys: u64) {
+    WATCH_PHYS.store(phys, Ordering::Relaxed);
+}
 
 pub fn init(map: &MemoryMap) -> MemoryStats {
     let manager = MemoryManager::new(map);
@@ -153,6 +160,13 @@ impl MemoryManager {
                     };
                     self.free[idx].end = alloc_start;
                     self.free.insert(idx + 1, tail);
+                }
+                let watch = WATCH_PHYS.load(Ordering::Relaxed);
+                if watch != 0 && watch >= alloc_start && watch < alloc_end {
+                    serial::write(format_args!(
+                        "alloc_contiguous: overlaps watched phys={:#x} alloc=[{:#x}..{:#x}) pages={}\n",
+                        watch, alloc_start, alloc_end, pages
+                    ));
                 }
                 return Some(alloc_start);
             }

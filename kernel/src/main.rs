@@ -85,7 +85,7 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     } else {
         serial::write(format_args!("Paging: failed to build tables\n"));
     }
-    let stack_pages = 8usize;
+    let stack_pages = 32usize;
     let stack_phys = match memory::alloc_contiguous(stack_pages) {
         Some(addr) => addr,
         None => {
@@ -110,7 +110,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     const RUN_USERLAND: bool = cfg!(feature = "userland");
 
-    let syscall_stack_pages = 16usize;
+    let syscall_stack_pages = 64usize;
     let syscall_stack_phys = match memory::alloc_contiguous(syscall_stack_pages) {
         Some(addr) => addr,
         None => {
@@ -181,6 +181,28 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
                 "userland: entry={:#x} stack={:#x}\n",
                 image.entry, image.stack_top
             ));
+            serial::write(format_args!("userland: entry bytes:"));
+            for i in 0..16u64 {
+                let b = unsafe { core::ptr::read_volatile((image.entry + i) as *const u8) };
+                serial::write(format_args!(" {:02x}", b));
+            }
+            serial::write(format_args!("\n"));
+            let entry_phys = paging::virt_to_phys(image.entry);
+            serial::write(format_args!(
+                "userland: entry phys query={:#x}\n",
+                entry_phys
+            ));
+            if entry_phys != 0 {
+                let base = entry_phys & !0xfff;
+                let off = (image.entry & 0xfff) as usize;
+                let ptr = unsafe { memory::phys_to_virt(base) };
+                serial::write(format_args!("userland: entry phys bytes:"));
+                for i in 0..16usize {
+                    let b = unsafe { core::ptr::read_volatile(ptr.add(off + i)) };
+                    serial::write(format_args!(" {:02x}", b));
+                }
+                serial::write(format_args!("\n"));
+            }
             unsafe { enter_user(image.entry, image.stack_top) };
         } else {
             serial::write(format_args!("userland: load failed\n"));
@@ -237,18 +259,24 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
     let user_cs = (arch::gdt::USER_CODE | 3) as u64;
     let user_ss = (arch::gdt::USER_DATA | 3) as u64;
     let rflags = read_rflags() | (1 << 9);
+    serial::write(format_args!(
+        "enter_user: rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
+        entry, user_cs, rflags, stack_top, user_ss
+    ));
     core::arch::asm!(
-        "push {0}",
-        "push {1}",
-        "push {2}",
-        "push {3}",
-        "push {4}",
+        "cli",
+        "sub rsp, 40",
+        "mov [rsp + 0], {rip}",
+        "mov [rsp + 8], {cs}",
+        "mov [rsp + 16], {rflags}",
+        "mov [rsp + 24], {rsp_user}",
+        "mov [rsp + 32], {ss}",
         "iretq",
-        in(reg) user_ss,
-        in(reg) stack_top,
-        in(reg) rflags,
-        in(reg) user_cs,
-        in(reg) entry,
+        rip = in(reg) entry,
+        cs = in(reg) user_cs,
+        rflags = in(reg) rflags,
+        rsp_user = in(reg) stack_top,
+        ss = in(reg) user_ss,
         options(noreturn)
     );
 }

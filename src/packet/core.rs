@@ -2,18 +2,6 @@ use crate::crypto::prp;
 use crate::types::{Chdr, Error, Exp, Fs, PacketType, Result, RoutingSegment, Si, Sv, FS_LEN};
 use alloc::vec::Vec;
 
-#[cfg(feature = "hornet-log")]
-macro_rules! hlog {
-    ($($tt:tt)*) => {
-        crate::log::emit(core::format_args!($($tt)*));
-    };
-}
-
-#[cfg(not(feature = "hornet-log"))]
-macro_rules! hlog {
-    ($($tt:tt)*) => {};
-}
-
 // Encode {s || EXP || R[0..12]} into 32 bytes, then PRP-enc with key from SV
 pub fn create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> Result<Fs> {
     if r.0.len() > 12 {
@@ -29,18 +17,14 @@ pub fn create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> Result<Fs> {
 }
 
 pub fn open(sv: &Sv, fs: &Fs) -> Result<(Si, RoutingSegment, Exp)> {
-    hlog!("core: open start");
     let mut buf = fs.0;
-    hlog!("core: prp_dec start");
     prp::prp_dec_bytes(&sv.0, &mut buf);
-    hlog!("core: prp_dec done");
     let mut k = [0u8; 16];
     k.copy_from_slice(&buf[0..16]);
     let mut exp_bytes = [0u8; 4];
     exp_bytes.copy_from_slice(&buf[16..20]);
     let exp = Exp(u32::from_be_bytes(exp_bytes));
     let r = RoutingSegment(Vec::from(&buf[20..32]));
-    hlog!("core: open done exp={} r_len={}", exp.0, r.0.len());
     Ok((Si(k), r, exp))
 }
 
