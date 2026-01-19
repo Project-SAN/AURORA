@@ -3,3 +3,6 @@
 .vscode/
 config/
 *.log
+
+qemu-img/
+scripts/

@@ -13,7 +13,6 @@ name = "hornet"
 [features]
 default = []
 std = []
-hornet-log = []
 http-client = ["std", "dep:ureq"]
 bench = []
 regex-policy = ["std", "dep:regex"]

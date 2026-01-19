@@ -275,6 +275,7 @@ fn write_router_config(spec: &RouterSpec, out_dir: &str) -> Result<(), Box<dyn s
         storage_path: "/router_state.json".to_string(),
         directory_path: "/directory.json".to_string(),
         directory_public_key: encode_hex(&local_public_key()),
+        router_id: spec.name.to_string(),
     };
     let json = serde_json::to_string_pretty(&config)?;
     let path = format!("{out_dir}/{}.router_config.json", spec.name);
@@ -334,4 +335,5 @@ struct RouterConfigFile {
     storage_path: String,
     directory_path: String,
     directory_public_key: String,
+    router_id: String,
 }

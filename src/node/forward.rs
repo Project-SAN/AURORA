@@ -11,19 +11,6 @@ use crate::{
 use crate::{crypto::prg, types::PacketType};
 pub type Result<T> = core::result::Result<T, Error>;
 
-#[cfg(feature = "hornet-log")]
-macro_rules! hlog {
-    ($($tt:tt)*) => {
-        crate::log::emit(core::format_args!($($tt)*));
-    };
-}
-
-#[cfg(not(feature = "hornet-log"))]
-macro_rules! hlog {
-    ($($tt:tt)*) => {};
-}
-
-
 const TAG_EXACT: u8 = 0x01;
 const TAG_PREFIX: u8 = 0x02;
 const TAG_CIDR: u8 = 0x03;
@@ -35,21 +22,12 @@ pub fn process_data(
     ahdr: &mut Ahdr,
     payload: &mut Vec<u8>,
 ) -> Result<()> {
-    hlog!(
-        "forward: begin ahdr_len={} payload_len={}",
-        ahdr.bytes.len(),
-        payload.len()
-    );
     let now = Exp(ctx.now.now_coarse());
-    hlog!("forward: now={}", now.0);
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
-    hlog!("forward: proc_ahdr ok r_len={}", res.r.0.len());
     let tau = derive_tau_tag(&res.s);
     if !ctx.replay.insert(tau) {
-        hlog!("forward: replay detected");
         return Err(crate::types::Error::Replay);
     }
-    hlog!("forward: replay ok");
     let capsule_len = if let Some(policy) = ctx.policy {
         let role = match PolicyCapsule::decode(payload.as_slice()) {
             Ok((capsule, _)) => policy
@@ -72,7 +50,6 @@ pub fn process_data(
             .map(|(_, len)| len)
     })
     .unwrap_or(0);
-    hlog!("forward: capsule_len={}", capsule_len);
 
     use crate::types::PacketDirection;
 
@@ -80,19 +57,15 @@ pub fn process_data(
     if capsule_len >= payload.len() {
         // nothing beyond the capsule to decrypt for the next hop
         chdr.specific = iv;
-        hlog!("forward: forwarding capsule-only payload");
         return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward);
     }
 
     let tail = &mut payload[capsule_len..];
-    hlog!("forward: remove_layer tail_len={}", tail.len());
     onion::remove_layer(&res.s, &mut iv, tail)?;
     chdr.specific = iv;
-    hlog!("forward: removed onion layer tail_len={}", tail.len());
 
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
         if let Some(RouteElem::ExitTcp { addr, port, tls }) = elems.first() {
-            hlog!("forward: exit tcp selected");
             let mut exit = ctx.exit.take();
             let res = if let Some(exit) = exit.as_deref_mut() {
                 handle_exit(ctx, exit, addr, *port, *tls, chdr.hops, tail)
@@ -104,7 +77,6 @@ pub fn process_data(
         }
     }
 
-    hlog!("forward: forwarding to next hop");
     ctx.forward
         .send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward)
 }

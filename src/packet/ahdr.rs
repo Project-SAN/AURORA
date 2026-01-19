@@ -8,18 +8,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use rand_core::RngCore;
 
-#[cfg(feature = "hornet-log")]
-macro_rules! hlog {
-    ($($tt:tt)*) => {
-        crate::log::emit(core::format_args!($($tt)*));
-    };
-}
-
-#[cfg(not(feature = "hornet-log"))]
-macro_rules! hlog {
-    ($($tt:tt)*) => {};
-}
-
 pub struct ProcResult {
     pub s: Si,
     pub r: RoutingSegment,
@@ -28,7 +16,6 @@ pub struct ProcResult {
 
 // Algorithm 3: Process an AHDR at a hop
 pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
-    hlog!("ahdr: proc_ahdr start len={}", ahdr.bytes.len());
     let rc = ahdr.bytes.len();
     if rc % C_BLOCK != 0 {
         return Err(Error::Length);
@@ -40,15 +27,12 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let gamma = &head[FS_LEN..C_BLOCK];
     let beta = &ahdr.bytes[C_BLOCK..];
     let fs = Fs(<[u8; FS_LEN]>::try_from(fs_bytes).map_err(|_| Error::Length)?);
-    hlog!("ahdr: before open");
     let (s, rseg, exp) = open(sv, &fs)?;
-    hlog!("ahdr: open ok exp={} r_len={}", exp.0, rseg.0.len());
     if now.0 >= exp.0 {
         return Err(Error::Expired);
     }
 
     // Verify MAC: gamma == MAC(hMAC(s); FS || beta)
-    hlog!("ahdr: mac verify start beta_len={}", beta.len());
     let mut mac_key = [0u8; 16];
     hop_key(&s.0, OpLabel::Mac, &mut mac_key);
     let mut mac_input = Vec::with_capacity(FS_LEN + beta.len());
@@ -58,9 +42,7 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     if tag.0.as_slice() != gamma {
         return Err(Error::InvalidMac);
     }
-    hlog!("ahdr: mac ok");
     // Compute next header: (beta || 0^c) XOR PRG2(s)
-    hlog!("ahdr: build next start");
     let mut next = Vec::with_capacity(rc);
     next.extend_from_slice(beta);
     next.resize(rc, 0u8);
@@ -69,7 +51,6 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     for (b, m) in next.iter_mut().zip(mask.iter()) {
         *b ^= *m;
     }
-    hlog!("ahdr: proc_ahdr done");
     Ok(ProcResult {
         s,
         r: rseg,
