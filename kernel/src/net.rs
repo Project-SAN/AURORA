@@ -303,7 +303,7 @@ impl NetStack {
             if idx == except {
                 continue;
             }
-            if self.entries[idx].state == SocketState::Free {
+            if matches!(self.entries[idx].state, SocketState::Free | SocketState::Idle) {
                 let handle = self.entries[idx].handle;
                 {
                     let socket = self.sockets.get_mut::<tcp::Socket>(handle);
