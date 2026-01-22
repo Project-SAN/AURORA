@@ -5,16 +5,15 @@ use crate::node::PolicyRuntime;
 use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::types::{Ahdr, Chdr, Result};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod config;
-#[cfg(feature = "std")]
 pub mod io;
 pub mod penalty;
 pub mod runtime;
-#[cfg(feature = "std")]
 pub mod storage;
 pub mod sync;
 
@@ -118,10 +117,10 @@ impl Router {
         Ok(())
     }
 
-    /// Verifies a signed directory announcement (HMAC/HKDF per spec) and installs
+    /// Verifies a signed directory announcement (Ed25519) and installs
     /// all contained policy metadata entries on success.
-    pub fn install_signed_directory(&mut self, body: &str, secret: &[u8]) -> Result<()> {
-        let directory = from_signed_json(body, secret)?;
+    pub fn install_signed_directory(&mut self, body: &str, public_key: &[u8]) -> Result<()> {
+        let directory = from_signed_json(body, public_key)?;
         self.install_directory(&directory)
     }
 
@@ -204,12 +203,13 @@ impl Router {
         })
     }
 
-    pub fn process_forward_packet(
-        &self,
+    pub fn process_forward_packet<'p, 'io, 'e>(
+        &'p self,
         sv: crate::types::Sv,
-        now: &dyn crate::time::TimeProvider,
-        forward: &mut dyn crate::forward::Forward,
-        replay: &mut dyn crate::node::ReplayFilter,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        exit: Option<&'e mut dyn crate::node::ExitTransport>,
+        replay: &'io mut dyn crate::node::ReplayFilter,
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
@@ -222,16 +222,17 @@ impl Router {
             forward,
             replay,
             policy,
+            exit,
         };
         node::forward::process_data(&mut ctx, chdr, ahdr, payload)
     }
 
-    pub fn process_backward_packet(
-        &self,
+    pub fn process_backward_packet<'p, 'io>(
+        &'p self,
         sv: crate::types::Sv,
-        now: &dyn crate::time::TimeProvider,
-        forward: &mut dyn crate::forward::Forward,
-        replay: &mut dyn crate::node::ReplayFilter,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        replay: &'io mut dyn crate::node::ReplayFilter,
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
@@ -244,6 +245,7 @@ impl Router {
             forward,
             replay,
             policy,
+            exit: None,
         };
         node::backward::process_data(&mut ctx, chdr, ahdr, payload)
     }
@@ -320,12 +322,13 @@ mod tests {
         let policy = sample_metadata();
         let mut directory = DirectoryAnnouncement::new();
         directory.push_policy(policy.clone());
-        let secret = b"shared-secret";
-        let signed = to_signed_json(&directory, secret, 1_700_000_000).expect("sign");
+        let secret = [0x11u8; 32];
+        let signed = to_signed_json(&directory, &secret, 1_700_000_000).expect("sign");
+        let public = crate::setup::directory::public_key_from_seed(&secret);
 
         let mut router = Router::new();
         router
-            .install_signed_directory(&signed, secret)
+            .install_signed_directory(&signed, &public)
             .expect("install signed directory");
         assert!(router.registry().get(&policy.policy_id).is_some());
     }

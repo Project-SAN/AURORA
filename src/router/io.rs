@@ -1,11 +1,6 @@
-use crate::forward::Forward;
-use crate::routing::{self, IpAddr, RouteElem};
-use crate::types::{Ahdr, Chdr, Error, PacketType, Result, RoutingSegment, Sv, PacketDirection};
-use alloc::string::String;
+use crate::types::{Ahdr, Chdr, Error, PacketDirection, PacketType, Result, Sv};
+use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt::Write as FmtWrite;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 
 pub struct IncomingPacket {
     pub direction: PacketDirection,
@@ -16,7 +11,11 @@ pub struct IncomingPacket {
 }
 
 pub trait PacketListener {
-    fn next(&mut self) -> std::io::Result<IncomingPacket>;
+    fn next(&mut self) -> Result<Option<IncomingPacket>>;
+}
+
+pub trait PacketReader {
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<()>;
 }
 
 fn packet_type_to_u8(pt: PacketType) -> u8 {
@@ -26,25 +25,19 @@ fn packet_type_to_u8(pt: PacketType) -> u8 {
     }
 }
 
-fn packet_type_from_u8(value: u8) -> std::io::Result<PacketType> {
+fn packet_type_from_u8(value: u8) -> Result<PacketType> {
     match value {
         0 => Ok(PacketType::Setup),
         1 => Ok(PacketType::Data),
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "unknown packet type",
-        )),
+        _ => Err(Error::Length),
     }
 }
 
-fn direction_from_u8(value: u8) -> std::io::Result<PacketDirection> {
+fn direction_from_u8(value: u8) -> Result<PacketDirection> {
     match value {
         0 => Ok(PacketDirection::Forward),
         1 => Ok(PacketDirection::Backward),
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "unknown direction",
-        )),
+        _ => Err(Error::Length),
     }
 }
 
@@ -55,117 +48,7 @@ fn direction_to_u8(direction: PacketDirection) -> u8 {
     }
 }
 
-pub struct TcpPacketListener {
-    listener: TcpListener,
-    sv: Sv,
-}
-
-impl TcpPacketListener {
-    pub fn bind(addr: &str, sv: Sv) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(addr)?;
-        listener.set_nonblocking(false)?;
-        Ok(Self { listener, sv })
-    }
-
-    pub fn update_sv(&mut self, sv: Sv) {
-        self.sv = sv;
-    }
-}
-
-impl PacketListener for TcpPacketListener {
-    fn next(&mut self) -> std::io::Result<IncomingPacket> {
-        let (mut stream, _) = self.listener.accept()?;
-        read_incoming_packet(&mut stream, self.sv)
-    }
-}
-
-pub struct TcpForward;
-
-impl TcpForward {
-    pub fn new() -> Self {
-        Self
-    }
-
-    #[cfg(test)]
-    fn resolve_next_hop(segment: &RoutingSegment) -> Result<String> {
-        let elems = routing::elems_from_segment(segment).map_err(|_| Error::Length)?;
-        let hop = elems.first().ok_or(Error::Length)?;
-        match hop {
-            RouteElem::NextHop { addr, port } => Ok(format_ip(addr, *port)),
-            RouteElem::ExitTcp { addr, port, .. } => Ok(format_ip(addr, *port)),
-        }
-    }
-}
-
-impl Forward for TcpForward {
-    fn send(
-        &mut self,
-        rseg: &RoutingSegment,
-        chdr: &Chdr,
-        ahdr: &Ahdr,
-        payload: &mut Vec<u8>,
-        direction: PacketDirection,
-    ) -> Result<()> {
-        let elems = routing::elems_from_segment(rseg).map_err(|_| Error::Length)?;
-        let hop = elems.first().ok_or(Error::Length)?;
-
-        match hop {
-            RouteElem::NextHop { addr, port } => {
-                let addr_str = format_ip(addr, *port);
-                eprintln!(
-                    "[FORWARD] send {:?} -> {} (payload={}, ahdr={})",
-                    direction,
-                    addr_str,
-                    payload.len(),
-                    ahdr.bytes.len()
-                );
-                let mut stream = TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
-                let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
-                stream.write_all(&frame).map_err(|_| Error::Crypto)
-            }
-            RouteElem::ExitTcp { addr, port, .. } => {
-                // In benchmarks we don't expect structured exit payloads; forward the frame.
-                let addr_str = format_ip(addr, *port);
-                eprintln!(
-                    "[FORWARD] send {:?} -> {} (payload={}, ahdr={})",
-                    direction,
-                    addr_str,
-                    payload.len(),
-                    ahdr.bytes.len()
-                );
-                let mut stream = TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
-                let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
-                stream.write_all(&frame).map_err(|_| Error::Crypto)
-            }
-        }
-    }
-
-}
-
-fn format_ip(addr: &IpAddr, port: u16) -> String {
-    match addr {
-        IpAddr::V4(octets) => format!(
-            "{}.{}.{}.{}:{}",
-            octets[0], octets[1], octets[2], octets[3], port
-        ),
-        IpAddr::V6(bytes) => {
-            let mut buf = String::new();
-            buf.push('[');
-            for (i, chunk) in bytes.chunks(2).enumerate() {
-                if i > 0 {
-                    buf.push(':');
-                }
-                let value = u16::from_be_bytes([chunk[0], chunk[1]]);
-                let _ = FmtWrite::write_fmt(&mut buf, format_args!("{:x}", value));
-            }
-            buf.push(']');
-            let _ = FmtWrite::write_fmt(&mut buf, format_args!(":{}", port));
-            buf
-        }
-    }
-}
-
-fn encode_frame_bytes(
+pub fn encode_frame_bytes(
     direction: PacketDirection,
     chdr: &Chdr,
     ahdr: &Ahdr,
@@ -184,7 +67,7 @@ fn encode_frame_bytes(
     frame
 }
 
-fn read_incoming_packet<R: Read>(reader: &mut R, sv: Sv) -> std::io::Result<IncomingPacket> {
+pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<IncomingPacket> {
     let mut header = [0u8; 4];
     reader.read_exact(&mut header)?;
     let direction = direction_from_u8(header[0])?;
@@ -218,53 +101,8 @@ fn read_incoming_packet<R: Read>(reader: &mut R, sv: Sv) -> std::io::Result<Inco
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::routing::{self, IpAddr as RouteIp, RouteElem};
-    use crate::types::{PacketType, Sv};
-    use std::io::Cursor;
-
-    #[test]
-    fn tcp_forward_resolves_first_hop_from_multihop_segment() {
-        let segment = routing::segment_from_elems(&[
-            RouteElem::NextHop {
-                addr: RouteIp::V4([10, 0, 0, 1]),
-                port: 9_000,
-            },
-            RouteElem::ExitTcp {
-                addr: RouteIp::V4([203, 0, 113, 5]),
-                port: 443,
-                tls: true,
-            },
-        ]);
-        let addr = TcpForward::resolve_next_hop(&segment).expect("first hop");
-        assert_eq!(addr, "10.0.0.1:9000");
-    }
-
-    #[test]
-    fn frame_encoding_roundtrip_preserves_fields() {
-        let sv = Sv([0x44; 16]);
-        let chdr = Chdr {
-            typ: PacketType::Data,
-            hops: 3,
-            specific: [0xAB; 16],
-        };
-        let ahdr_bytes = vec![0x10, 0x20, 0x30, 0x40];
-        let ahdr = Ahdr {
-            bytes: ahdr_bytes.clone(),
-        };
-        let payload = vec![0x55, 0x66, 0x77];
-        let frame = encode_frame_bytes(PacketDirection::Backward, &chdr, &ahdr, payload.as_slice());
-        let mut cursor = Cursor::new(frame);
-        let packet = read_incoming_packet(&mut cursor, sv).expect("decode incoming");
-
-        assert_eq!(packet.direction, PacketDirection::Backward);
-        assert_eq!(packet.sv.0, sv.0);
-        assert!(matches!(packet.chdr.typ, PacketType::Data));
-        assert_eq!(packet.chdr.hops, chdr.hops);
-        assert_eq!(packet.chdr.specific, chdr.specific);
-        assert_eq!(packet.ahdr.bytes, ahdr_bytes);
-        assert_eq!(packet.payload, payload);
-    }
-}
+#[cfg(feature = "std")]
+#[path = "io_std.rs"]
+mod io_std;
+#[cfg(feature = "std")]
+pub use io_std::{TcpForward, TcpPacketListener};

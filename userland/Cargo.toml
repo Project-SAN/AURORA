@@ -1,0 +1,15 @@
+[package]
+name = "aurora-userland"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+hornet = { package = "aurora", path = "..", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
+linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+
+[features]
+hornet-time = ["dep:hornet"]
+hornet-router = ["dep:hornet", "dep:serde", "dep:serde_json"]

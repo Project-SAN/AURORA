@@ -248,9 +248,18 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut chdr = hornet::packet::chdr::data_header(hops as u8, iv);
 
     // Setup listener for response
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("failed to bind listener: {e}"))?;
-    let local_addr = listener.local_addr().map_err(|e| format!("failed to get local addr: {e}"))?;
-    println!("Listening for response on {}", local_addr);
+    let bind_addr =
+        env::var("HORNET_RESPONSE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let listener = TcpListener::bind(&bind_addr)
+        .map_err(|e| format!("failed to bind listener {bind_addr}: {e}"))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|e| format!("failed to get local addr: {e}"))?;
+    let (return_ip, return_port) = resolve_return_addr(local_addr)?;
+    println!(
+        "Listening for response on {} (return port {})",
+        local_addr, return_port
+    );
 
     // Construct Backward Path
     // Path: Exit -> Middle -> Entry -> Client
@@ -271,11 +280,10 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         
         let segment = if hop_idx == 0 {
             // Entry -> Client
-            let (ip, port) = match local_addr {
-                std::net::SocketAddr::V4(v4) => (IpAddr::V4(v4.ip().octets()), v4.port()),
-                std::net::SocketAddr::V6(v6) => (IpAddr::V6(v6.ip().octets()), v6.port()),
+            let elem = RouteElem::NextHop {
+                addr: return_ip.clone(),
+                port: return_port,
             };
-            let elem = RouteElem::NextHop { addr: ip, port };
             routing::segment_from_elems(&[elem])
         } else {
             // Exit -> Middle or Middle -> Entry
@@ -324,8 +332,14 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     payload.extend_from_slice(&encrypted_tail);
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
-    println!("Sending frame to entry {}", entry.bind);
-    send_frame(entry, &frame)?;
+    let entry_override = env::var("HORNET_ENTRY_ADDR").ok().filter(|s| !s.is_empty());
+    if let Some(addr) = entry_override.as_deref() {
+        println!("Sending frame to entry override {}", addr);
+        send_frame_to(addr, &frame)?;
+    } else {
+        println!("Sending frame to entry {}", entry.bind);
+        send_frame(entry, &frame)?;
+    }
     println!(
         "データ送信完了: {} へ {} バイト (hops={})",
         entry.bind,
@@ -338,7 +352,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let timeout_secs: u64 = env::var("HORNET_RESPONSE_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+        .unwrap_or(600);
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("set nonblocking failed: {e}"))?;
@@ -453,6 +467,25 @@ fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
     Ok(addr.octets())
 }
 
+fn resolve_return_addr(local_addr: std::net::SocketAddr) -> Result<(IpAddr, u16), String> {
+    if let Ok(addr) = env::var("HORNET_RETURN_ADDR") {
+        let (host, port_str) = addr
+            .rsplit_once(':')
+            .ok_or("HORNET_RETURN_ADDR must be ip:port")?;
+        let port: u16 = port_str.parse().map_err(|_| "invalid return port")?;
+        let ip = parse_ipv4_octets(host)?;
+        return Ok((IpAddr::V4(ip), port));
+    }
+    if let Ok(host) = env::var("HORNET_RETURN_HOST") {
+        let ip = parse_ipv4_octets(&host)?;
+        return Ok((IpAddr::V4(ip), local_addr.port()));
+    }
+    match local_addr {
+        std::net::SocketAddr::V4(v4) => Ok((IpAddr::V4(v4.ip().octets()), v4.port())),
+        std::net::SocketAddr::V6(v6) => Ok((IpAddr::V6(v6.ip().octets()), v6.port())),
+    }
+}
+
 fn resolve_target(host: &str) -> Result<(IpAddr, u16), String> {
     let (hostname, port) = if let Some((h, p)) = host.rsplit_once(':') {
         if let Ok(port_num) = p.parse::<u16>() {
@@ -545,8 +578,12 @@ fn encode_frame(
 }
 
 fn send_frame(info: &RouterInfo, frame: &[u8]) -> Result<(), String> {
-    let mut stream = TcpStream::connect(&info.bind)
-        .map_err(|err| format!("failed to connect to {}: {err}", info.bind))?;
+    send_frame_to(&info.bind, frame)
+}
+
+fn send_frame_to(addr: &str, frame: &[u8]) -> Result<(), String> {
+    let mut stream =
+        TcpStream::connect(addr).map_err(|err| format!("failed to connect to {}: {err}", addr))?;
     stream
         .write_all(frame)
         .map_err(|err| format!("failed to send frame: {err}"))?;

@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
-    routing::{self, RouteElem},
     policy::PolicyCapsule,
-    crypto::prg,
+    routing::{self, RouteElem},
     sphinx::derive_tau_tag,
-    types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv, PacketType},
+    types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
 };
+use crate::{crypto::prg, types::PacketType};
 pub type Result<T> = core::result::Result<T, Error>;
 
 const TAG_EXACT: u8 = 0x01;
@@ -17,22 +17,15 @@ const TAG_CIDR: u8 = 0x03;
 const TAG_RANGE: u8 = 0x04;
 
 pub fn process_data(
-    ctx: &mut NodeCtx,
+    ctx: &mut NodeCtx<'_, '_, '_>,
     chdr: &mut Chdr,
     ahdr: &mut Ahdr,
     payload: &mut Vec<u8>,
 ) -> Result<()> {
-    eprintln!(
-        "[FORWARD] Processing forward packet: ahdr_len={}, payload_len={}",
-        ahdr.bytes.len(),
-        payload.len()
-    );
     let now = Exp(ctx.now.now_coarse());
     let res = proc_ahdr(&ctx.sv, ahdr, now)?;
-    eprintln!("[FORWARD] proc_ahdr succeeded, r_len={}", res.r.0.len());
     let tau = derive_tau_tag(&res.s);
     if !ctx.replay.insert(tau) {
-        eprintln!("[FORWARD] replay detected");
         return Err(crate::types::Error::Replay);
     }
     let capsule_len = if let Some(policy) = ctx.policy {
@@ -57,7 +50,6 @@ pub fn process_data(
             .map(|(_, len)| len)
     })
     .unwrap_or(0);
-    eprintln!("[FORWARD] capsule_len={}", capsule_len);
 
     use crate::types::PacketDirection;
 
@@ -65,29 +57,23 @@ pub fn process_data(
     if capsule_len >= payload.len() {
         // nothing beyond the capsule to decrypt for the next hop
         chdr.specific = iv;
-        eprintln!("[FORWARD] forwarding capsule-only payload");
         return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward);
     }
 
     let tail = &mut payload[capsule_len..];
     onion::remove_layer(&res.s, &mut iv, tail)?;
     chdr.specific = iv;
-    eprintln!(
-        "[FORWARD] removed onion layer, forwarding tail_len={}",
-        tail.len()
-    );
 
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
-        if let Some(RouteElem::ExitTcp { addr, port, .. }) = elems.first() {
-            #[cfg(feature = "std")]
-            {
-                return handle_exit(ctx, addr.clone(), *port, chdr.hops, tail);
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                let _ = addr;
-                let _ = port;
-            }
+        if let Some(RouteElem::ExitTcp { addr, port, tls }) = elems.first() {
+            let mut exit = ctx.exit.take();
+            let res = if let Some(exit) = exit.as_deref_mut() {
+                handle_exit(ctx, exit, addr, *port, *tls, chdr.hops, tail)
+            } else {
+                Err(Error::NotImplemented)
+            };
+            ctx.exit = exit;
+            return res;
         }
     }
 
@@ -106,18 +92,15 @@ pub fn create_fs_from_setup(
     crate::packet::core::create_from_chdr(sv, s, r, chdr)
 }
 
-#[cfg(feature = "std")]
 fn handle_exit(
-    ctx: &mut NodeCtx,
-    addr: crate::routing::IpAddr,
+    ctx: &mut NodeCtx<'_, '_, '_>,
+    exit: &mut dyn crate::node::ExitTransport,
+    addr: &crate::routing::IpAddr,
     port: u16,
+    tls: bool,
     hops: u8,
     tail: &mut [u8],
 ) -> Result<()> {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
     let canonical_len = leaf_len(tail)?;
     let mut cursor = canonical_len;
     if cursor + 4 > tail.len() {
@@ -137,33 +120,7 @@ fn handle_exit(
     cursor += ahdr_len;
     let request = &tail[cursor..];
 
-    let addr_str = match addr {
-        crate::routing::IpAddr::V4(octets) => {
-            format!("{}.{}.{}.{}:{}", octets[0], octets[1], octets[2], octets[3], port)
-        }
-        crate::routing::IpAddr::V6(bytes) => {
-            let mut buf = alloc::string::String::new();
-            buf.push('[');
-            for (i, chunk) in bytes.chunks(2).enumerate() {
-                if i > 0 {
-                    buf.push(':');
-                }
-                let value = u16::from_be_bytes([chunk[0], chunk[1]]);
-                use core::fmt::Write as FmtWrite;
-                let _ = FmtWrite::write_fmt(&mut buf, format_args!("{:x}", value));
-            }
-            buf.push(']');
-            use core::fmt::Write as FmtWrite;
-            let _ = FmtWrite::write_fmt(&mut buf, format_args!(":{}", port));
-            buf
-        }
-    };
-
-    let mut stream = TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
-    stream.write_all(request).map_err(|_| Error::Crypto)?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    let mut response = Vec::new();
-    let _ = stream.read_to_end(&mut response);
+    let mut response = exit.send(addr, port, tls, request)?;
 
     let mut ahdr_b = Ahdr { bytes: ahdr_bytes };
     let mut chdr_b = Chdr {
@@ -175,8 +132,7 @@ fn handle_exit(
     crate::node::backward::process_data(ctx, &mut chdr_b, &mut ahdr_b, &mut response)
 }
 
-#[cfg(feature = "std")]
-fn derive_exit_iv(ctx: &NodeCtx, ahdr: &Ahdr) -> [u8; 16] {
+fn derive_exit_iv(ctx: &NodeCtx<'_, '_, '_>, ahdr: &Ahdr) -> [u8; 16] {
     let now = Exp(ctx.now.now_coarse());
     if let Ok(res) = proc_ahdr(&ctx.sv, ahdr, now) {
         let mut iv = [0u8; 16];
