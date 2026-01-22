@@ -6,8 +6,10 @@
 extern crate alloc;
 
 mod heap;
+mod arch;
 mod acpi;
 mod apic;
+mod fs;
 mod hpet;
 mod interrupts;
 mod memory;
@@ -16,6 +18,9 @@ mod paging;
 mod pci;
 mod port;
 mod serial;
+mod syscall;
+mod time;
+mod user;
 mod virtio;
 
 use core::panic::PanicInfo;
@@ -28,6 +33,19 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     serial::init();
     heap::init();
     serial::write(format_args!("Hello from AURORA UEFI kernel\n"));
+
+    match system_table.runtime_services().get_time() {
+        Ok(time) => {
+            if time::init_from_uefi(time, interrupts::ticks()) {
+                serial::write(format_args!("UEFI time captured\n"));
+            } else {
+                serial::write(format_args!("UEFI time invalid\n"));
+            }
+        }
+        Err(_) => {
+            serial::write(format_args!("UEFI time unavailable\n"));
+        }
+    }
 
     let rsdp_addr = find_rsdp(&system_table);
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
@@ -67,7 +85,7 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     } else {
         serial::write(format_args!("Paging: failed to build tables\n"));
     }
-    let stack_pages = 8usize;
+    let stack_pages = 32usize;
     let stack_phys = match memory::alloc_contiguous(stack_pages) {
         Some(addr) => addr,
         None => {
@@ -90,6 +108,29 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     serial::write(format_args!("Entered higher-half\n"));
 
+    const RUN_USERLAND: bool = cfg!(feature = "userland");
+
+    let syscall_stack_pages = 64usize;
+    let syscall_stack_phys = match memory::alloc_contiguous(syscall_stack_pages) {
+        Some(addr) => addr,
+        None => {
+            serial::write(format_args!("Syscall stack alloc failed\n"));
+            loop {
+                unsafe { core::arch::asm!("hlt"); }
+            }
+        }
+    };
+    let syscall_stack_top = paging::to_higher_half(
+        syscall_stack_phys + (syscall_stack_pages as u64) * memory::PAGE_SIZE,
+    );
+    arch::init(syscall_stack_top);
+    serial::write(format_args!(
+        "arch: tr={:#x} tss_rsp0={:#x} efer={:#x}\n",
+        arch::gdt::read_tr(),
+        arch::gdt::tss_rsp0(),
+        arch::syscall::read_efer()
+    ));
+
     if rsdp_addr != 0 {
         if let Some(info) = acpi::init(rsdp_addr) {
             serial::write(format_args!(
@@ -98,7 +139,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
             ));
             if interrupts::init(&info) {
                 serial::write(format_args!("APIC/HPET timer enabled\n"));
-                interrupts::enable_net_irq();
+                interrupts::enable_net_irqs();
             } else {
                 serial::write(format_args!("APIC/HPET timer not configured\n"));
             }
@@ -109,6 +150,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     let pci_count = pci::scan();
     serial::write(format_args!("PCI scan complete: {} devices\n", pci_count));
+    let _ = fs::init();
     if let Some(dev) = pci::find_virtio_net() {
         serial::write(format_args!(
             "virtio-net at {:02x}:{:02x}.{} io={:?} mmio={:?}\n",
@@ -129,9 +171,48 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         }
     };
 
+    if let Some(stack) = net_stack.as_mut() {
+        syscall::install_yield(stack as *mut _, &mut net_device as *mut _);
+    }
+
+    if RUN_USERLAND {
+        if let Some(image) = user::load_user_image(user::USER_ELF) {
+            serial::write(format_args!(
+                "userland: entry={:#x} stack={:#x}\n",
+                image.entry, image.stack_top
+            ));
+            serial::write(format_args!("userland: entry bytes:"));
+            for i in 0..16u64 {
+                let b = unsafe { core::ptr::read_volatile((image.entry + i) as *const u8) };
+                serial::write(format_args!(" {:02x}", b));
+            }
+            serial::write(format_args!("\n"));
+            let entry_phys = paging::virt_to_phys(image.entry);
+            serial::write(format_args!(
+                "userland: entry phys query={:#x}\n",
+                entry_phys
+            ));
+            if entry_phys != 0 {
+                let base = entry_phys & !0xfff;
+                let off = (image.entry & 0xfff) as usize;
+                let ptr = unsafe { memory::phys_to_virt(base) };
+                serial::write(format_args!("userland: entry phys bytes:"));
+                for i in 0..16usize {
+                    let b = unsafe { core::ptr::read_volatile(ptr.add(off + i)) };
+                    serial::write(format_args!(" {:02x}", b));
+                }
+                serial::write(format_args!("\n"));
+            }
+            unsafe { enter_user(image.entry, image.stack_top) };
+        } else {
+            serial::write(format_args!("userland: load failed\n"));
+        }
+    }
+
     let mut next_poll_tick = None;
     if let Some(stack) = net_stack.as_mut() {
-        next_poll_tick = schedule_next_poll(interrupts::ticks(), stack.poll(&mut net_device, net::now()));
+        next_poll_tick =
+            schedule_next_poll(interrupts::ticks(), stack.poll(&mut net_device, net::now()));
     }
 
     let mut last_tick = 0;
@@ -139,7 +220,8 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         unsafe { core::arch::asm!("hlt"); }
         let now = interrupts::ticks();
         if let Some(stack) = net_stack.as_mut() {
-            let irq = interrupts::net_irq_pending();
+            let (rx_irq, tx_irq) = interrupts::net_pending();
+            let irq = rx_irq || tx_irq;
             let due = next_poll_tick.map_or(false, |t| now >= t);
             if irq || due {
                 next_poll_tick = schedule_next_poll(now, stack.poll(&mut net_device, net::now()));
@@ -148,9 +230,63 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         virtio::reclaim_tx();
         if now != last_tick && now % 100 == 0 {
             serial::write(format_args!("tick={}\n", now));
+            if now % 1000 == 0 {
+                let stats = virtio::stats_snapshot();
+                if stats.rx_drops != 0
+                    || stats.rx_overflow != 0
+                    || stats.tx_drops != 0
+                    || stats.tx_overflow != 0
+                {
+                    serial::write(format_args!(
+                        "net stats: rx={} bytes={} drop={} ovf={} tx={} bytes={} drop={} ovf={}\n",
+                        stats.rx_packets,
+                        stats.rx_bytes,
+                        stats.rx_drops,
+                        stats.rx_overflow,
+                        stats.tx_packets,
+                        stats.tx_bytes,
+                        stats.tx_drops,
+                        stats.tx_overflow
+                    ));
+                }
+            }
         }
         last_tick = now;
     }
+}
+
+unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
+    let user_cs = (arch::gdt::USER_CODE | 3) as u64;
+    let user_ss = (arch::gdt::USER_DATA | 3) as u64;
+    let rflags = read_rflags() | (1 << 9);
+    serial::write(format_args!(
+        "enter_user: rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
+        entry, user_cs, rflags, stack_top, user_ss
+    ));
+    core::arch::asm!(
+        "cli",
+        "sub rsp, 40",
+        "mov [rsp + 0], {rip}",
+        "mov [rsp + 8], {cs}",
+        "mov [rsp + 16], {rflags}",
+        "mov [rsp + 24], {rsp_user}",
+        "mov [rsp + 32], {ss}",
+        "iretq",
+        rip = in(reg) entry,
+        cs = in(reg) user_cs,
+        rflags = in(reg) rflags,
+        rsp_user = in(reg) stack_top,
+        ss = in(reg) user_ss,
+        options(noreturn)
+    );
+}
+
+fn read_rflags() -> u64 {
+    let rflags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem, preserves_flags));
+    }
+    rflags
 }
 
 unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize) -> ! {

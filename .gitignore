@@ -1,5 +1,9 @@
 /target
 .idea/
 .vscode/
+build/efi/
 config/
 *.log
+
+qemu-img/
+scripts/

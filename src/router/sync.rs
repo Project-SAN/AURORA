@@ -7,10 +7,14 @@ pub fn apply_announcement(router: &mut Router, announcement: &DirectoryAnnouncem
     router.install_directory(announcement)
 }
 
-/// Convenience helper: verify a signed JSON body with the shared secret
+/// Convenience helper: verify a signed JSON body with the public key
 /// and install the contained policies into the router.
-pub fn apply_signed_announcement(router: &mut Router, body: &str, secret: &[u8]) -> Result<()> {
-    let announcement = directory::from_signed_json(body, secret)?;
+pub fn apply_signed_announcement(
+    router: &mut Router,
+    body: &str,
+    public_key: &[u8],
+) -> Result<()> {
+    let announcement = directory::from_signed_json(body, public_key)?;
     apply_announcement(router, &announcement)
 }
 
@@ -18,7 +22,9 @@ pub fn apply_signed_announcement(router: &mut Router, body: &str, secret: &[u8])
 pub mod client {
     use super::apply_signed_announcement;
     use crate::router::{config::RouterConfig, Router};
+    use crate::types::Error;
     use crate::types::Result;
+    use crate::utils::decode_hex;
 
     pub trait DirectoryClient {
         fn fetch_signed(&self) -> Result<String>;
@@ -55,6 +61,11 @@ pub mod client {
         client: &dyn DirectoryClient,
     ) -> Result<()> {
         let body = client.fetch_signed()?;
-        apply_signed_announcement(router, &body, config.directory_secret.as_bytes())
+        let key_bytes =
+            decode_hex(&config.directory_public_key).map_err(|_| Error::Crypto)?;
+        if key_bytes.len() != 32 {
+            return Err(Error::Length);
+        }
+        apply_signed_announcement(router, &body, &key_bytes)
     }
 }

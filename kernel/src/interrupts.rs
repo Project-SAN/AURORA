@@ -13,18 +13,11 @@ macro_rules! handler_addr {
 }
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
-static NET_IRQ: AtomicU64 = AtomicU64::new(0);
 const TIMER_VECTOR: u8 = 32;
-pub const NET_VECTOR: u8 = 0x40;
-
-#[repr(C)]
-pub struct InterruptStackFrame {
-    pub instruction_pointer: u64,
-    pub code_segment: u64,
-    pub cpu_flags: u64,
-    pub stack_pointer: u64,
-    pub stack_segment: u64,
-}
+pub const NET_RX_VECTOR: u8 = 0x40;
+pub const NET_TX_VECTOR: u8 = 0x41;
+static NET_RX_IRQ: AtomicU64 = AtomicU64::new(0);
+static NET_TX_IRQ: AtomicU64 = AtomicU64::new(0);
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -113,17 +106,21 @@ pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
-pub fn enable_net_irq() {
+pub fn enable_net_irqs() {
     unsafe {
         disable();
         let cs = code_segment();
-        set_handler(NET_VECTOR as usize, handler_addr!(net_interrupt), cs);
+        set_handler(NET_RX_VECTOR as usize, handler_addr!(net_rx_interrupt), cs);
+        set_handler(NET_TX_VECTOR as usize, handler_addr!(net_tx_interrupt), cs);
         enable();
     }
 }
 
-pub fn net_irq_pending() -> bool {
-    NET_IRQ.swap(0, Ordering::AcqRel) != 0
+pub fn net_pending() -> (bool, bool) {
+    (
+        NET_RX_IRQ.swap(0, Ordering::AcqRel) != 0,
+        NET_TX_IRQ.swap(0, Ordering::AcqRel) != 0,
+    )
 }
 
 unsafe fn init_idt() {
@@ -221,8 +218,13 @@ extern "x86-interrupt" fn spurious_interrupt(_frame: &mut InterruptStackFrame) {
     apic::eoi();
 }
 
-extern "x86-interrupt" fn net_interrupt(_frame: &mut InterruptStackFrame) {
-    NET_IRQ.store(1, Ordering::Release);
+extern "x86-interrupt" fn net_rx_interrupt(_frame: &mut InterruptStackFrame) {
+    NET_RX_IRQ.fetch_add(1, Ordering::Relaxed);
+    apic::eoi();
+}
+
+extern "x86-interrupt" fn net_tx_interrupt(_frame: &mut InterruptStackFrame) {
+    NET_TX_IRQ.fetch_add(1, Ordering::Relaxed);
     apic::eoi();
 }
 
@@ -248,15 +250,104 @@ exception_no_error!(non_maskable_interrupt, 2);
 exception_no_error!(breakpoint, 3);
 exception_no_error!(overflow, 4);
 exception_no_error!(bound_range, 5);
-exception_no_error!(invalid_opcode, 6);
+#[unsafe(naked)]
+extern "C" fn invalid_opcode() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, rsp",
+        "jmp {handler}",
+        handler = sym invalid_opcode_handler,
+    );
+}
+
+extern "C" fn invalid_opcode_handler(frame_ptr: *const u64) -> ! {
+    let mut v = [0u64; 5];
+    unsafe {
+        for i in 0..5 {
+            v[i] = core::ptr::read_unaligned(frame_ptr.add(i));
+        }
+    }
+    crate::serial::write(format_args!(
+        "INVALID OPCODE frame={:#x} [rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}]\n",
+        frame_ptr as u64,
+        v[0],
+        v[1],
+        v[2],
+        v[3],
+        v[4]
+    ));
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
 exception_no_error!(device_not_available, 7);
 exception_with_error!(double_fault, 8);
 exception_no_error!(coprocessor_segment_overrun, 9);
 exception_with_error!(invalid_tss, 10);
 exception_with_error!(segment_not_present, 11);
 exception_with_error!(stack_segment_fault, 12);
-exception_with_error!(general_protection_fault, 13);
-exception_with_error!(page_fault, 14);
+extern "x86-interrupt" fn general_protection_fault(
+    frame: &mut InterruptStackFrame,
+    code: u64,
+) {
+    crate::serial::write(format_args!(
+        "EXCEPTION 13 err={:#x} rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
+        code,
+        frame.instruction_pointer,
+        frame.code_segment,
+        frame.cpu_flags,
+        frame.stack_pointer,
+        frame.stack_segment
+    ));
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
+#[unsafe(naked)]
+extern "C" fn page_fault() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, rsp",
+        "jmp {handler}",
+        handler = sym page_fault_handler,
+    );
+}
+
+extern "C" fn page_fault_handler(err_ptr: *const u64) -> ! {
+    let mut v = [0u64; 6];
+    unsafe {
+        for i in 0..6 {
+            v[i] = core::ptr::read_volatile(err_ptr.add(i));
+        }
+    }
+    let err = v[0];
+    let rip = v[1];
+    let cs = v[2];
+    let rflags = v[3];
+    let mut rsp = 0u64;
+    let mut ss = 0u64;
+    if (cs & 3) == 3 {
+        rsp = v[4];
+        ss = v[5];
+    }
+    let cr2: u64;
+    unsafe {
+        asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+    }
+    crate::serial::write(format_args!(
+        "PAGE FAULT err={:#x} rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x} cr2={:#x} frame={:#x} tss_rsp0={:#x}\n",
+        err,
+        rip,
+        cs,
+        rflags,
+        rsp,
+        ss,
+        cr2,
+        err_ptr as u64,
+        crate::arch::gdt::tss_rsp0()
+    ));
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
 exception_no_error!(reserved, 15);
 exception_no_error!(floating_point, 16);
 exception_with_error!(alignment_check, 17);
@@ -266,3 +357,12 @@ exception_no_error!(virtualization_exception, 20);
 exception_with_error!(control_protection, 21);
 exception_with_error!(vmm_communication, 29);
 exception_with_error!(security_exception, 30);
+
+#[repr(C)]
+pub struct InterruptStackFrame {
+    pub instruction_pointer: u64,
+    pub code_segment: u64,
+    pub cpu_flags: u64,
+    pub stack_pointer: u64,
+    pub stack_segment: u64,
+}

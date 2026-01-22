@@ -1,5 +1,6 @@
 use hornet::application::setup::RegistrySetupPipeline;
 use hornet::node::NoReplay;
+use hornet::node::exit::TcpExitTransport;
 use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
 use hornet::router::config::RouterConfig;
 use hornet::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
@@ -9,7 +10,6 @@ use hornet::router::sync::client::{sync_once, DirectoryClient};
 use hornet::router::Router;
 use hornet::application::forward_pcd::PcdForwardPipeline;
 use hornet::setup::wire;
-use hornet::time::SystemTimeProvider;
 use hornet::types::{self, PacketType, Result as HornetResult};
 use hornet::control::{self, ControlMessage};
 use std::env;
@@ -43,12 +43,13 @@ fn main() {
     } else {
         persist_state(&storage, &router, &secrets);
     }
-    let time = SystemTimeProvider;
+    let time = StdTimeProvider;
     let bind_addr = env::var("HORNET_ROUTER_BIND").unwrap_or_else(|_| "127.0.0.1:7000".into());
     let mut listener = TcpPacketListener::bind(&bind_addr, secrets.sv).expect("bind listener");
+    let mut exit = TcpExitTransport::new();
     loop {
         match listener.next() {
-            Ok(mut packet) => {
+            Ok(Some(mut packet)) => {
                 if packet.chdr.typ == PacketType::Setup {
                     if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
                         eprintln!("setup packet handling failed: {:?}", err);
@@ -61,12 +62,13 @@ fn main() {
                     move || Box::new(TcpForward::new()),
                     || Box::new(NoReplay),
                 );
-                if let Err(err) = runtime.process(
+                if let Err(err) = runtime.process_with_exit(
                     packet.direction,
                     packet.sv,
                     &mut packet.chdr,
                     &mut packet.ahdr,
                     &mut packet.payload,
+                    Some(&mut exit),
                 ) {
                     eprintln!("packet processing failed: {:?}", err);
                     eprintln!("  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}", 
@@ -96,11 +98,24 @@ fn main() {
                     }
                 }
             }
+            Ok(None) => continue,
             Err(err) => {
                 eprintln!("listener error: {err:?}");
                 break;
             }
         }
+    }
+}
+
+struct StdTimeProvider;
+
+impl hornet::time::TimeProvider for StdTimeProvider {
+    fn now_coarse(&self) -> u32 {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+        now.as_secs() as u32
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::router::Router;
 use crate::types::{Ahdr, Chdr, Result, PacketDirection};
-use crate::{forward::Forward, node::ReplayFilter, time::TimeProvider};
+use crate::{forward::Forward, node::{ExitTransport, ReplayFilter}, time::TimeProvider};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -36,20 +36,34 @@ impl<'a> RouterRuntime<'a> {
         &mut self,
         direction: PacketDirection,
         sv: crate::types::Sv,
-        mut chdr: &mut Chdr,
-        mut ahdr: &mut Ahdr,
+        chdr: &mut Chdr,
+        ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.process_with_exit(direction, sv, chdr, ahdr, payload, None)
+    }
+
+    pub fn process_with_exit(
+        &mut self,
+        direction: PacketDirection,
+        sv: crate::types::Sv,
+        chdr: &mut Chdr,
+        ahdr: &mut Ahdr,
+        payload: &mut Vec<u8>,
+        mut exit: Option<&mut dyn ExitTransport>,
     ) -> Result<()> {
         let mut forward = (self.forward_factory)();
         let mut replay = (self.replay_factory)();
+        let exit_ref = exit.take();
         match direction {
             PacketDirection::Forward => self.router.process_forward_packet(
                 sv,
                 self.time,
                 forward.as_mut(),
+                exit_ref,
                 replay.as_mut(),
-                &mut chdr,
-                &mut ahdr,
+                chdr,
+                ahdr,
                 payload,
             ),
             PacketDirection::Backward => self.router.process_backward_packet(
@@ -57,8 +71,8 @@ impl<'a> RouterRuntime<'a> {
                 self.time,
                 forward.as_mut(),
                 replay.as_mut(),
-                &mut chdr,
-                &mut ahdr,
+                chdr,
+                ahdr,
                 payload,
             ),
         }

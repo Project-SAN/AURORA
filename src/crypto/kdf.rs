@@ -1,6 +1,7 @@
 use hkdf::Hkdf;
 use sha2::Sha256;
 
+#[derive(Copy, Clone)]
 pub enum OpLabel {
     Mac,
     Prg0,
