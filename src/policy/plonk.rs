@@ -554,7 +554,7 @@ fn register_verifier(id: PolicyId, entries: &[VerifierEntry]) {
 
 fn insert_verifier_entry(id: PolicyId, entry: VerifierEntry) {
     let mut store = VERIFIER_STORE.lock();
-    let entries = store.entry(id).or_insert_with(Vec::new);
+    let entries = store.entry(id).or_default();
     if let Some(existing) = entries.iter_mut().find(|stored| stored.kind == entry.kind) {
         existing.verifier_blob = entry.verifier_blob;
     } else {

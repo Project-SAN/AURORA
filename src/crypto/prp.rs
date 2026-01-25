@@ -25,7 +25,7 @@ pub fn prp_dec(key_src: &[u8], block: &mut [u8; 16]) {
 }
 
 pub fn prp_enc_bytes(key_src: &[u8], data: &mut [u8]) {
-    assert!(data.len() % 16 == 0);
+    assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
     let cipher = Aes128::new((&k).into());
     for chunk in data.chunks_mut(16) {
@@ -34,7 +34,7 @@ pub fn prp_enc_bytes(key_src: &[u8], data: &mut [u8]) {
 }
 
 pub fn prp_dec_bytes(key_src: &[u8], data: &mut [u8]) {
-    assert!(data.len() % 16 == 0);
+    assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
     let cipher = Aes128::new((&k).into());
     for chunk in data.chunks_mut(16) {

@@ -203,12 +203,13 @@ impl Router {
         })
     }
 
-    pub fn process_forward_packet<'p, 'io, 'e>(
-        &'p self,
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_forward_packet<'io>(
+        &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,
-        exit: Option<&'e mut dyn crate::node::ExitTransport>,
+        exit: Option<&mut dyn crate::node::ExitTransport>,
         replay: &'io mut dyn crate::node::ReplayFilter,
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
@@ -227,8 +228,9 @@ impl Router {
         node::forward::process_data(&mut ctx, chdr, ahdr, payload)
     }
 
-    pub fn process_backward_packet<'p, 'io>(
-        &'p self,
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_backward_packet<'io>(
+        &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,

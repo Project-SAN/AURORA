@@ -27,6 +27,12 @@ impl PcdForwardPipeline {
     }
 }
 
+impl Default for PcdForwardPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ForwardPipeline for PcdForwardPipeline {
     fn enforce(
         &self,
@@ -108,7 +114,7 @@ impl ForwardPipeline for PcdForwardPipeline {
         self.backend.verify_step(&state, proof)?;
         let next = self.backend.step(&state);
         let next_hash = self.backend.hash(&next);
-        let next_proof = self.backend.prove_step(&state, &proof)?;
+        let next_proof = self.backend.prove_step(&state, proof)?;
         let seq_buf = next.seq.to_be_bytes();
         let exts = [
             CapsuleExtensionRef {
@@ -172,6 +178,7 @@ fn find_ext_u64(aux: &[u8], tag: u8) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     use super::*;
     use crate::core::policy::{
         encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, ProofPart,

@@ -74,8 +74,8 @@ pub struct ExtensionIter<'a> {
 }
 
 impl<'a> ExtensionIter<'a> {
-    pub fn find_tag(mut self, tag: u8) -> Result<Option<&'a [u8]>> {
-        while let Some(entry) = self.next() {
+    pub fn find_tag(self, tag: u8) -> Result<Option<&'a [u8]>> {
+        for entry in self {
             let (entry_tag, value) = entry?;
             if entry_tag == tag {
                 return Ok(Some(value));

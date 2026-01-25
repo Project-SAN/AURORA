@@ -65,6 +65,12 @@ impl PlonkCapsuleValidator {
     }
 }
 
+impl Default for PlonkCapsuleValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CapsuleValidator for PlonkCapsuleValidator {
     fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()> {
         self.validate_with_role(capsule, metadata, PolicyRole::All)

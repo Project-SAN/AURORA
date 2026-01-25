@@ -396,7 +396,7 @@ fn main() -> Result<()> {
 
         println!("== End-to-End (3 hops, policy enforced) ==");
         for (label, tail_len) in payload_cases {
-            let mut rng = SmallRng::seed_from_u64(0xC0FF_EE_u64 ^ tail_len as u64);
+            let mut rng = SmallRng::seed_from_u64(0x00C0_FFEE_u64 ^ tail_len as u64);
             let mut tail = vec![0u8; tail_len];
             rng.fill_bytes(&mut tail);
 

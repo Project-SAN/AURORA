@@ -110,6 +110,12 @@ pub mod forward {
         }
     }
 
+    impl Default for LoopbackForward {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Forward for LoopbackForward {
         fn send(
             &mut self,

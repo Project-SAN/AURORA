@@ -96,7 +96,7 @@ fn mds_mul<C: Composer>(
     params: &PoseidonParams,
 ) -> [FieldElem; WIDTH] {
     let mut out = [FieldElem::witness(composer, BlsScalar::zero()); WIDTH];
-    for i in 0..WIDTH {
+    for (i, out_slot) in out.iter_mut().enumerate().take(WIDTH) {
         let coeff0 = params.mds[i][0];
         let coeff1 = params.mds[i][1];
         let coeff2 = params.mds[i][2];
@@ -116,7 +116,7 @@ fn mds_mul<C: Composer>(
                 .right(coeff2)
                 .b(state[2].witness),
         );
-        out[i] = FieldElem {
+        *out_slot = FieldElem {
             value: acc_value,
             witness,
         };

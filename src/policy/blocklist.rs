@@ -223,13 +223,19 @@ impl MerkleWorkspace {
     }
 }
 
+impl Default for MerkleWorkspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MerkleProof {
     /// Reconstruct the Merkle root from the path.
     pub fn compute_root(&self) -> [u8; 32] {
         let mut hash = self.leaf_hash;
         let mut idx = self.index;
         for sibling in self.siblings[..self.siblings_len as usize].iter() {
-            hash = if idx % 2 == 0 {
+            hash = if idx.is_multiple_of(2) {
                 hash_pair(&hash, sibling)
             } else {
                 hash_pair(sibling, &hash)
@@ -251,7 +257,7 @@ impl Blocklist {
         if entries.len() > MAX_BLOCKLIST_ENTRIES {
             return Err(Error::Crypto);
         }
-        entries.sort_by(|a, b| a.leaf_bytes().cmp(&b.leaf_bytes()));
+        entries.sort_by_key(BlocklistEntry::leaf_bytes);
         Ok(Self { entries })
     }
 
@@ -349,9 +355,7 @@ impl Blocklist {
                 i += 2;
             }
             idx /= 2;
-            for i in 0..next_len {
-                level[i] = next[i];
-            }
+            level[..next_len].copy_from_slice(&next[..next_len]);
             level_len = next_len;
         }
         Some(MerkleProof {
@@ -422,9 +426,7 @@ impl Blocklist {
                 next_len += 1;
                 i += 2;
             }
-            for i in 0..next_len {
-                level[i] = next[i];
-            }
+            level[..next_len].copy_from_slice(&next[..next_len]);
             level_len = next_len;
         }
         level[0]
@@ -681,13 +683,13 @@ fn parse_cidr(value: &str) -> crate::types::Result<CidrBlock> {
 fn parse_ipv4(addr: &str) -> Option<[u8; 4]> {
     let mut bytes = [0u8; 4];
     let mut parts = addr.split('.');
-    for i in 0..4 {
+    for byte in &mut bytes {
         let part = parts.next()?;
         if part.is_empty() {
             return None;
         }
         let value: u8 = part.parse().ok()?;
-        bytes[i] = value;
+        *byte = value;
     }
     if parts.next().is_some() {
         return None;
