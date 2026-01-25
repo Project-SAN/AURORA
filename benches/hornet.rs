@@ -204,7 +204,9 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
     let mut group = c.benchmark_group("round_trip/example_com");
     for &hops in HOP_CASES {
         let fixture = RoundTripFixture::new(hops);
-        let time = FixedTimeProvider { now: fixture.forward.now };
+        let time = FixedTimeProvider {
+            now: fixture.forward.now,
+        };
         let id = BenchmarkId::from_parameter(format!("hops{hops}"));
         group.bench_function(id, move |b| {
             let fixture = fixture.clone();
@@ -222,14 +224,19 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
                         &mut request,
                     )
                     .expect("build forward payload");
-                    let chdr_bwd =
-                        hornet::packet::chdr::data_header(hops as u8, fixture.iv_resp);
+                    let chdr_bwd = hornet::packet::chdr::data_header(hops as u8, fixture.iv_resp);
                     let ahdr_bwd = clone_ahdr(&fixture.backward_ahdr);
                     (chdr_fwd, ahdr_fwd, request, chdr_bwd, ahdr_bwd)
                 },
                 |(mut chdr_fwd, mut ahdr_fwd, mut request, mut chdr_bwd, mut ahdr_bwd)| {
                     let mut response = fixture.http_response.clone();
-                    run_forward_chain(&fixture.forward, &time, &mut chdr_fwd, &mut ahdr_fwd, &mut request);
+                    run_forward_chain(
+                        &fixture.forward,
+                        &time,
+                        &mut chdr_fwd,
+                        &mut ahdr_fwd,
+                        &mut request,
+                    );
                     assert!(
                         request
                             .windows(b"example.com".len())
@@ -263,7 +270,6 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "http-client")]
 criterion_group!(
     benches,
     bench_create_ahdr,
@@ -551,8 +557,13 @@ fn process_backward_silent(
     let mut iv = chdr.specific;
     hornet::packet::onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    ctx.forward
-        .send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Backward)
+    ctx.forward.send(
+        &res.r,
+        chdr,
+        &res.ahdr_next,
+        payload,
+        PacketDirection::Backward,
+    )
 }
 
 struct ForwardPacket {

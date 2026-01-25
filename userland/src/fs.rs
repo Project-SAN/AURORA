@@ -34,9 +34,8 @@ pub fn open(path: &str, flags: u32) -> Option<u64> {
 }
 
 pub fn opendir(path: &str) -> Option<u64> {
-    let ret = unsafe {
-        sys::syscall2(sys::SYS_FS_OPENDIR, path.as_ptr() as u64, path.len() as u64)
-    };
+    let ret =
+        unsafe { sys::syscall2(sys::SYS_FS_OPENDIR, path.as_ptr() as u64, path.len() as u64) };
     if ret == u64::MAX {
         None
     } else {

@@ -243,7 +243,7 @@ fn populate_pd(pd_phys: u64, pd_index: u64) {
     let base = pd_index * ENTRIES as u64 * 0x200000;
     for i in 0..ENTRIES {
         let addr = base + (i as u64) * 0x200000;
-    let entry = addr | FLAGS | HUGE_PAGE;
+        let entry = addr | FLAGS | HUGE_PAGE;
         write_entry(pd_phys, i, entry);
     }
 }

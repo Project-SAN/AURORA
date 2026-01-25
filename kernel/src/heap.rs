@@ -55,12 +55,10 @@ unsafe impl GlobalAlloc for BumpAllocator {
             if new_next > end {
                 return null_mut();
             }
-            match self.next.compare_exchange(
-                current,
-                new_next,
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .next
+                .compare_exchange(current, new_next, Ordering::SeqCst, Ordering::Relaxed)
+            {
                 Ok(_) => return aligned as *mut u8,
                 Err(next) => current = next,
             }

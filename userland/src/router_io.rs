@@ -9,7 +9,9 @@ use crate::socket::{ConnectState, TcpListener, TcpSocket};
 use crate::sys;
 use hornet::forward::Forward;
 use hornet::node::ExitTransport;
-use hornet::router::io::{encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader};
+use hornet::router::io::{
+    encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
+};
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
 
@@ -53,9 +55,7 @@ impl PacketReader for TcpSocket {
         let mut offset = 0usize;
         let mut spins = 0u32;
         while offset < buf.len() {
-            let read = self
-                .recv(&mut buf[offset..])
-                .map_err(|_| Error::Crypto)?;
+            let read = self.recv(&mut buf[offset..]).map_err(|_| Error::Crypto)?;
             if read == 0 {
                 spins = spins.saturating_add(1);
                 if spins > 4096 {

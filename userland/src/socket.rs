@@ -75,14 +75,8 @@ impl TcpSocket {
 
     pub fn connect(&self, ip: [u8; 4], port: u16) -> Result<ConnectState, Error> {
         let ip = u32::from_be_bytes(ip);
-        let ret = unsafe {
-            sys::syscall3(
-                sys::SYS_NET_CONNECT,
-                self.handle,
-                ip as u64,
-                port as u64,
-            )
-        };
+        let ret =
+            unsafe { sys::syscall3(sys::SYS_NET_CONNECT, self.handle, ip as u64, port as u64) };
         if ret == u64::MAX {
             Err(Error::SysError)
         } else if ret == 0 {

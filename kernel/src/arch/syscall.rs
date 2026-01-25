@@ -1,5 +1,8 @@
+#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "x86_64")]
 use core::arch::{asm, naked_asm};
 
+#[cfg(target_arch = "x86_64")]
 use crate::arch::gdt;
 
 const IA32_EFER: u32 = 0xC000_0080;
@@ -39,6 +42,7 @@ pub struct SyscallFrame {
     pub r15: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn init(kernel_stack_top: u64) {
     unsafe {
         KERNEL_GS_BASE.kernel_rsp = kernel_stack_top;
@@ -59,10 +63,20 @@ pub fn init(kernel_stack_top: u64) {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn init(_kernel_stack_top: u64) {}
+
+#[cfg(target_arch = "x86_64")]
 pub fn read_efer() -> u64 {
     unsafe { rdmsr(IA32_EFER) }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn read_efer() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
 #[unsafe(naked)]
 extern "C" fn syscall_entry() -> ! {
     naked_asm!(
@@ -112,6 +126,7 @@ extern "C" fn syscall_entry() -> ! {
     );
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn rdmsr(msr: u32) -> u64 {
     let lo: u32;
     let hi: u32;
@@ -119,6 +134,12 @@ unsafe fn rdmsr(msr: u32) -> u64 {
     ((hi as u64) << 32) | (lo as u64)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn rdmsr(_msr: u32) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
 unsafe fn wrmsr(msr: u32, value: u64) {
     let lo = value as u32;
     let hi = (value >> 32) as u32;
@@ -130,3 +151,6 @@ unsafe fn wrmsr(msr: u32, value: u64) {
         options(nostack, preserves_flags)
     );
 }
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn wrmsr(_msr: u32, _value: u64) {}

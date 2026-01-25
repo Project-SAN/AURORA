@@ -115,12 +115,16 @@ pub fn run_echo_server(port: u16) -> ! {
         Ok(server) => server,
         Err(_) => loop {
             sys::sleep(1000);
-            unsafe { asm!("pause"); }
+            unsafe {
+                asm!("pause");
+            }
         },
     };
     loop {
         server.poll();
         sys::sleep(1);
-        unsafe { asm!("pause"); }
+        unsafe {
+            asm!("pause");
+        }
     }
 }

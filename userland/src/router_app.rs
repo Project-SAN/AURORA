@@ -18,9 +18,9 @@ use hornet::setup::wire;
 use hornet::types::{self, PacketDirection, PacketType, Result as HornetResult};
 use hornet::utils::decode_hex;
 
+use crate::fs;
 use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketListener};
 use crate::router_storage::UserlandRouterStorage;
-use crate::fs;
 use crate::sys;
 
 #[cfg(feature = "hornet-time")]
@@ -62,8 +62,7 @@ pub fn run_router() -> ! {
         match listener.next() {
             Ok(Some(mut packet)) => {
                 if packet.chdr.typ == PacketType::Setup {
-                    if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets)
-                    {
+                    if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
                         let mut msg = String::new();
                         let _ = core::fmt::Write::write_fmt(
                             &mut msg,
@@ -182,7 +181,9 @@ fn load_config() -> RouterConfig {
     };
     RouterConfig {
         listen_port: parsed.listen_port.unwrap_or(DEFAULT_LISTEN_PORT),
-        storage_path: parsed.storage_path.unwrap_or_else(|| DEFAULT_STORAGE_PATH.into()),
+        storage_path: parsed
+            .storage_path
+            .unwrap_or_else(|| DEFAULT_STORAGE_PATH.into()),
         cli_port: parsed.cli_port.unwrap_or(DEFAULT_CLI_PORT),
         directory_path: parsed.directory_path,
         directory_public_key: parsed.directory_public_key,
@@ -223,8 +224,8 @@ fn read_all(path: &str) -> HornetResult<Vec<u8>> {
 }
 
 fn write_all(path: &str, data: &[u8]) -> HornetResult<()> {
-    let handle = fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC)
-        .ok_or(types::Error::Crypto)?;
+    let handle =
+        fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC).ok_or(types::Error::Crypto)?;
     let mut offset = 0usize;
     while offset < data.len() {
         match fs::write(handle, &data[offset..]) {
@@ -336,7 +337,10 @@ fn handle_cli_command(
     };
     match cmd {
         "help" | "?" => {
-            let _ = send_line(socket, "show running-config | startup-config | routes | policies");
+            let _ = send_line(
+                socket,
+                "show running-config | startup-config | routes | policies",
+            );
             let _ = send_line(socket, "configure terminal");
             let _ = send_line(
                 socket,
@@ -344,17 +348,18 @@ fn handle_cli_command(
             );
             let _ = send_line(socket, "commit | rollback | write memory | exit");
         }
-        "show" => {
-            match parts.next() {
-                Some("running-config") => show_running_config(socket, config),
-                Some("startup-config") => show_startup_config(socket),
-                Some("routes") => show_routes(socket, router),
-                Some("policies") => show_policies(socket, router),
-                _ => {
-                    let _ = send_line(socket, "usage: show running-config|startup-config|routes|policies");
-                }
+        "show" => match parts.next() {
+            Some("running-config") => show_running_config(socket, config),
+            Some("startup-config") => show_startup_config(socket),
+            Some("routes") => show_routes(socket, router),
+            Some("policies") => show_policies(socket, router),
+            _ => {
+                let _ = send_line(
+                    socket,
+                    "usage: show running-config|startup-config|routes|policies",
+                );
             }
-        }
+        },
         "configure" => {
             if matches!(parts.next(), Some("terminal")) {
                 *mode = CliMode::Config;
@@ -479,7 +484,11 @@ fn show_running_config(socket: &crate::socket::TcpSocket, config: &RouterConfig)
     if let Some(router_id) = &config.router_id {
         let _ = send_kv_str(socket, "router_id", router_id);
     }
-    let _ = send_kv_str(socket, "skip_policy", if config.skip_policy { "true" } else { "false" });
+    let _ = send_kv_str(
+        socket,
+        "skip_policy",
+        if config.skip_policy { "true" } else { "false" },
+    );
 }
 
 fn show_startup_config(socket: &crate::socket::TcpSocket) {
@@ -565,7 +574,9 @@ fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> HornetResult<()> {
 fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> HornetResult<()> {
     let mut offset = 0usize;
     while offset < buf.len() {
-        let written = socket.send(&buf[offset..]).map_err(|_| types::Error::Crypto)?;
+        let written = socket
+            .send(&buf[offset..])
+            .map_err(|_| types::Error::Crypto)?;
         if written == 0 {
             return Err(types::Error::Crypto);
         }

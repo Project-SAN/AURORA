@@ -1,7 +1,7 @@
+use crate::serial;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::serial;
 use uefi::table::boot::{MemoryMap, MemoryType};
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -191,9 +191,7 @@ impl MemoryManager {
 fn is_usable(ty: MemoryType) -> bool {
     matches!(
         ty,
-        MemoryType::CONVENTIONAL
-            | MemoryType::BOOT_SERVICES_CODE
-            | MemoryType::BOOT_SERVICES_DATA
+        MemoryType::CONVENTIONAL | MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA
     )
 }
 

@@ -2,14 +2,15 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(abi_x86_interrupt)]
+#![allow(dead_code)]
 
 extern crate alloc;
 
-mod heap;
-mod arch;
 mod acpi;
 mod apic;
+mod arch;
 mod fs;
+mod heap;
 mod hpet;
 mod interrupts;
 mod memory;
@@ -91,7 +92,9 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         None => {
             serial::write(format_args!("Stack alloc failed; staying in low half\n"));
             loop {
-                unsafe { core::arch::asm!("hlt"); }
+                unsafe {
+                    core::arch::asm!("hlt");
+                }
             }
         }
     };
@@ -116,7 +119,9 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         None => {
             serial::write(format_args!("Syscall stack alloc failed\n"));
             loop {
-                unsafe { core::arch::asm!("hlt"); }
+                unsafe {
+                    core::arch::asm!("hlt");
+                }
             }
         }
     };
@@ -195,7 +200,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
             if entry_phys != 0 {
                 let base = entry_phys & !0xfff;
                 let off = (image.entry & 0xfff) as usize;
-                let ptr = unsafe { memory::phys_to_virt(base) };
+                let ptr = memory::phys_to_virt(base);
                 serial::write(format_args!("userland: entry phys bytes:"));
                 for i in 0..16usize {
                     let b = unsafe { core::ptr::read_volatile(ptr.add(off + i)) };
@@ -217,7 +222,9 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     let mut last_tick = 0;
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
         let now = interrupts::ticks();
         if let Some(stack) = net_stack.as_mut() {
             let (rx_irq, tx_irq) = interrupts::net_pending();
@@ -290,9 +297,7 @@ fn read_rflags() -> u64 {
 }
 
 unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize) -> ! {
-    let stack_top = paging::to_higher_half(
-        stack_phys + (stack_pages as u64) * memory::PAGE_SIZE,
-    );
+    let stack_top = paging::to_higher_half(stack_phys + (stack_pages as u64) * memory::PAGE_SIZE);
     let target = paging::to_higher_half(higher_half_main as *const () as u64);
     core::arch::asm!(
         "mov rsp, {0}",
@@ -328,7 +333,12 @@ fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
 fn panic(info: &PanicInfo) -> ! {
     serial::write(format_args!("PANIC: {}\n", info));
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("hlt");
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        core::hint::spin_loop();
     }
 }
 
@@ -336,6 +346,11 @@ fn panic(info: &PanicInfo) -> ! {
 fn alloc_error(layout: core::alloc::Layout) -> ! {
     serial::write(format_args!("OOM: {:?}\n", layout));
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("hlt");
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        core::hint::spin_loop();
     }
 }
