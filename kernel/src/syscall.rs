@@ -2,11 +2,12 @@ use crate::arch::syscall::SyscallFrame;
 use crate::interrupts;
 use crate::serial;
 use crate::{fs, net, time, virtio};
+#[cfg(target_arch = "x86_64")]
+use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::str;
 use core::sync::atomic::{AtomicBool, Ordering};
-use core::arch::asm;
 
 const SYS_WRITE: u64 = 1;
 const SYS_EXIT: u64 = 2;
@@ -200,13 +201,24 @@ fn sys_sleep(ms: u64) -> u64 {
     let wait_ticks = (ms + (TICK_MS - 1)) / TICK_MS;
     let target = interrupts::ticks().saturating_add(wait_ticks);
     let had_if = (read_rflags() & (1 << 9)) != 0;
-    unsafe { asm!("sti", options(nomem, nostack, preserves_flags)) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        asm!("sti", options(nomem, nostack, preserves_flags));
+    }
     while interrupts::ticks() < target {
         sys_yield();
-        unsafe { asm!("hlt", options(nomem, nostack)) };
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        core::hint::spin_loop();
     }
     if !had_if {
-        unsafe { asm!("cli", options(nomem, nostack, preserves_flags)) };
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            asm!("cli", options(nomem, nostack, preserves_flags));
+        }
     }
     0
 }
@@ -226,7 +238,10 @@ fn sys_net_listen(handle: u64, port: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         if stack.listen(handle, port) {
-            serial::write(format_args!("net: listen handle={} port={}\n", handle, port));
+            serial::write(format_args!(
+                "net: listen handle={} port={}\n",
+                handle, port
+            ));
             0
         } else {
             u64::MAX
@@ -314,12 +329,18 @@ where
     f(stack, device)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn read_rflags() -> u64 {
     let rflags: u64;
     unsafe {
         asm!("pushfq; pop {}", out(reg) rflags, options(nomem, preserves_flags));
     }
     rflags
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn read_rflags() -> u64 {
+    0
 }
 
 fn get_user_str(ptr: u64, len: u64) -> Option<&'static str> {

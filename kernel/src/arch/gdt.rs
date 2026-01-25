@@ -1,5 +1,5 @@
+#[cfg(target_arch = "x86_64")]
 use core::arch::asm;
-use core::mem::size_of;
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
@@ -40,11 +40,14 @@ impl Tss {
 static mut TSS: Tss = Tss::new();
 static mut GDT: [u64; 7] = [0; 7];
 
+#[cfg(target_arch = "x86_64")]
 pub fn init(kernel_stack_top: u64) {
     unsafe {
         TSS.rsp[0] = kernel_stack_top;
-        let (tss_low, tss_high) =
-            tss_descriptor(&raw const TSS as *const _ as u64, size_of::<Tss>() as u32 - 1);
+        let (tss_low, tss_high) = tss_descriptor(
+            &raw const TSS as *const _ as u64,
+            size_of::<Tss>() as u32 - 1,
+        );
         GDT[0] = 0;
         GDT[1] = 0x00AF9A000000FFFF; // kernel code
         GDT[2] = 0x00AF92000000FFFF; // kernel data
@@ -82,16 +85,31 @@ pub fn init(kernel_stack_top: u64) {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn init(_kernel_stack_top: u64) {}
+
+#[cfg(target_arch = "x86_64")]
 pub fn tss_rsp0() -> u64 {
     unsafe { TSS.rsp[0] }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn tss_rsp0() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn read_tr() -> u16 {
     let tr: u16;
     unsafe {
         asm!("str {0:x}", out(reg) tr, options(nomem, nostack, preserves_flags));
     }
     tr
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn read_tr() -> u16 {
+    0
 }
 
 fn tss_descriptor(base: u64, limit: u32) -> (u64, u64) {

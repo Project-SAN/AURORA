@@ -173,45 +173,39 @@ impl HttpClient {
         }
 
         match self.state {
-            ClientState::Connecting => {
-                match self.socket.connect(self.ip, self.port) {
-                    Ok(ConnectState::Connected) => {
-                        self.state = ClientState::Sending;
-                    }
-                    Ok(ConnectState::InProgress) => {
-                        return ClientPoll::InProgress;
-                    }
-                    Err(_) => {
-                        self.error = Some(HttpError::Send);
-                        return ClientPoll::Error(HttpError::Send);
-                    }
+            ClientState::Connecting => match self.socket.connect(self.ip, self.port) {
+                Ok(ConnectState::Connected) => {
+                    self.state = ClientState::Sending;
                 }
-            }
-            ClientState::Sending => {
-                match self.poll_send() {
-                    Ok(true) => {
-                        self.state = ClientState::Receiving;
-                    }
-                    Ok(false) => return ClientPoll::InProgress,
-                    Err(err) => {
-                        self.error = Some(err);
-                        return ClientPoll::Error(err);
-                    }
+                Ok(ConnectState::InProgress) => {
+                    return ClientPoll::InProgress;
                 }
-            }
-            ClientState::Receiving => {
-                match self.poll_recv() {
-                    Ok(Some(resp)) => {
-                        self.done = Some(resp);
-                        return ClientPoll::Done(resp);
-                    }
-                    Ok(None) => return ClientPoll::InProgress,
-                    Err(err) => {
-                        self.error = Some(err);
-                        return ClientPoll::Error(err);
-                    }
+                Err(_) => {
+                    self.error = Some(HttpError::Send);
+                    return ClientPoll::Error(HttpError::Send);
                 }
-            }
+            },
+            ClientState::Sending => match self.poll_send() {
+                Ok(true) => {
+                    self.state = ClientState::Receiving;
+                }
+                Ok(false) => return ClientPoll::InProgress,
+                Err(err) => {
+                    self.error = Some(err);
+                    return ClientPoll::Error(err);
+                }
+            },
+            ClientState::Receiving => match self.poll_recv() {
+                Ok(Some(resp)) => {
+                    self.done = Some(resp);
+                    return ClientPoll::Done(resp);
+                }
+                Ok(None) => return ClientPoll::InProgress,
+                Err(err) => {
+                    self.error = Some(err);
+                    return ClientPoll::Error(err);
+                }
+            },
         }
         ClientPoll::InProgress
     }
@@ -285,14 +279,19 @@ impl HttpClient {
             if self.header_len + n > self.header_buf.len() {
                 return Err(HttpError::HeaderTooLarge);
             }
-            self.header_buf[self.header_len..self.header_len + n].copy_from_slice(&self.rx_buf[..n]);
+            self.header_buf[self.header_len..self.header_len + n]
+                .copy_from_slice(&self.rx_buf[..n]);
             self.header_len += n;
             match parse_headers(&self.header_buf[..self.header_len]) {
                 Ok(None) => {}
                 Ok(Some(info)) => {
                     self.chunked = info.chunked;
                     self.parsed = Some(info);
-                    self.content_len = if info.chunked { None } else { info.content_length };
+                    self.content_len = if info.chunked {
+                        None
+                    } else {
+                        info.content_length
+                    };
                     if self.header_len > info.header_end {
                         let body = &self.header_buf[info.header_end..self.header_len];
                         if self.chunked {
@@ -389,12 +388,7 @@ impl HttpClient {
 }
 
 #[allow(dead_code)]
-pub fn http_get(
-    ip: [u8; 4],
-    port: u16,
-    path: &str,
-    host: &str,
-) -> Result<HttpResponse, HttpError> {
+pub fn http_get(ip: [u8; 4], port: u16, path: &str, host: &str) -> Result<HttpResponse, HttpError> {
     let mut sink = StdoutSink;
     http_get_with(ip, port, path, host, &mut sink)
 }
@@ -419,7 +413,9 @@ pub fn http_get_with<S: BodySink>(
                 sys::sleep(10);
             }
         }
-        unsafe { asm!("pause"); }
+        unsafe {
+            asm!("pause");
+        }
     }
 
     send_all(&socket, b"GET ")?;
@@ -456,7 +452,9 @@ pub fn http_get_with<S: BodySink>(
                 break;
             }
             sys::sleep(10);
-            unsafe { asm!("pause"); }
+            unsafe {
+                asm!("pause");
+            }
             continue;
         }
         idle = 0;
@@ -472,7 +470,11 @@ pub fn http_get_with<S: BodySink>(
                 Ok(Some(info)) => {
                     chunked = info.chunked;
                     parsed = Some(info);
-                    content_len = if info.chunked { None } else { info.content_length };
+                    content_len = if info.chunked {
+                        None
+                    } else {
+                        info.content_length
+                    };
                     if header_len > info.header_end {
                         let body = &header_buf[info.header_end..header_len];
                         if chunked {
@@ -538,7 +540,9 @@ pub fn http_get_with<S: BodySink>(
                 break;
             }
         }
-        unsafe { asm!("pause"); }
+        unsafe {
+            asm!("pause");
+        }
     }
 
     let _ = socket.close();
@@ -563,7 +567,9 @@ fn send_all(socket: &TcpSocket, data: &[u8]) -> Result<(), HttpError> {
             }
             Err(SocketError::SysError) => return Err(HttpError::Send),
         }
-        unsafe { asm!("pause"); }
+        unsafe {
+            asm!("pause");
+        }
     }
     Ok(())
 }
@@ -640,8 +646,7 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     }
     let mut i = 0usize;
     while i + 3 < buf.len() {
-        if buf[i] == b'\r' && buf[i + 1] == b'\n' && buf[i + 2] == b'\r' && buf[i + 3] == b'\n'
-        {
+        if buf[i] == b'\r' && buf[i + 1] == b'\n' && buf[i + 2] == b'\r' && buf[i + 3] == b'\n' {
             return Some(i + 4);
         }
         i += 1;
@@ -707,7 +712,11 @@ fn parse_content_length(line: &[u8]) -> Option<usize> {
         found = true;
         i += 1;
     }
-    if found { Some(value) } else { None }
+    if found {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn parse_transfer_encoding_chunked(line: &[u8]) -> bool {
@@ -786,11 +795,21 @@ pub fn print_response(resp: &HttpResponse) {
 pub fn print_error(err: HttpError) {
     let _ = sys::write(1, b"\nHTTP error: ");
     match err {
-        HttpError::Socket => { let _ = sys::write(1, b"socket"); }
-        HttpError::Send => { let _ = sys::write(1, b"send"); }
-        HttpError::Recv => { let _ = sys::write(1, b"recv"); }
-        HttpError::HeaderTooLarge => { let _ = sys::write(1, b"header-too-large"); }
-        HttpError::Malformed => { let _ = sys::write(1, b"malformed"); }
+        HttpError::Socket => {
+            let _ = sys::write(1, b"socket");
+        }
+        HttpError::Send => {
+            let _ = sys::write(1, b"send");
+        }
+        HttpError::Recv => {
+            let _ = sys::write(1, b"recv");
+        }
+        HttpError::HeaderTooLarge => {
+            let _ = sys::write(1, b"header-too-large");
+        }
+        HttpError::Malformed => {
+            let _ = sys::write(1, b"malformed");
+        }
     }
     let _ = sys::write(1, b"\n");
 }
@@ -918,7 +937,11 @@ fn parse_chunk_size(line: &[u8]) -> Option<usize> {
         found = true;
         i += 1;
     }
-    if found { Some(value) } else { None }
+    if found {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn hex_value(b: u8) -> Option<u8> {

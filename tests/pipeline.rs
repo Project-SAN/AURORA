@@ -1,11 +1,13 @@
 mod suppert;
 
-use hornet::application::forward::{ForwardPipeline, RegistryForwardPipeline};
-use hornet::application::setup::{RegistrySetupPipeline, SetupPipeline};
+use hornet::application::forward::RegistryForwardPipeline;
+use hornet::application::setup::RegistrySetupPipeline;
 use hornet::core::policy::PolicyRegistry;
+use hornet::node::pipeline::ForwardPipeline;
 use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
 use hornet::policy::plonk::{self, PlonkPolicy};
 use hornet::policy::PolicyMetadata;
+use hornet::setup::pipeline::SetupPipeline;
 use hornet::types::Error;
 use std::sync::Arc;
 use suppert::RecordingForward;
@@ -48,14 +50,21 @@ fn forward_pipeline_enforces_capsules() {
     let validator = hornet::adapters::plonk::validator::PlonkCapsuleValidator::new();
 
     let payload = BlocklistEntry::Exact(ValueBytes::new(b"safe.example").unwrap()).leaf_bytes();
-    let capsule = policy.prove_payload(payload.as_slice()).expect("prove payload");
+    let capsule = policy
+        .prove_payload(payload.as_slice())
+        .expect("prove payload");
 
     let mut onwire = encode_capsule(&capsule);
     onwire.extend_from_slice(payload.as_slice());
 
     let forward_pipeline = RegistryForwardPipeline::new();
     let result = forward_pipeline
-        .enforce(&registry, &mut onwire, &validator, hornet::core::policy::PolicyRole::All)
+        .enforce(
+            &registry,
+            &mut onwire,
+            &validator,
+            hornet::core::policy::PolicyRole::All,
+        )
         .expect("enforce pipeline")
         .expect("capsule present");
     assert_eq!(result.1, encode_capsule(&capsule).len());
@@ -86,13 +95,20 @@ fn recording_forward_captures_capsule() {
     let validator = hornet::adapters::plonk::validator::PlonkCapsuleValidator::new();
 
     let payload = BlocklistEntry::Exact(ValueBytes::new(b"safe.record").unwrap()).leaf_bytes();
-    let capsule = policy.prove_payload(payload.as_slice()).expect("prove payload");
+    let capsule = policy
+        .prove_payload(payload.as_slice())
+        .expect("prove payload");
     let mut onwire = encode_capsule(&capsule);
     onwire.extend_from_slice(payload.as_slice());
 
     let recorder = RecordingForward::new();
     let result = recorder
-        .enforce(&registry, &mut onwire, &validator, hornet::core::policy::PolicyRole::All)
+        .enforce(
+            &registry,
+            &mut onwire,
+            &validator,
+            hornet::core::policy::PolicyRole::All,
+        )
         .expect("enforce pipeline")
         .expect("capsule present");
     assert_eq!(result.0.policy_id, metadata.policy_id);

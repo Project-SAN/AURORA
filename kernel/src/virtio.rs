@@ -4,12 +4,12 @@ use core::cmp;
 use core::ptr::{read_volatile, write_bytes, write_volatile};
 use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 
+use crate::interrupts;
 use crate::memory;
+use crate::paging;
 use crate::pci;
 use crate::pci::VirtioPciDevice;
-use crate::paging;
 use crate::serial;
-use crate::interrupts;
 
 const VIRTIO_NET_F_MAC: u32 = 5;
 const VIRTIO_NET_F_MRG_RXBUF: u32 = 15;
@@ -207,7 +207,10 @@ fn init_net_modern(dev: &VirtioPciDevice) -> bool {
     unsafe {
         write_volatile(&mut (*common).device_status, 0);
         write_volatile(&mut (*common).device_status, STATUS_ACKNOWLEDGE);
-        write_volatile(&mut (*common).device_status, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+        write_volatile(
+            &mut (*common).device_status,
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER,
+        );
         write_volatile(&mut (*common).msix_config, 0xFFFF);
     }
 
@@ -561,7 +564,10 @@ pub fn init_blk(dev: &VirtioPciDevice) -> bool {
     unsafe {
         write_volatile(&mut (*common).device_status, 0);
         write_volatile(&mut (*common).device_status, STATUS_ACKNOWLEDGE);
-        write_volatile(&mut (*common).device_status, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+        write_volatile(
+            &mut (*common).device_status,
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER,
+        );
         write_volatile(&mut (*common).msix_config, 0xFFFF);
     }
 
@@ -572,20 +578,24 @@ pub fn init_blk(dev: &VirtioPciDevice) -> bool {
         return false;
     }
     write_driver_features(common, VIRTIO_F_VERSION_1);
-    write_status(common, STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
+    write_status(
+        common,
+        STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK,
+    );
     if (read_status(common) & STATUS_FEATURES_OK) == 0 {
         serial::write(format_args!("virtio-blk: FEATURES_OK not accepted\n"));
         write_status(common, STATUS_FAILED);
         return false;
     }
 
-    let mut queue = match setup_queue_modern_no_msix(common, notify_base_ptr, notify_mult, QUEUE_NUM_BLK) {
-        Some(q) => q,
-        None => {
-            write_status(common, STATUS_FAILED);
-            return false;
-        }
-    };
+    let mut queue =
+        match setup_queue_modern_no_msix(common, notify_base_ptr, notify_mult, QUEUE_NUM_BLK) {
+            Some(q) => q,
+            None => {
+                write_status(common, STATUS_FAILED);
+                return false;
+            }
+        };
 
     let cfg_ptr = device_cfg_ptr as *const u8;
     let capacity = unsafe { read_volatile(cfg_ptr as *const u64) };
@@ -658,10 +668,10 @@ fn allocate_queue(qsize: u16) -> Option<QueueMem> {
         write_bytes(ptr, 0, pages * 4096);
     }
     let desc = memory::phys_to_virt(mem.phys) as *mut VirtqDesc;
-    let avail = unsafe { (memory::phys_to_virt(mem.phys) as *mut u8).add(desc_size) }
-        as *mut VirtqAvail;
-    let used = unsafe { (memory::phys_to_virt(mem.phys) as *mut u8).add(used_offset) }
-        as *mut VirtqUsed;
+    let avail =
+        unsafe { (memory::phys_to_virt(mem.phys) as *mut u8).add(desc_size) } as *mut VirtqAvail;
+    let used =
+        unsafe { (memory::phys_to_virt(mem.phys) as *mut u8).add(used_offset) } as *mut VirtqUsed;
     let desc_phys = mem.phys;
     let avail_phys = mem.phys + desc_size as u64;
     let used_phys = mem.phys + used_offset as u64;
@@ -871,10 +881,7 @@ fn recv_frame_into_queue(rxq: &mut VirtQueue, buf: &mut [u8]) -> Option<usize> {
         .rx_bytes
         .fetch_add(copy_len as u64, Ordering::Relaxed);
     if RX_LOG.fetch_add(1, Ordering::Relaxed) < 8 {
-        serial::write(format_args!(
-            "virtio: rx len={} head={}\n",
-            copy_len, head
-        ));
+        serial::write(format_args!("virtio: rx len={} head={}\n", copy_len, head));
         if copy_len >= 14 {
             let eth_type = ((buf[12] as u16) << 8) | (buf[13] as u16);
             if eth_type == 0x0806 && copy_len >= 42 {

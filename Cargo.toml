@@ -51,10 +51,17 @@ libc = { version = "0.2" }
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
 
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
 
 [[bench]]
 name = "hornet"
 harness = false
+required-features = ["std"]
 
 [[bench]]
 name = "prove"

@@ -179,7 +179,9 @@ fn mount_from_storage(mut storage: Vec<u8>, device: FsDevice) -> Option<FsState>
     let raw = RawBootSector::from_bytes((&bs_bytes[..BLOCK_SIZE]).try_into().ok()?);
     let bytes_per_sector = u16::from_le_bytes(raw.bpb.bytes_per_sector);
     if bytes_per_sector == 0 {
-        serial::write(format_args!("fs: invalid boot sector (bytes_per_sector=0)\n"));
+        serial::write(format_args!(
+            "fs: invalid boot sector (bytes_per_sector=0)\n"
+        ));
         return None;
     }
     let info = BootSectorInfo::try_from(raw).ok()?;
@@ -215,8 +217,7 @@ fn find_fat32_partition(bytes: &[u8]) -> Option<(usize, usize)> {
         let ptype = bytes[off + 4];
         if ptype == 0x0B || ptype == 0x0C {
             let lba = u32::from_le_bytes(bytes[off + 8..off + 12].try_into().ok()?) as usize;
-            let sectors =
-                u32::from_le_bytes(bytes[off + 12..off + 16].try_into().ok()?) as usize;
+            let sectors = u32::from_le_bytes(bytes[off + 12..off + 16].try_into().ok()?) as usize;
             return Some((lba * BLOCK_SIZE, sectors * BLOCK_SIZE));
         }
     }
@@ -555,11 +556,7 @@ impl FsState {
     fn open_file(&mut self, path: &str, flags: u32) -> Option<u64> {
         let (parent, name, ext) = self.resolve_parent(path)?;
         if let Some((cluster, index, entry)) = self.find_entry(parent, &name, &ext) {
-            if entry
-                .info()
-                .attributes
-                .contains(FileAttributes::DIRECTORY)
-            {
+            if entry.info().attributes.contains(FileAttributes::DIRECTORY) {
                 return None;
             }
             let mut entry = entry;
@@ -667,8 +664,7 @@ impl FsState {
         }
         let cluster_size = self.cluster_size();
         let new_size = h.pos.saturating_add(buf.len() as u32);
-        let needed_clusters =
-            ((new_size as usize) + cluster_size - 1) / cluster_size;
+        let needed_clusters = ((new_size as usize) + cluster_size - 1) / cluster_size;
         if h.cluster < 2 {
             if needed_clusters > 0 {
                 h.cluster = self.allocate_clusters(needed_clusters as u32);
@@ -681,13 +677,7 @@ impl FsState {
         }
         let (_, fat_bytes, data) = self.split_mut();
         let fat = Fat32::from_bytes_mut(fat_bytes);
-        let written = fat.write_data(
-            data,
-            cluster_size,
-            h.cluster,
-            h.pos as usize,
-            buf,
-        );
+        let written = fat.write_data(data, cluster_size, h.cluster, h.pos as usize, buf);
         self.mark_data_range(h.cluster, h.pos as usize, written);
         h.pos = h.pos.saturating_add(written as u32);
         if h.pos > h.size {
@@ -727,11 +717,7 @@ impl FsState {
             None => return false,
         };
         if let Some((_, _, entry)) = self.find_entry(parent, &name, &ext) {
-            if entry
-                .info()
-                .attributes
-                .contains(FileAttributes::DIRECTORY)
-            {
+            if entry.info().attributes.contains(FileAttributes::DIRECTORY) {
                 return true;
             }
             return false;
@@ -764,23 +750,11 @@ impl FsState {
             }
             let dir = Directory::from_bytes_mut(&mut data[offset..offset + cluster_size]);
             let (dot_time, _) = fat_time_now();
-            dir.entries[0] = FileEntry::new(
-                ".",
-                "",
-                FileAttributes::DIRECTORY,
-                0,
-                cluster,
-                dot_time,
-            );
+            dir.entries[0] =
+                FileEntry::new(".", "", FileAttributes::DIRECTORY, 0, cluster, dot_time);
             let (dotdot_time, _) = fat_time_now();
-            dir.entries[1] = FileEntry::new(
-                "..",
-                "",
-                FileAttributes::DIRECTORY,
-                0,
-                parent,
-                dotdot_time,
-            );
+            dir.entries[1] =
+                FileEntry::new("..", "", FileAttributes::DIRECTORY, 0, parent, dotdot_time);
         }
         self.mark_cluster_range(cluster, 0, cluster_size);
         true
@@ -867,9 +841,7 @@ impl FsState {
                 }
                 serial::write(format_args!(
                     "fs: sync {} sectors (lba {}..{})\n",
-                    total_sectors,
-                    start_sector,
-                    end_sector
+                    total_sectors, start_sector, end_sector
                 ));
                 let mut done = 0u64;
                 let mut lba = start_sector as u64;
@@ -926,11 +898,7 @@ impl FsState {
             }
             let (name, ext) = split_name(comp);
             let (_, _, entry) = self.find_entry(cluster, &name, &ext)?;
-            if !entry
-                .info()
-                .attributes
-                .contains(FileAttributes::DIRECTORY)
-            {
+            if !entry.info().attributes.contains(FileAttributes::DIRECTORY) {
                 return None;
             }
             cluster = entry.cluster();
@@ -951,11 +919,7 @@ impl FsState {
             for comp in comps {
                 let (name, ext) = split_name(comp);
                 let (_, _, entry) = self.find_entry(cluster, &name, &ext)?;
-                if !entry
-                    .info()
-                    .attributes
-                    .contains(FileAttributes::DIRECTORY)
-                {
+                if !entry.info().attributes.contains(FileAttributes::DIRECTORY) {
                     return None;
                 }
                 cluster = entry.cluster();
@@ -1001,20 +965,19 @@ fn ensure_fs_info(
     reserved: &mut [u8],
     fat_bytes: &[u8],
 ) -> (u32, u32) {
-    let (mut free_count, mut next_free) = if let Some(info) = fs_info_mut_range(range.clone(), reserved) {
-        (info.free_count, info.next_free)
-    } else {
-        (0xFFFF_FFFF, 0xFFFF_FFFF)
-    };
+    let (mut free_count, mut next_free) =
+        if let Some(info) = fs_info_mut_range(range.clone(), reserved) {
+            (info.free_count, info.next_free)
+        } else {
+            (0xFFFF_FFFF, 0xFFFF_FFFF)
+        };
 
     let mut needs_recompute =
         free_count == 0 || free_count == 0xFFFF_FFFF || next_free == 0xFFFF_FFFF;
     if !needs_recompute {
         let fat = Fat32::from_bytes(fat_bytes);
         let idx = next_free as usize;
-        if idx >= fat.entries.len()
-            || fat.entries[idx] != fat::constants::FAT32_CLUSTER_FREE
-        {
+        if idx >= fat.entries.len() || fat.entries[idx] != fat::constants::FAT32_CLUSTER_FREE {
             needs_recompute = true;
         }
     }
@@ -1037,7 +1000,11 @@ fn find_next_free_from(fat: &Fat32, start: u32) -> u32 {
     if fat_len <= 2 {
         return 0xFFFF_FFFF;
     }
-    let mut idx = if start >= 2 && start < fat_len { start } else { 2 };
+    let mut idx = if start >= 2 && start < fat_len {
+        start
+    } else {
+        2
+    };
     let total = fat_len - 2;
     for _ in 0..total {
         if fat.entries[idx as usize] == fat::constants::FAT32_CLUSTER_FREE {
@@ -1149,7 +1116,11 @@ fn fat_ext_to_str(ext: &FatStr<3>) -> &str {
     str::from_utf8(&ext.as_slice()[..len]).unwrap_or("")
 }
 
-fn fill_dirent(out: &mut Dirent, entry: &FileEntry, info: &hadris_fat::structures::directory::FileEntryInfo) {
+fn fill_dirent(
+    out: &mut Dirent,
+    entry: &FileEntry,
+    info: &hadris_fat::structures::directory::FileEntryInfo,
+) {
     let base = entry.base_name();
     let ext = entry.extension();
     let base_len = base.len();

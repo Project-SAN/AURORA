@@ -1,10 +1,17 @@
+#[cfg(target_arch = "x86_64")]
 use core::arch::asm;
 
+#[cfg(target_arch = "x86_64")]
 #[inline]
 pub unsafe fn outb(port: u16, val: u8) {
     asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub unsafe fn outb(_port: u16, _val: u8) {}
+
+#[cfg(target_arch = "x86_64")]
 #[inline]
 pub unsafe fn inb(port: u16) -> u8 {
     let mut val: u8;
@@ -12,14 +19,32 @@ pub unsafe fn inb(port: u16) -> u8 {
     val
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub unsafe fn inb(_port: u16) -> u8 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
 #[inline]
 pub unsafe fn outl(port: u16, val: u32) {
     asm!("out dx, eax", in("dx") port, in("eax") val, options(nomem, nostack, preserves_flags));
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub unsafe fn outl(_port: u16, _val: u32) {}
+
+#[cfg(target_arch = "x86_64")]
 #[inline]
 pub unsafe fn inl(port: u16) -> u32 {
     let mut val: u32;
     asm!("in eax, dx", out("eax") val, in("dx") port, options(nomem, nostack, preserves_flags));
     val
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+pub unsafe fn inl(_port: u16) -> u32 {
+    0
 }

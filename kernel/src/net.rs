@@ -78,13 +78,15 @@ impl NetStack {
 
         let mut iface = Interface::new(config, device, now);
         iface.update_ip_addrs(|addrs| {
-            let cidr =
-                IpCidr::new(Ipv4Address::new(IP_ADDR[0], IP_ADDR[1], IP_ADDR[2], IP_ADDR[3]).into(), 24);
+            let cidr = IpCidr::new(
+                Ipv4Address::new(IP_ADDR[0], IP_ADDR[1], IP_ADDR[2], IP_ADDR[3]).into(),
+                24,
+            );
             let _ = addrs.push(cidr);
         });
-        let _ = iface
-            .routes_mut()
-            .add_default_ipv4_route(Ipv4Address::new(GW_ADDR[0], GW_ADDR[1], GW_ADDR[2], GW_ADDR[3]));
+        let _ = iface.routes_mut().add_default_ipv4_route(Ipv4Address::new(
+            GW_ADDR[0], GW_ADDR[1], GW_ADDR[2], GW_ADDR[3],
+        ));
 
         let mut sockets = SocketSet::new(vec![]);
         let mut entries = Vec::with_capacity(MAX_SOCKETS);
@@ -303,7 +305,10 @@ impl NetStack {
             if idx == except {
                 continue;
             }
-            if matches!(self.entries[idx].state, SocketState::Free | SocketState::Idle) {
+            if matches!(
+                self.entries[idx].state,
+                SocketState::Free | SocketState::Idle
+            ) {
                 let handle = self.entries[idx].handle;
                 {
                     let socket = self.sockets.get_mut::<tcp::Socket>(handle);
@@ -362,7 +367,11 @@ impl TxToken for VirtioTxToken {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut frame = if !self.pool.is_null() {
-            unsafe { (*self.pool).pop().unwrap_or_else(|| Vec::with_capacity(len)) }
+            unsafe {
+                (*self.pool)
+                    .pop()
+                    .unwrap_or_else(|| Vec::with_capacity(len))
+            }
         } else {
             Vec::with_capacity(len)
         };
@@ -388,12 +397,20 @@ impl TxToken for VirtioTxToken {
 }
 
 impl Device for VirtioDevice {
-    type RxToken<'a> = VirtioRxToken where Self: 'a;
-    type TxToken<'a> = VirtioTxToken where Self: 'a;
+    type RxToken<'a>
+        = VirtioRxToken
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = VirtioTxToken
+    where
+        Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let (rx_pool, tx_pool) = (&mut self.rx_pool, &mut self.tx_pool);
-        let mut frame = rx_pool.pop().unwrap_or_else(|| Vec::with_capacity(FRAME_BUF_SIZE));
+        let mut frame = rx_pool
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(FRAME_BUF_SIZE));
         if frame.capacity() < FRAME_BUF_SIZE {
             frame.reserve(FRAME_BUF_SIZE - frame.capacity());
         }
