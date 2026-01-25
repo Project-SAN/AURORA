@@ -1,6 +1,10 @@
 use crate::router::Router;
-use crate::types::{Ahdr, Chdr, Result, PacketDirection};
-use crate::{forward::Forward, node::{ExitTransport, ReplayFilter}, time::TimeProvider};
+use crate::types::{Ahdr, Chdr, PacketDirection, Result};
+use crate::{
+    forward::Forward,
+    node::{ExitTransport, ReplayFilter},
+    time::TimeProvider,
+};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
