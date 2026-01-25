@@ -1,13 +1,14 @@
 pub mod backward;
 pub mod exit;
 pub mod forward;
+pub mod pipeline;
 
 use alloc::collections::BTreeSet;
 
-use crate::application::forward::ForwardPipeline;
+use crate::node::pipeline::ForwardPipeline;
+use crate::policy::{PolicyId, PolicyRole};
 use crate::sphinx::*;
 use crate::types::{Chdr, Result, RoutingSegment, Sv};
-use crate::policy::{PolicyId, PolicyRole};
 use alloc::collections::BTreeMap;
 pub use exit::ExitTransport;
 

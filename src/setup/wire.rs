@@ -79,10 +79,10 @@ fn expected_payload_len(rmax: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
     use super::*;
     use crate::setup;
     use crate::types::{Exp, PacketType, RoutingSegment, Sv};
+    use alloc::vec;
     use rand_core::{CryptoRng, RngCore};
 
     struct XorShift64(u64);

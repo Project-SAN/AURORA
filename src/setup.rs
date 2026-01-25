@@ -1,11 +1,12 @@
-use crate::application::setup::SetupPipeline;
 use crate::packet::{core, payload};
 use crate::policy::PolicyMetadata;
+use crate::setup::pipeline::SetupPipeline;
 use crate::sphinx;
 use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
 
 pub mod directory;
+pub mod pipeline;
 pub mod wire;
 
 // Sphinx-based setup packet carrying FS payload per HORNET setup.

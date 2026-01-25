@@ -1,12 +1,12 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::application::forward::ForwardPipeline;
 use crate::core::policy::{
     encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, PolicyRegistry,
     PolicyRole, ProofKind, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
     EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
 };
+use crate::node::pipeline::ForwardPipeline;
 use crate::pcd::{PcdBackend, PcdState};
 use crate::policy::CapsuleValidator;
 use crate::types::{Error, Result};
@@ -178,16 +178,16 @@ fn find_ext_u64(aux: &[u8], tag: u8) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
     use super::*;
+    use crate::core::policy::metadata::POLICY_FLAG_PCD;
     use crate::core::policy::{
         encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, ProofPart,
-        AUX_MAX, COMMIT_LEN, MAX_CAPSULE_LEN, MAX_PARTS, PROOF_LEN, EXT_TAG_PCD_KEY_HASH,
-        EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE,
-        EXT_TAG_PCD_TARGET_HASH,
+        AUX_MAX, COMMIT_LEN, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
+        EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH, MAX_CAPSULE_LEN, MAX_PARTS,
+        PROOF_LEN,
     };
     use crate::core::policy::{PolicyMetadata, PolicyRegistry, VerifierEntry};
-    use crate::core::policy::metadata::POLICY_FLAG_PCD;
+    use alloc::vec;
 
     struct NoopValidator;
 
@@ -220,7 +220,12 @@ mod tests {
     }
 
     fn make_capsule(policy_id: [u8; 32], version: u8, parts: &[ProofPart]) -> PolicyCapsule {
-        let mut arr = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
+        let mut arr = [
+            ProofPart::default(),
+            ProofPart::default(),
+            ProofPart::default(),
+            ProofPart::default(),
+        ];
         let mut count = 0usize;
         for part in parts {
             arr[count] = *part;
@@ -386,12 +391,7 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(
-            &registry,
-            &mut payload,
-            &validator,
-            PolicyRole::All,
-        );
+        let result = pipeline.enforce(&registry, &mut payload, &validator, PolicyRole::All);
         assert!(matches!(result, Err(Error::PolicyViolation)));
     }
 
@@ -458,12 +458,7 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(
-            &registry,
-            &mut payload,
-            &validator,
-            PolicyRole::All,
-        );
+        let result = pipeline.enforce(&registry, &mut payload, &validator, PolicyRole::All);
         assert!(matches!(result, Err(Error::PolicyViolation)));
     }
 
@@ -548,12 +543,7 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(
-            &registry,
-            &mut payload,
-            &validator,
-            PolicyRole::All,
-        );
+        let result = pipeline.enforce(&registry, &mut payload, &validator, PolicyRole::All);
         assert!(result.is_ok(), "unexpected error: {:?}", result.err());
     }
 
@@ -626,12 +616,7 @@ mod tests {
 
         let pipeline = PcdForwardPipeline::new();
         let validator = NoopValidator;
-        let result = pipeline.enforce(
-            &registry,
-            &mut payload,
-            &validator,
-            PolicyRole::All,
-        );
+        let result = pipeline.enforce(&registry, &mut payload, &validator, PolicyRole::All);
         assert!(matches!(result, Err(Error::PolicyViolation)));
     }
 }

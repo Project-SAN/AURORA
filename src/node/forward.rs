@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use crate::{crypto::prg, types::PacketType};
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
@@ -8,7 +9,6 @@ use crate::{
     sphinx::derive_tau_tag,
     types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
 };
-use crate::{crypto::prg, types::PacketType};
 pub type Result<T> = core::result::Result<T, Error>;
 
 const TAG_EXACT: u8 = 0x01;
@@ -57,7 +57,13 @@ pub fn process_data(
     if capsule_len >= payload.len() {
         // nothing beyond the capsule to decrypt for the next hop
         chdr.specific = iv;
-        return ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward);
+        return ctx.forward.send(
+            &res.r,
+            chdr,
+            &res.ahdr_next,
+            payload,
+            PacketDirection::Forward,
+        );
     }
 
     let tail = &mut payload[capsule_len..];
@@ -77,8 +83,13 @@ pub fn process_data(
         }
     }
 
-    ctx.forward
-        .send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Forward)
+    ctx.forward.send(
+        &res.r,
+        chdr,
+        &res.ahdr_next,
+        payload,
+        PacketDirection::Forward,
+    )
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

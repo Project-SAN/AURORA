@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
-use crate::application::forward::ForwardPipeline;
 use crate::core::policy::{PolicyCapsule, PolicyId, PolicyRegistry, PolicyRole};
+use crate::node::pipeline::ForwardPipeline;
 use crate::policy::CapsuleValidator;
 use crate::types::{Error, Result};
 

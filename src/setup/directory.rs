@@ -4,11 +4,11 @@ use crate::types::{Error, Result, RoutingSegment};
 use alloc::string::{String, ToString};
 use alloc::{vec, vec::Vec};
 use core::net::{Ipv4Addr, Ipv6Addr};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha512};
 use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use curve25519_dalek::scalar::Scalar;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
 
 pub struct DirectoryAnnouncement {
     policy_entries: Vec<PolicyMetadata>,
