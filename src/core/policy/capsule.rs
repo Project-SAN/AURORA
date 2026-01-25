@@ -151,7 +151,7 @@ impl PolicyCapsule {
         }
         let mut cursor = HEADER_LEN;
         let mut parts = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
-        for idx in 0..part_count {
+        for slot in parts.iter_mut().take(part_count) {
             if cursor + 7 > payload.len() {
                 return Err(Error::Length);
             }
@@ -184,7 +184,7 @@ impl PolicyCapsule {
             cursor += COMMIT_LEN;
             part.aux[..aux_len].copy_from_slice(&payload[cursor..cursor + aux_len]);
             cursor += aux_len;
-            parts[idx] = part;
+            *slot = part;
         }
         let capsule = PolicyCapsule {
             policy_id,

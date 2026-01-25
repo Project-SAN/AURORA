@@ -38,7 +38,7 @@ fn run() -> Result<(), String> {
 
     let policy = PlonkPolicy::new_from_blocklist(DEFAULT_POLICY_LABEL, &blocklist)
         .map_err(|err| format!("failed to build policy: {err:?}"))?;
-    let extractor = HttpHostExtractor::default();
+    let extractor = HttpHostExtractor;
     let request_payload = format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n");
     let target = extractor
         .extract(request_payload.as_bytes())

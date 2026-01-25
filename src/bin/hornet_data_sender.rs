@@ -78,7 +78,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let base_request = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     let mut request_payload = base_request.into_bytes();
     request_payload.extend_from_slice(payload_tail);
-    let extractor = hornet::policy::extract::HttpHostExtractor::default();
+    let extractor = hornet::policy::extract::HttpHostExtractor;
     let target = extractor
         .extract(&request_payload)
         .map_err(|err| format!("failed to extract host: {err:?}"))?;
@@ -498,22 +498,18 @@ fn resolve_target(host: &str) -> Result<(IpAddr, u16), String> {
     };
 
     // Try to resolve
-    let addrs = (hostname, port)
+    let mut addrs = (hostname, port)
         .to_socket_addrs()
         .map_err(|e| format!("failed to resolve {}: {}", host, e))?;
 
-    for addr in addrs {
-        match addr {
-            std::net::SocketAddr::V4(v4) => {
-                return Ok((IpAddr::V4(v4.ip().octets()), v4.port()));
-            }
-            std::net::SocketAddr::V6(v6) => {
-                return Ok((IpAddr::V6(v6.ip().octets()), v6.port()));
-            }
-        }
-    }
+    let addr = addrs
+        .next()
+        .ok_or_else(|| format!("no suitable address found for {}", host))?;
 
-    Err(format!("no suitable address found for {}", host))
+    match addr {
+        std::net::SocketAddr::V4(v4) => Ok((IpAddr::V4(v4.ip().octets()), v4.port())),
+        std::net::SocketAddr::V6(v6) => Ok((IpAddr::V6(v6.ip().octets()), v6.port())),
+    }
 }
 
 fn load_router_states(
@@ -542,8 +538,8 @@ fn load_router_states(
     Ok(out)
 }
 
-fn select_route<'a>(
-    state: &'a StoredState,
+fn select_route(
+    state: &StoredState,
     policy_id: &[u8; 32],
 ) -> Result<RouteAnnouncement, String> {
     let routes = state.routes();
@@ -638,15 +634,15 @@ fn compute_route_id(
     }
     match target_ip {
         IpAddr::V4(ip) => {
-            hasher.update(&[4u8]);
+            hasher.update([4u8]);
             hasher.update(ip);
         }
         IpAddr::V6(ip) => {
-            hasher.update(&[6u8]);
+            hasher.update([6u8]);
             hasher.update(ip);
         }
     }
-    hasher.update(&target_port.to_be_bytes());
+    hasher.update(target_port.to_be_bytes());
     let digest = hasher.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);

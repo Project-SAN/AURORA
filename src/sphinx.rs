@@ -145,6 +145,10 @@ impl<const N: usize> InlineKeys<N> {
         self.len as usize
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn push(&mut self, key: [u8; 16]) -> Result<(), Error> {
         let idx = self.len as usize;
         if idx >= N {
@@ -190,6 +194,10 @@ impl SiKeys {
 
     pub fn len(&self) -> usize {
         self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn push(&mut self, key: Si) -> Result<(), Error> {
@@ -382,9 +390,7 @@ fn create_header_internal(
         for idx in 0..filler_len {
             filler[idx] ^= slice[idx];
         }
-        for idx in filler_len..new_len {
-            filler[idx] = slice[idx];
-        }
+        filler[filler_len..new_len].copy_from_slice(&slice[filler_len..new_len]);
         filler_len = new_len;
     }
 

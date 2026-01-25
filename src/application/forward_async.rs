@@ -85,7 +85,7 @@ impl ForwardPipeline for AsyncForwardPipeline {
             }
         }
         if metadata.supports_async() {
-            self.pending.push(PendingEntry { capsule: capsule.clone() })?;
+            self.pending.push(PendingEntry { capsule })?;
             return Ok(Some((capsule, consumed)));
         }
         validator.validate_with_role(&capsule, metadata, role)?;

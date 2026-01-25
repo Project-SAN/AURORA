@@ -126,7 +126,7 @@ fn handle_exit(
     let mut chdr_b = Chdr {
         typ: PacketType::Data,
         hops,
-        specific: derive_exit_iv(&ctx, &ahdr_b),
+        specific: derive_exit_iv(ctx, &ahdr_b),
     };
 
     crate::node::backward::process_data(ctx, &mut chdr_b, &mut ahdr_b, &mut response)
