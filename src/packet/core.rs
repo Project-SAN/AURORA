@@ -1,4 +1,4 @@
-use crate::crypto::prp;
+use crate::crypto::ops::{prp_dec_bytes, prp_enc_bytes};
 use crate::types::{Chdr, Error, Exp, Fs, PacketType, Result, RoutingSegment, Si, Sv, FS_LEN};
 use alloc::vec::Vec;
 
@@ -12,13 +12,13 @@ pub fn create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> Result<Fs> {
     plain[16..20].copy_from_slice(&exp.0.to_be_bytes());
     plain[20..20 + r.0.len()].copy_from_slice(&r.0);
     let mut buf = plain;
-    prp::prp_enc_bytes(&sv.0, &mut buf);
+    prp_enc_bytes(&sv.0, &mut buf);
     Ok(Fs(buf))
 }
 
 pub fn open(sv: &Sv, fs: &Fs) -> Result<(Si, RoutingSegment, Exp)> {
     let mut buf = fs.0;
-    prp::prp_dec_bytes(&sv.0, &mut buf);
+    prp_dec_bytes(&sv.0, &mut buf);
     let mut k = [0u8; 16];
     k.copy_from_slice(&buf[0..16]);
     let mut exp_bytes = [0u8; 4];
