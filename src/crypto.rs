@@ -2,6 +2,7 @@ pub mod dh;
 pub mod ctr;
 pub mod kdf;
 pub mod mac;
+pub mod ops;
 pub mod prg;
 pub mod prp;
 pub mod random;

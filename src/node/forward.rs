@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{crypto::prg, types::PacketType};
+use crate::{crypto::ops::prg1, types::PacketType};
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
@@ -147,7 +147,7 @@ fn derive_exit_iv(ctx: &NodeCtx<'_, '_, '_>, ahdr: &Ahdr) -> [u8; 16] {
     let now = Exp(ctx.now.now_coarse());
     if let Ok(res) = proc_ahdr(&ctx.sv, ahdr, now) {
         let mut iv = [0u8; 16];
-        prg::prg1(&res.s.0, &mut iv);
+        prg1(&res.s.0, &mut iv);
         iv
     } else {
         [0u8; 16]

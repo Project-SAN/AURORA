@@ -1,5 +1,4 @@
-use crate::crypto::kdf::{hop_key, OpLabel};
-use crate::crypto::{prg, prp};
+use crate::crypto::ops::{hop_key, lioness_decrypt, lioness_encrypt, mac_trunc16, prg1, OpLabel};
 use crate::types::{Error, Si, R_MAX};
 use core::ops::{Deref, DerefMut};
 use rand_core::RngCore;
@@ -19,7 +18,6 @@ const MAX_DEST_LEN: usize = 255;
 const MAX_FORWARD_BODY_LEN: usize = 9 * 1024;
 const MAX_FORWARD_PAYLOAD_LEN: usize = MAX_FORWARD_BODY_LEN - KAPPA_BYTES - MAX_DEST_LEN;
 
-use crate::crypto::mac;
 use alloc::vec::Vec;
 use curve25519_dalek::{constants::X25519_BASEPOINT, montgomery::MontgomeryPoint, scalar::Scalar};
 
@@ -297,7 +295,7 @@ pub fn derive_tau_tag(si: &Si) -> [u8; TAU_TAG_BYTES] {
 }
 
 fn derive_rho_stream(shared: &[u8; 32], out: &mut [u8]) {
-    prg::prg1(shared, out);
+    prg1(shared, out);
 }
 
 fn derive_blinding_scalar(alpha: &[u8; GROUP_LEN], shared: &[u8; 32]) -> Scalar {
@@ -420,15 +418,14 @@ fn create_header_internal(
         beta_next[front_len..front_len + filler_len].copy_from_slice(&filler[..filler_len]);
     }
     let mu_key_last = derive_mu_key(&shared_list[last]);
-    let mut gamma_next = mac::mac_trunc16(&mu_key_last, &beta_next[..total_beta_len]).0;
+    let mut gamma_next = mac_trunc16(&mu_key_last, &beta_next[..total_beta_len]).0;
 
     for idx in (0..last).rev() {
         let mut base = [0u8; MAX_BETA_LEN];
         base[..KAPPA_BYTES].copy_from_slice(&node_ids[idx + 1]);
         base[KAPPA_BYTES..2 * KAPPA_BYTES].copy_from_slice(&gamma_next);
         let tail_len = total_beta_len - 2 * KAPPA_BYTES;
-        base[2 * KAPPA_BYTES..2 * KAPPA_BYTES + tail_len]
-            .copy_from_slice(&beta_next[..tail_len]);
+        base[2 * KAPPA_BYTES..2 * KAPPA_BYTES + tail_len].copy_from_slice(&beta_next[..tail_len]);
 
         rho_buf[..total_beta_len].fill(0);
         derive_rho_stream(&shared_list[idx], &mut rho_buf[..total_beta_len]);
@@ -441,7 +438,7 @@ fn create_header_internal(
 
         beta_next[..total_beta_len].copy_from_slice(&base[..total_beta_len]);
         let mu_key = derive_mu_key(&shared_list[idx]);
-        gamma_next = mac::mac_trunc16(&mu_key, &beta_next[..total_beta_len]).0;
+        gamma_next = mac_trunc16(&mu_key, &beta_next[..total_beta_len]).0;
     }
 
     let mut beta = BetaBytes::empty();
@@ -486,7 +483,7 @@ pub fn node_process_forward(
     let shared = shared_pt.to_bytes();
 
     let mu_key = derive_mu_key(&shared);
-    let expected = mac::mac_trunc16(&mu_key, h.beta.as_slice());
+    let expected = mac_trunc16(&mu_key, h.beta.as_slice());
     if expected.0 != h.gamma {
         return Err(Error::InvalidMac);
     }
@@ -561,7 +558,7 @@ pub fn create_forward_message(
         pi_keys.push(derive_pi_key(si))?;
     }
     for key in pi_keys.iter().rev() {
-        prp::lioness_encrypt(key, &mut body);
+        lioness_encrypt(key, &mut body);
     }
 
     Ok((ForwardMessage { header, body }, sis, eph, pi_keys))
@@ -622,9 +619,9 @@ pub fn prepare_reply_message(
     enc[..KAPPA_BYTES].copy_from_slice(&ZERO_KAPPA);
     enc[KAPPA_BYTES..].copy_from_slice(message);
     for key in state.pi_keys.iter().rev() {
-        prp::lioness_encrypt(key, &mut enc);
+        lioness_encrypt(key, &mut enc);
     }
-    prp::lioness_encrypt(&rb.k_tilde, &mut enc);
+    lioness_encrypt(&rb.k_tilde, &mut enc);
     Ok(ForwardMessage {
         header: rb.header.clone(),
         body: enc,
@@ -635,9 +632,9 @@ pub fn decrypt_reply(
     state: &ReplyState,
     mut body: BodyBytes,
 ) -> core::result::Result<BodyBytes, Error> {
-    prp::lioness_decrypt(&state.k_tilde, &mut body);
+    lioness_decrypt(&state.k_tilde, &mut body);
     for key in state.pi_keys.iter() {
-        prp::lioness_decrypt(key, &mut body);
+        lioness_decrypt(key, &mut body);
     }
     if body.len() < KAPPA_BYTES {
         return Err(Error::Length);
@@ -723,7 +720,6 @@ mod tests {
     use super::KAPPA_BYTES;
     use super::ZERO_KAPPA;
     use super::*;
-    use crate::crypto::prp;
 
     struct XorShift64(u64);
     impl RngCore for XorShift64 {
@@ -839,7 +835,7 @@ mod tests {
             create_forward_message(&x_s, &pubs, rmax, dest, payload).expect("forward message");
         let mut body = forward.body.clone();
         for key in pi_keys.iter() {
-            prp::lioness_decrypt(key, &mut body);
+            lioness_decrypt(key, &mut body);
         }
         assert_eq!(&body[..KAPPA_BYTES], &ZERO_KAPPA);
         assert_eq!(&body[KAPPA_BYTES..KAPPA_BYTES + dest.len()], dest);
