@@ -1,5 +1,6 @@
+#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "x86_64")]
 use core::arch::asm;
-use core::arch::x86_64::__cpuid;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::hpet::Hpet;
@@ -31,11 +32,7 @@ pub fn init(local_apic_base: u64, timer_vector: u8, hpet: &Hpet) {
     }
     wrmsr(IA32_APIC_BASE, apic_base);
 
-    let base = if x2 {
-        0
-    } else {
-        local_apic_base
-    };
+    let base = if x2 { 0 } else { local_apic_base };
     APIC_BASE.store(base, Ordering::Release);
 
     // Spurious interrupt vector register: enable APIC (bit 8) + vector.
@@ -61,7 +58,12 @@ fn calibrate_timer(timer_vector: u8, hpet: &Hpet) {
     let start = hpet.ticks();
     let target = start + hpet.ticks_per_ms() * 10;
     while hpet.ticks() < target {
-        unsafe { asm!("pause"); }
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            asm!("pause");
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        core::hint::spin_loop();
     }
 
     let current = read_reg(APIC_REG_CUR_COUNT);
@@ -95,11 +97,32 @@ fn read_reg(offset: u32) -> u32 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn has_x2apic() -> bool {
-    let info = __cpuid(1);
-    (info.ecx & (1 << 21)) != 0
+    let mut eax: u32 = 1;
+    let mut ebx: u32 = 0;
+    let mut ecx: u32 = 0;
+    let mut edx: u32 = 0;
+    unsafe {
+        asm!(
+            "cpuid",
+            inlateout("eax") eax,
+            lateout("ebx") ebx,
+            lateout("ecx") ecx,
+            lateout("edx") edx,
+            options(nomem, nostack)
+        );
+    }
+    let _ = (eax, ebx, edx);
+    (ecx & (1 << 21)) != 0
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+fn has_x2apic() -> bool {
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
 fn rdmsr(msr: u32) -> u64 {
     let high: u32;
     let low: u32;
@@ -115,6 +138,12 @@ fn rdmsr(msr: u32) -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+fn rdmsr(_msr: u32) -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
 fn wrmsr(msr: u32, value: u64) {
     let high = (value >> 32) as u32;
     let low = value as u32;
@@ -127,4 +156,17 @@ fn wrmsr(msr: u32, value: u64) {
             options(nomem, nostack)
         );
     }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn wrmsr(_msr: u32, _value: u64) {}
+#[cfg(not(target_arch = "x86_64"))]
+#[derive(Clone, Copy)]
+struct CpuidResult {
+    ecx: u32,
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn __cpuid(_leaf: u32) -> CpuidResult {
+    CpuidResult { ecx: 0 }
 }

@@ -70,9 +70,7 @@ pub fn find_virtio_net() -> Option<VirtioPciDevice> {
                 }
                 let device_id = read_u16(bus, device, function, 0x02);
                 let class = read_u8(bus, device, function, 0x0B);
-                if vendor == VENDOR_VIRTIO
-                    && device_id == DEVICE_VIRTIO_NET_MODERN
-                    && class == 0x02
+                if vendor == VENDOR_VIRTIO && device_id == DEVICE_VIRTIO_NET_MODERN && class == 0x02
                 {
                     let bars = read_bars(bus, device, function);
                     let mut io_base = None;
@@ -131,9 +129,7 @@ pub fn find_virtio_blk() -> Option<VirtioPciDevice> {
                 }
                 let device_id = read_u16(bus, device, function, 0x02);
                 let class = read_u8(bus, device, function, 0x0B);
-                if vendor == VENDOR_VIRTIO
-                    && device_id == DEVICE_VIRTIO_BLK_MODERN
-                    && class == 0x01
+                if vendor == VENDOR_VIRTIO && device_id == DEVICE_VIRTIO_BLK_MODERN && class == 0x01
                 {
                     let bars = read_bars(bus, device, function);
                     let mut io_base = None;
@@ -295,10 +291,7 @@ fn log_device(bus: u16, device: u16, function: u16) {
     ));
 
     if vendor == VENDOR_VIRTIO {
-        serial::write(format_args!(
-            "  -> virtio device id={:04x}\n",
-            device_id
-        ));
+        serial::write(format_args!("  -> virtio device id={:04x}\n", device_id));
         log_bars(bus, device, function);
     }
 }

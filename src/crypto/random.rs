@@ -57,7 +57,7 @@ pub trait XdrbgParams {
 
     #[inline(always)]
     fn bits_to_min_bytes(bits: usize) -> usize {
-        (bits + 7) / 8
+        bits.div_ceil(8)
     }
     #[inline(always)]
     fn hinit_min_seed_bytes() -> usize {

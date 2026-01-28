@@ -28,5 +28,11 @@ pub fn process_data(
     let mut iv = chdr.specific;
     onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
-    ctx.forward.send(&res.r, chdr, &res.ahdr_next, payload, PacketDirection::Backward)
+    ctx.forward.send(
+        &res.r,
+        chdr,
+        &res.ahdr_next,
+        payload,
+        PacketDirection::Backward,
+    )
 }

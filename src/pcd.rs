@@ -13,10 +13,10 @@ pub struct PcdState {
 impl PcdState {
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.hkey);
-        hasher.update(&self.seq.to_be_bytes());
-        hasher.update(&self.root);
-        hasher.update(&self.htarget);
+        hasher.update(self.hkey);
+        hasher.update(self.seq.to_be_bytes());
+        hasher.update(self.root);
+        hasher.update(self.htarget);
         let digest = hasher.finalize();
         let mut out = [0u8; 32];
         out.copy_from_slice(&digest);
@@ -79,7 +79,7 @@ impl PcdBackend for HashPcdBackend {
 }
 
 pub fn default_backend() -> Box<dyn PcdBackend> {
-    Box::new(HashPcdBackend::default())
+    Box::new(HashPcdBackend)
 }
 
 #[cfg(feature = "pcd-nova")]

@@ -17,7 +17,7 @@ pub struct ProcResult {
 // Algorithm 3: Process an AHDR at a hop
 pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let rc = ahdr.bytes.len();
-    if rc % C_BLOCK != 0 {
+    if !rc.is_multiple_of(C_BLOCK) {
         return Err(Error::Length);
     }
     // number of blocks r = rc / C_BLOCK (not needed explicitly)

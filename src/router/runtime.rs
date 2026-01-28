@@ -1,6 +1,10 @@
 use crate::router::Router;
-use crate::types::{Ahdr, Chdr, Result, PacketDirection};
-use crate::{forward::Forward, node::{ExitTransport, ReplayFilter}, time::TimeProvider};
+use crate::types::{Ahdr, Chdr, PacketDirection, Result};
+use crate::{
+    forward::Forward,
+    node::{ExitTransport, ReplayFilter},
+    time::TimeProvider,
+};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -107,6 +111,12 @@ pub mod forward {
 
         pub fn pop(&mut self) -> Option<Vec<u8>> {
             self.queue.pop_front()
+        }
+    }
+
+    impl Default for LoopbackForward {
+        fn default() -> Self {
+            Self::new()
         }
     }
 

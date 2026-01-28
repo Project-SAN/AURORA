@@ -9,11 +9,7 @@ pub fn apply_announcement(router: &mut Router, announcement: &DirectoryAnnouncem
 
 /// Convenience helper: verify a signed JSON body with the public key
 /// and install the contained policies into the router.
-pub fn apply_signed_announcement(
-    router: &mut Router,
-    body: &str,
-    public_key: &[u8],
-) -> Result<()> {
+pub fn apply_signed_announcement(router: &mut Router, body: &str, public_key: &[u8]) -> Result<()> {
     let announcement = directory::from_signed_json(body, public_key)?;
     apply_announcement(router, &announcement)
 }
@@ -61,8 +57,7 @@ pub mod client {
         client: &dyn DirectoryClient,
     ) -> Result<()> {
         let body = client.fetch_signed()?;
-        let key_bytes =
-            decode_hex(&config.directory_public_key).map_err(|_| Error::Crypto)?;
+        let key_bytes = decode_hex(&config.directory_public_key).map_err(|_| Error::Crypto)?;
         if key_bytes.len() != 32 {
             return Err(Error::Length);
         }

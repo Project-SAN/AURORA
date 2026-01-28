@@ -2,11 +2,8 @@
 
 use crate::core::policy::PolicyMetadata;
 use crate::policy::PolicyRegistry;
+use crate::setup::pipeline::SetupPipeline;
 use crate::types::Result;
-
-pub trait SetupPipeline {
-    fn install(&mut self, metadata: PolicyMetadata) -> Result<()>;
-}
 
 pub struct RegistrySetupPipeline<'a> {
     registry: &'a mut PolicyRegistry,

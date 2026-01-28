@@ -6,7 +6,9 @@ use crate::forward::Forward;
 use crate::routing::{self, IpAddr, RouteElem};
 use crate::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
 
-use super::{encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader};
+use super::{
+    encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
+};
 
 fn format_ip(addr: &IpAddr, port: u16) -> String {
     match addr {
@@ -102,7 +104,8 @@ impl Forward for TcpForward {
                     payload.len(),
                     ahdr.bytes.len()
                 );
-                let mut stream = std::net::TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
+                let mut stream =
+                    std::net::TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
                 std::io::Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
             }
@@ -115,7 +118,8 @@ impl Forward for TcpForward {
                     payload.len(),
                     ahdr.bytes.len()
                 );
-                let mut stream = std::net::TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
+                let mut stream =
+                    std::net::TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
                 std::io::Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
             }
