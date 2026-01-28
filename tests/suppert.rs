@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec::Vec;
 
-use hornet::application::forward::ForwardPipeline;
-use hornet::application::setup::SetupPipeline;
-use hornet::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
-use hornet::policy::CapsuleValidator;
-use hornet::types::Result;
 use hornet::core::policy::PolicyRole;
+use hornet::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
+use hornet::node::pipeline::ForwardPipeline;
+use hornet::policy::CapsuleValidator;
+use hornet::setup::pipeline::SetupPipeline;
+use hornet::types::Result;
 
 #[allow(dead_code)]
 pub struct NoopSetup;

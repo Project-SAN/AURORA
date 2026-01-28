@@ -1,9 +1,11 @@
 use crate::adapters::plonk::validator::PlonkCapsuleValidator;
-use crate::application::forward::{ForwardPipeline, RegistryForwardPipeline};
-use crate::application::setup::{RegistrySetupPipeline, SetupPipeline};
+use crate::application::forward::RegistryForwardPipeline;
+use crate::application::setup::RegistrySetupPipeline;
+use crate::node::pipeline::ForwardPipeline;
 use crate::node::PolicyRuntime;
 use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
+use crate::setup::pipeline::SetupPipeline;
 use crate::types::{Ahdr, Chdr, Result};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -203,12 +205,13 @@ impl Router {
         })
     }
 
-    pub fn process_forward_packet<'p, 'io, 'e>(
-        &'p self,
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_forward_packet<'io>(
+        &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,
-        exit: Option<&'e mut dyn crate::node::ExitTransport>,
+        exit: Option<&mut dyn crate::node::ExitTransport>,
         replay: &'io mut dyn crate::node::ReplayFilter,
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
@@ -227,8 +230,9 @@ impl Router {
         node::forward::process_data(&mut ctx, chdr, ahdr, payload)
     }
 
-    pub fn process_backward_packet<'p, 'io>(
-        &'p self,
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_backward_packet<'io>(
+        &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,

@@ -146,7 +146,7 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(storage_dir)?;
 
     let host = "10.0.2.2";
-    let routers = vec![
+    let routers = [
         RouterSpec {
             name: "router-entry",
             bind: format!("{host}:17011"),
@@ -194,7 +194,7 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
             .first()
             .ok_or("no policies in localnet directory")?
             .policy_id;
-        let segment = routing::segment_from_elems(&[spec.route.clone()]);
+        let segment = routing::segment_from_elems(std::slice::from_ref(&spec.route));
         directory.push_route(RouteAnnouncement {
             policy_id,
             segment,
@@ -235,7 +235,7 @@ fn write_directory(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut directory = DirectoryAnnouncement::new();
     directory.push_policy(metadata.clone());
-    let segment = routing::segment_from_elems(&[spec.route.clone()]);
+    let segment = routing::segment_from_elems(std::slice::from_ref(&spec.route));
     directory.push_route(RouteAnnouncement {
         policy_id: metadata.policy_id,
         segment,

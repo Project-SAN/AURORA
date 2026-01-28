@@ -1,4 +1,12 @@
-use core::arch::asm;
+#[cfg(target_arch = "x86_64")]
+#[path = "sys_x86_64.rs"]
+mod imp;
+
+#[cfg(not(target_arch = "x86_64"))]
+#[path = "sys_stub.rs"]
+mod imp;
+
+pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_SLEEP: u64 = 4;
@@ -38,73 +46,4 @@ pub fn time_epoch() -> Option<u64> {
     } else {
         Some(ret)
     }
-}
-
-pub unsafe fn syscall0(num: u64) -> u64 {
-    let ret: u64;
-    asm!(
-        "syscall",
-        inlateout("rax") num => ret,
-        in("rdi") 0u64,
-        in("rsi") 0u64,
-        in("rdx") 0u64,
-        in("r10") 0u64,
-        in("r8") 0u64,
-        in("r9") 0u64,
-        lateout("rcx") _,
-        lateout("r11") _,
-    );
-    ret
-}
-
-pub unsafe fn syscall1(num: u64, a1: u64) -> u64 {
-    let ret: u64;
-    asm!(
-        "syscall",
-        inlateout("rax") num => ret,
-        in("rdi") a1,
-        in("rsi") 0u64,
-        in("rdx") 0u64,
-        in("r10") 0u64,
-        in("r8") 0u64,
-        in("r9") 0u64,
-        lateout("rcx") _,
-        lateout("r11") _,
-    );
-    ret
-}
-
-#[allow(dead_code)]
-pub unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
-    let ret: u64;
-    asm!(
-        "syscall",
-        inlateout("rax") num => ret,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") 0u64,
-        in("r10") 0u64,
-        in("r8") 0u64,
-        in("r9") 0u64,
-        lateout("rcx") _,
-        lateout("r11") _,
-    );
-    ret
-}
-
-pub unsafe fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-    let ret: u64;
-    asm!(
-        "syscall",
-        inlateout("rax") num => ret,
-        in("rdi") a1,
-        in("rsi") a2,
-        in("rdx") a3,
-        in("r10") 0u64,
-        in("r8") 0u64,
-        in("r9") 0u64,
-        lateout("rcx") _,
-        lateout("r11") _,
-    );
-    ret
 }

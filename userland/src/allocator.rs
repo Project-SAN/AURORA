@@ -28,6 +28,8 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 #[alloc_error_handler]
 fn oom(_layout: Layout) -> ! {
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }

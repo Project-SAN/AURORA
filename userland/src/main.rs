@@ -7,20 +7,20 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-mod http;
+mod allocator;
 mod echo;
 mod fs;
-mod socket;
-mod sys;
-mod allocator;
-#[cfg(feature = "hornet-time")]
-mod time_provider;
+mod http;
 #[cfg(feature = "hornet-router")]
-mod router_storage;
+mod router_app;
 #[cfg(feature = "hornet-router")]
 mod router_io;
 #[cfg(feature = "hornet-router")]
-mod router_app;
+mod router_storage;
+mod socket;
+mod sys;
+#[cfg(feature = "hornet-time")]
+mod time_provider;
 
 const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
 const HTTP_PORT: u16 = 8080;
@@ -59,7 +59,14 @@ pub extern "C" fn _start() -> ! {
     }
     if RUN_HTTP_CLIENT {
         let ok = unsafe {
-            http::HttpClient::init_in_place(HTTP_CLIENT.get(), HTTP_IP, HTTP_PORT, HTTP_PATH, HTTP_HOST).is_ok()
+            http::HttpClient::init_in_place(
+                HTTP_CLIENT.get(),
+                HTTP_IP,
+                HTTP_PORT,
+                HTTP_PATH,
+                HTTP_HOST,
+            )
+            .is_ok()
         };
         if ok {
             HTTP_READY.store(true, Ordering::Release);
@@ -92,7 +99,9 @@ pub extern "C" fn _start() -> ! {
             }
         }
         sys::sleep(1);
-        unsafe { asm!("pause"); }
+        unsafe {
+            asm!("pause");
+        }
     }
 }
 
@@ -184,9 +193,12 @@ fn write_decimal(mut value: u64) {
     let _ = sys::write(1, &buf[..i]);
 }
 
-#[panic_handler]
+#[cfg_attr(any(target_os = "none", target_os = "uefi"), panic_handler)]
+#[cfg(any(target_os = "none", target_os = "uefi"))]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
-        unsafe { asm!("pause"); }
+        unsafe {
+            asm!("pause");
+        }
     }
 }

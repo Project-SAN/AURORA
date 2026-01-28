@@ -24,7 +24,9 @@ pub struct UserImage {
 static mut ENTRY_PHYS: u64 = 0;
 
 pub fn set_entry_phys(phys: u64) {
-    unsafe { ENTRY_PHYS = phys; }
+    unsafe {
+        ENTRY_PHYS = phys;
+    }
 }
 
 pub fn entry_phys() -> u64 {
@@ -62,9 +64,6 @@ fn map_user_stack() -> Option<u64> {
             core::ptr::write_bytes(ptr, 0, memory::PAGE_SIZE as usize);
         }
     }
-    serial::write(format_args!(
-        "user stack mapped at {:#x}\n",
-        USER_STACK_TOP
-    ));
+    serial::write(format_args!("user stack mapped at {:#x}\n", USER_STACK_TOP));
     Some(USER_STACK_TOP)
 }

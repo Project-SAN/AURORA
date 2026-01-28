@@ -4,11 +4,11 @@ use crate::types::{Error, Result, RoutingSegment};
 use alloc::string::{String, ToString};
 use alloc::{vec, vec::Vec};
 use core::net::{Ipv4Addr, Ipv6Addr};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha512};
 use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use curve25519_dalek::scalar::Scalar;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
 
 pub struct DirectoryAnnouncement {
     policy_entries: Vec<PolicyMetadata>,
@@ -320,16 +320,16 @@ fn key32(input: &[u8]) -> Result<[u8; 32]> {
 
 pub fn public_key_from_seed(seed: &[u8; 32]) -> [u8; 32] {
     let (scalar, _) = expand_ed25519_seed(seed);
-    let public = &ED25519_BASEPOINT_POINT * &scalar;
+    let public = ED25519_BASEPOINT_POINT * scalar;
     public.compress().to_bytes()
 }
 
 fn ed25519_sign(seed: &[u8; 32], msg: &[u8]) -> [u8; 64] {
     let (scalar, prefix) = expand_ed25519_seed(seed);
-    let public = (&ED25519_BASEPOINT_POINT * &scalar).compress().to_bytes();
+    let public = (ED25519_BASEPOINT_POINT * scalar).compress().to_bytes();
 
     let r = Scalar::from_bytes_mod_order_wide(&hash512(&[&prefix, msg]));
-    let r_point = &ED25519_BASEPOINT_POINT * &r;
+    let r_point = ED25519_BASEPOINT_POINT * r;
     let r_bytes = r_point.compress().to_bytes();
 
     let k = Scalar::from_bytes_mod_order_wide(&hash512(&[&r_bytes, &public, msg]));
@@ -366,7 +366,7 @@ fn ed25519_verify(public: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
         None => return false,
     };
     let k = Scalar::from_bytes_mod_order_wide(&hash512(&[&r_bytes, public, msg]));
-    let s_b = &ED25519_BASEPOINT_POINT * &s;
+    let s_b = ED25519_BASEPOINT_POINT * s;
     let r_plus_ka = r + k * a;
     s_b == r_plus_ka
 }
@@ -407,7 +407,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(input: &str) -> Result<Vec<u8>> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err(Error::Length);
     }
     let mut out = Vec::with_capacity(input.len() / 2);
