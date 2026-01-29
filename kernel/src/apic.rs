@@ -99,22 +99,9 @@ fn read_reg(offset: u32) -> u32 {
 
 #[cfg(target_arch = "x86_64")]
 fn has_x2apic() -> bool {
-    let mut eax: u32 = 1;
-    let mut ebx: u32 = 0;
-    let mut ecx: u32 = 0;
-    let mut edx: u32 = 0;
-    unsafe {
-        asm!(
-            "cpuid",
-            inlateout("eax") eax,
-            lateout("ebx") ebx,
-            lateout("ecx") ecx,
-            lateout("edx") edx,
-            options(nomem, nostack)
-        );
-    }
-    let _ = (eax, ebx, edx);
-    (ecx & (1 << 21)) != 0
+    // Use the intrinsic to avoid reserving rbx, which LLVM uses internally.
+    let res = core::arch::x86_64::__cpuid(1);
+    (res.ecx & (1 << 21)) != 0
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -160,13 +147,3 @@ fn wrmsr(msr: u32, value: u64) {
 
 #[cfg(not(target_arch = "x86_64"))]
 fn wrmsr(_msr: u32, _value: u64) {}
-#[cfg(not(target_arch = "x86_64"))]
-#[derive(Clone, Copy)]
-struct CpuidResult {
-    ecx: u32,
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn __cpuid(_leaf: u32) -> CpuidResult {
-    CpuidResult { ecx: 0 }
-}
