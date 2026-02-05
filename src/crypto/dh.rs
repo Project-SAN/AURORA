@@ -30,9 +30,9 @@ impl KeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{rngs::SmallRng, SeedableRng};
-
-    struct TestRng(SmallRng);
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
+    struct TestRng(ChaCha20Rng);
 
     impl RngCore for TestRng {
         fn next_u32(&mut self) -> u32 {
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_keypair_generation() {
-        let mut rng = TestRng(SmallRng::seed_from_u64(42));
+        let mut rng = TestRng(ChaCha20Rng::seed_from_u64(42));
         let keypair = KeyPair::generate(&mut rng);
 
         assert_eq!(keypair.secret[0] & 7, 0);
@@ -67,8 +67,8 @@ mod tests {
 
     #[test]
     fn test_key_derivation() {
-        let mut rng1 = TestRng(SmallRng::seed_from_u64(100));
-        let mut rng2 = TestRng(SmallRng::seed_from_u64(200));
+        let mut rng1 = TestRng(ChaCha20Rng::seed_from_u64(100));
+        let mut rng2 = TestRng(ChaCha20Rng::seed_from_u64(200));
         let keypair = KeyPair::generate(&mut rng1);
         let peer_keypair = KeyPair::generate(&mut rng2);
 
@@ -81,9 +81,9 @@ mod tests {
 
     #[test]
     fn test_different_peers_different_secrets() {
-        let mut rng1 = TestRng(SmallRng::seed_from_u64(300));
-        let mut rng2 = TestRng(SmallRng::seed_from_u64(400));
-        let mut rng3 = TestRng(SmallRng::seed_from_u64(500));
+        let mut rng1 = TestRng(ChaCha20Rng::seed_from_u64(300));
+        let mut rng2 = TestRng(ChaCha20Rng::seed_from_u64(400));
+        let mut rng3 = TestRng(ChaCha20Rng::seed_from_u64(500));
         let keypair = KeyPair::generate(&mut rng1);
         let peer1 = KeyPair::generate(&mut rng2);
         let peer2 = KeyPair::generate(&mut rng3);
@@ -96,8 +96,8 @@ mod tests {
 
     #[test]
     fn test_deterministic_derivation() {
-        let mut rng1 = TestRng(SmallRng::seed_from_u64(600));
-        let mut rng2 = TestRng(SmallRng::seed_from_u64(700));
+        let mut rng1 = TestRng(ChaCha20Rng::seed_from_u64(600));
+        let mut rng2 = TestRng(ChaCha20Rng::seed_from_u64(700));
         let keypair = KeyPair::generate(&mut rng1);
         let peer = KeyPair::generate(&mut rng2);
 

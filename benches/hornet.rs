@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use hornet::types::PacketDirection;
-use rand::rngs::SmallRng;
-use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -23,7 +23,7 @@ fn bench_create_ahdr(c: &mut Criterion) {
         let seed = 0xA11C_E5EED_u64 ^ (hops as u64);
         group.bench_function(BenchmarkId::from_parameter(format!("hops{hops}")), |b| {
             b.iter(|| {
-                let mut rng = SmallRng::seed_from_u64(seed);
+                let mut rng = ChaCha20Rng::seed_from_u64(seed);
                 let ahdr = hornet::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut rng)
                     .expect("ahdr create");
                 black_box(ahdr);
@@ -319,7 +319,7 @@ impl HornetFixture {
         F: FnMut(usize, usize) -> hornet::types::RoutingSegment,
     {
         assert!(hops > 0 && hops <= hornet::types::R_MAX);
-        let mut rng = SmallRng::seed_from_u64(0x5EED_F00Du64 ^ hops as u64 ^ payload_len as u64);
+        let mut rng = ChaCha20Rng::seed_from_u64(0x5EED_F00Du64 ^ hops as u64 ^ payload_len as u64);
         let now = 1_690_000_000u32;
         let exp = hornet::types::Exp(now.saturating_add(600));
 
@@ -345,7 +345,7 @@ impl HornetFixture {
             })
             .collect::<Vec<_>>();
 
-        let mut rng_ahdr = SmallRng::seed_from_u64(0xA11C_E5EEDu64 ^ hops as u64);
+        let mut rng_ahdr = ChaCha20Rng::seed_from_u64(0xA11C_E5EEDu64 ^ hops as u64);
         let ahdr =
             hornet::packet::ahdr::create_ahdr(&keys, &fses, hornet::types::R_MAX, &mut rng_ahdr)
                 .expect("fixture ahdr");
@@ -414,7 +414,7 @@ impl RoundTripFixture {
         let http_request = example_request_bytes();
         let http_response = example_response_bytes(example_body);
         let forward = HornetFixture::new(hops, http_request.len());
-        let mut rng = SmallRng::seed_from_u64(0xBEEF_5EEDu64 ^ hops as u64);
+        let mut rng = ChaCha20Rng::seed_from_u64(0xBEEF_5EEDu64 ^ hops as u64);
         let exp = hornet::types::Exp(forward.now.saturating_add(600));
 
         let mut backward_keys = Vec::with_capacity(hops);
@@ -430,7 +430,7 @@ impl RoundTripFixture {
             backward_fses.push(fs);
         }
 
-        let mut ahdr_rng = SmallRng::seed_from_u64(0xACCE_55EDu64 ^ hops as u64);
+        let mut ahdr_rng = ChaCha20Rng::seed_from_u64(0xACCE_55EDu64 ^ hops as u64);
         let backward_ahdr = hornet::packet::ahdr::create_ahdr(
             &backward_keys,
             &backward_fses,

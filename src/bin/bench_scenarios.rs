@@ -11,8 +11,8 @@ use hornet::core::policy::{
     MAX_CAPSULE_LEN,
 };
 use hornet::types::{Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment};
-use rand::rngs::SmallRng;
-use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -98,7 +98,7 @@ struct ForwardFixture {
 
 impl ForwardFixture {
     fn new(hops: usize) -> Self {
-        let mut rng = SmallRng::seed_from_u64(0x5EED_F00Du64 ^ hops as u64);
+        let mut rng = ChaCha20Rng::seed_from_u64(0x5EED_F00Du64 ^ hops as u64);
         let now = 1_690_000_000u32;
         let exp = Exp(now.saturating_add(600));
 
@@ -127,7 +127,7 @@ impl ForwardFixture {
             .collect::<Result<Vec<_>>>()
             .expect("fs create");
 
-        let mut rng_ahdr = SmallRng::seed_from_u64(0xA11C_E5EEDu64 ^ hops as u64);
+        let mut rng_ahdr = ChaCha20Rng::seed_from_u64(0xA11C_E5EEDu64 ^ hops as u64);
         let ahdr =
             hornet::packet::ahdr::create_ahdr(&keys, &fses, hornet::types::R_MAX, &mut rng_ahdr)
                 .expect("fixture ahdr");
@@ -190,7 +190,7 @@ fn build_blocklist(n: usize) -> Vec<LeafBytes> {
 }
 
 fn build_keybinding_inputs() -> KeyBindingInputs {
-    let mut rng = SmallRng::seed_from_u64(0xBEEF_CAFE);
+    let mut rng = ChaCha20Rng::seed_from_u64(0xBEEF_CAFE);
     let mut sender_secret = [0u8; 32];
     let mut htarget = [0u8; 32];
     let mut session_nonce = [0u8; 32];
@@ -396,7 +396,7 @@ fn main() -> Result<()> {
 
         println!("== End-to-End (3 hops, policy enforced) ==");
         for (label, tail_len) in payload_cases {
-            let mut rng = SmallRng::seed_from_u64(0x00C0_FFEE_u64 ^ tail_len as u64);
+            let mut rng = ChaCha20Rng::seed_from_u64(0x00C0_FFEE_u64 ^ tail_len as u64);
             let mut tail = vec![0u8; tail_len];
             rng.fill_bytes(&mut tail);
 
