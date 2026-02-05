@@ -15,8 +15,8 @@ use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
 use hornet::types::{Nonce, PacketType, Si};
 use hornet::utils::decode_hex;
-use rand::rngs::SmallRng;
-use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
 use serde::Deserialize;
 use std::env;
 use std::fs;
@@ -85,7 +85,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let entry = blocklist::entry_from_target(&target)
         .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
     let canonical_bytes = entry.leaf_bytes();
-    let mut rng = SmallRng::seed_from_u64(derive_seed());
+    let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
     let mut sender_secret = [0u8; 32];
     let mut session_nonce = [0u8; 32];
     rng.fill_bytes(&mut sender_secret);
@@ -236,7 +236,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             })?;
         fses.push(fs);
     }
-    let mut ahdr_rng = SmallRng::seed_from_u64(derive_seed() ^ 0xA55AA55A);
+    let mut ahdr_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xA55AA55A);
     let ahdr = hornet::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut ahdr_rng)
         .map_err(|err| format!("failed to build AHDR: {err:?}"))?;
 
@@ -308,7 +308,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         fses_b.push(fs);
     }
 
-    let mut ahdr_b_rng = SmallRng::seed_from_u64(derive_seed() ^ 0xBEEFBEEF);
+    let mut ahdr_b_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xBEEFBEEF);
     let ahdr_b = hornet::packet::ahdr::create_ahdr(&keys_b, &fses_b, rmax, &mut ahdr_b_rng)
         .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
 

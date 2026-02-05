@@ -8,9 +8,8 @@ use hornet::time::TimeProvider;
 use hornet::types::{
     Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment, Si, Sv, R_MAX,
 };
-use rand::rngs::SmallRng;
-use rand::{RngCore, SeedableRng};
-
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
 struct FixedTime(u32);
 impl TimeProvider for FixedTime {
     fn now_coarse(&self) -> u32 {
@@ -56,7 +55,7 @@ struct PacketFixture {
 }
 
 fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> PacketFixture {
-    let mut rng = SmallRng::seed_from_u64(0xACCE55ED);
+    let mut rng = ChaCha20Rng::seed_from_u64(0xACCE55ED);
     let mut sv_bytes = [0u8; 16];
     rng.fill_bytes(&mut sv_bytes);
     let sv = Sv(sv_bytes);
@@ -71,7 +70,7 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
     let exp = Exp(now.saturating_add(600));
     let fs = hornet::packet::core::create(&sv, &si, &route, exp).expect("fs create");
 
-    let mut ahdr_rng = SmallRng::seed_from_u64(0xBEEF);
+    let mut ahdr_rng = ChaCha20Rng::seed_from_u64(0xBEEF);
     let ahdr =
         hornet::packet::ahdr::create_ahdr(&[si], &[fs], R_MAX, &mut ahdr_rng).expect("ahdr");
 

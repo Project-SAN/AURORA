@@ -17,7 +17,7 @@ use dusk_plonk::prelude::{
     BlsScalar, Circuit, Compiler, Composer, Constraint, Error as PlonkError, Prover,
     PublicParameters,
 };
-use rand::SeedableRng;
+use rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256, Sha512};
 use spin::Mutex;

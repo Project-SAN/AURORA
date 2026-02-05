@@ -244,7 +244,7 @@ mod tests {
     use hornet::policy::PolicyMetadata;
     use hornet::setup::directory::RouteAnnouncement;
     use hornet::types::{self, PacketDirection, RoutingSegment};
-    use rand::SeedableRng;
+    use rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;
     use rand_core::RngCore;
     use serde_json;
