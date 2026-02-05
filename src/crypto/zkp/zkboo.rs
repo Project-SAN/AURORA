@@ -5,6 +5,7 @@ use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
+use crate::core::policy::{ProofKind, ProofPart, AUX_MAX, PROOF_LEN};
 use crate::types::{Error, Result};
 use rand_core::{CryptoRng, RngCore};
 
@@ -107,6 +108,59 @@ impl Proof {
             },
             cursor,
         ))
+    }
+
+    pub fn to_part(&self, kind: ProofKind) -> Result<ProofPart> {
+        let encoded = self.encode()?;
+        if encoded.len() > PROOF_LEN + AUX_MAX - 4 {
+            return Err(Error::Length);
+        }
+        let mut part = ProofPart::default();
+        part.kind = kind;
+        part.commitment = self.commit_root;
+
+        let head = core::cmp::min(PROOF_LEN, encoded.len());
+        part.proof[..head].copy_from_slice(&encoded[..head]);
+
+        let mut aux_len = 4usize;
+        part.aux[..4].copy_from_slice(&(encoded.len() as u32).to_be_bytes());
+        if encoded.len() > PROOF_LEN {
+            let tail = &encoded[PROOF_LEN..];
+            let end = 4 + tail.len();
+            part.aux[4..end].copy_from_slice(tail);
+            aux_len = end;
+        }
+        part.aux_len = aux_len as u16;
+        Ok(part)
+    }
+
+    pub fn from_part(part: &ProofPart) -> Result<Proof> {
+        let aux = part.aux();
+        if aux.len() < 4 {
+            return Err(Error::Length);
+        }
+        let total_len = u32::from_be_bytes([aux[0], aux[1], aux[2], aux[3]]) as usize;
+        if total_len > PROOF_LEN + aux.len().saturating_sub(4) {
+            return Err(Error::Length);
+        }
+        let head = core::cmp::min(PROOF_LEN, total_len);
+        let tail_len = total_len.saturating_sub(PROOF_LEN);
+        if aux.len() < 4 + tail_len {
+            return Err(Error::Length);
+        }
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.extend_from_slice(&part.proof[..head]);
+        if tail_len > 0 {
+            bytes.extend_from_slice(&aux[4..4 + tail_len]);
+        }
+        let (proof, consumed) = Proof::decode(&bytes)?;
+        if consumed != bytes.len() {
+            return Err(Error::Length);
+        }
+        if proof.commit_root != part.commitment {
+            return Err(Error::Crypto);
+        }
+        Ok(proof)
     }
 }
 
@@ -701,6 +755,26 @@ mod tests {
         assert_eq!(consumed, encoded.len());
         engine
             .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 4 })
+            .expect("verify");
+    }
+
+    #[test]
+    fn proof_roundtrip_part_encoding() {
+        let mut circuit = Circuit::new(2);
+        let w = circuit.add_and(0, 1);
+        circuit.set_outputs(&[w]);
+        let input = [1u8, 0u8];
+        let output = [0u8];
+        let cfg = ProverConfig { rounds: 5 };
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let engine = ZkBooEngine;
+        let proof = engine
+            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .expect("prove");
+        let part = proof.to_part(crate::core::policy::ProofKind::Policy).expect("to part");
+        let decoded = Proof::from_part(&part).expect("from part");
+        engine
+            .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
             .expect("verify");
     }
 }
