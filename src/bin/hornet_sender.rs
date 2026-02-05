@@ -3,8 +3,8 @@ use hornet::setup::directory;
 use hornet::setup::wire;
 use hornet::types::{Chdr, PacketType};
 use hornet::utils::decode_hex;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 use rand_core::RngCore;
 use serde::Deserialize;
 use std::env;
@@ -50,7 +50,7 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     let announcement = directory::from_signed_json(&directory_body, &public_key)
         .map_err(|err| format!("failed to verify directory: {err:?}"))?;
 
-    let mut rng = SmallRng::seed_from_u64(derive_seed());
+    let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
     let mut source_secret = [0u8; 32];
     rng.fill_bytes(&mut source_secret);
     clamp_scalar(&mut source_secret);
