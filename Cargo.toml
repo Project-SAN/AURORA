@@ -63,6 +63,10 @@ required-features = ["std"]
 name = "prove"
 harness = false
 
+[[bench]]
+name = "ascon"
+harness = false
+
 [[example]]
 name = "routing"
 path = "example/routing.rs"
