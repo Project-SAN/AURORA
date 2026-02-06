@@ -9,7 +9,7 @@ pub const COMMIT_LEN: usize = 32;
 pub const AUX_MAX: usize = 1024;
 pub const MAX_PARTS: usize = 4;
 pub const MAX_CAPSULE_LEN: usize = 4 * 1024 * 1024;
-pub const POLICY_CAPSULE_VERSION: u8 = 2;
+pub const POLICY_CAPSULE_VERSION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofKind {
