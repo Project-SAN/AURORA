@@ -577,6 +577,11 @@ pub fn ensure_registry(registry: &mut PolicyRegistry, metadata: &PolicyMetadata)
     if let Some(entries) = VERIFIER_STORE.lock().get(&metadata.policy_id).cloned() {
         let mut cloned = metadata.clone();
         for entry in cloned.verifiers.iter_mut() {
+            if metadata.supports_zkboo() && entry.kind == ProofKind::Policy as u8 {
+                // Hybrid policies can carry a ZKBoo circuit blob for the Policy kind, which must
+                // not be replaced by cached Plonk verifier bytes.
+                continue;
+            }
             if let Some(found) = entries.iter().find(|stored| stored.kind == entry.kind) {
                 entry.verifier_blob = found.verifier_blob.clone();
             }

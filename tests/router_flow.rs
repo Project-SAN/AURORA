@@ -2,6 +2,7 @@ use hornet::core::policy::PolicyMetadata;
 use hornet::forward::Forward;
 use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
 use hornet::policy::plonk::PlonkPolicy;
+use hornet::policy::zkboo::ZkBooPolicy;
 use hornet::router::Router;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::time::TimeProvider;
@@ -157,6 +158,15 @@ fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
     capsule.encode().expect("encode capsule")
 }
 
+fn demo_zkboo_policy() -> (hornet::crypto::zkp::Circuit, PolicyMetadata) {
+    let mut circuit = hornet::crypto::zkp::Circuit::new(8);
+    // Output == input bit 0 (LSB of first byte if prover uses LSB-first encoding).
+    circuit.set_outputs(&[0]);
+    let policy = ZkBooPolicy::new(circuit.clone());
+    let metadata = policy.metadata(1_700_000_600, 0);
+    (circuit, metadata)
+}
+
 #[test]
 fn router_forwards_valid_capsule_and_decrypts_body() {
     let now = 1_700_000_000u32;
@@ -215,6 +225,98 @@ fn router_rejects_capsule_with_unknown_policy_id() {
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-exit");
+    router
+        .install_policies(&[metadata.clone()])
+        .expect("install policy");
+
+    let time = FixedTime(now);
+    let mut forward = RecordingForward::default();
+    let mut replay = hornet::node::NoReplay;
+
+    let err = router
+        .process_forward_packet(
+            packet.sv,
+            &time,
+            &mut forward,
+            None,
+            &mut replay,
+            &mut packet.chdr,
+            &mut packet.ahdr,
+            &mut packet.payload,
+        )
+        .expect_err("policy violation expected");
+    assert!(matches!(err, hornet::types::Error::PolicyViolation));
+    assert!(forward.take().is_none(), "forwarder should not run");
+}
+
+#[test]
+fn router_entry_accepts_zkboo_capsule_without_keybinding_or_consistency() {
+    let now = 1_700_000_000u32;
+    let (circuit, metadata) = demo_zkboo_policy();
+    let policy = ZkBooPolicy::with_policy_id(circuit, metadata.policy_id);
+    let mut rng = ChaCha20Rng::seed_from_u64(0x1234_5678);
+    let capsule = policy
+        .prove_with_rng(&[1, 0, 0, 0, 0, 0, 0, 0], 16, &mut rng)
+        .expect("prove zkboo");
+
+    let body_plain = b"opaque-body".to_vec();
+    let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
+
+    let mut router = Router::new();
+    install_role_routes(&mut router, metadata.policy_id, "router-entry");
+    router
+        .install_policies(&[metadata.clone()])
+        .expect("install policy");
+
+    let time = FixedTime(now);
+    let mut forward = RecordingForward::default();
+    let mut replay = hornet::node::NoReplay;
+
+    router
+        .process_forward_packet(
+            packet.sv,
+            &time,
+            &mut forward,
+            None,
+            &mut replay,
+            &mut packet.chdr,
+            &mut packet.ahdr,
+            &mut packet.payload,
+        )
+        .expect("forward packet");
+
+    let (_rseg, _direction, forwarded) = forward.take().expect("payload forwarded");
+    assert_eq!(&forwarded[packet.capsule_len..], body_plain.as_slice());
+}
+
+#[test]
+fn router_entry_rejects_invalid_zkboo_proof() {
+    let now = 1_700_000_000u32;
+    let (_circuit, metadata) = demo_zkboo_policy();
+
+    // A minimal capsule-like prefix with an invalid/empty proof should be rejected at entry.
+    let bad_capsule = hornet::policy::PolicyCapsule {
+        policy_id: metadata.policy_id,
+        version: hornet::core::policy::POLICY_CAPSULE_VERSION,
+        part_count: 1,
+        parts: [
+            hornet::policy::ProofPart {
+                kind: hornet::core::policy::ProofKind::Policy,
+                proof: Vec::new(),
+                commitment: [0u8; hornet::core::policy::COMMIT_LEN],
+                aux: Vec::new(),
+            },
+            hornet::policy::ProofPart::default(),
+            hornet::policy::ProofPart::default(),
+            hornet::policy::ProofPart::default(),
+        ],
+    };
+
+    let body_plain = b"opaque-body".to_vec();
+    let mut packet = build_single_hop_packet(encode_capsule(&bad_capsule), body_plain, now);
+
+    let mut router = Router::new();
+    install_role_routes(&mut router, metadata.policy_id, "router-entry");
     router
         .install_policies(&[metadata.clone()])
         .expect("install policy");
