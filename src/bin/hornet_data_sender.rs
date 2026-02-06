@@ -5,9 +5,11 @@ use hornet::core::policy::{
     EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
     EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE,
 };
+use hornet::crypto::zkp::Circuit;
 use hornet::policy::blocklist;
 use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
-use hornet::policy::Blocklist;
+use hornet::policy::zkboo::ZkBooProofService;
+use hornet::policy::{Blocklist, TargetValue};
 use sha2::{Digest, Sha256};
 use hornet::policy::Extractor;
 use hornet::router::storage::StoredState;
@@ -59,149 +61,209 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     }
     let policy_id = decode_policy_id(&info.policy_id)?;
     let routers = load_router_states(&info.routers, &policy_id)?;
-    let blocklist_path =
-        env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| "config/blocklist.json".into());
-    let block_json = fs::read_to_string(&blocklist_path)
-        .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
-    let blocklist = Blocklist::from_json(&block_json)
-        .map_err(|err| format!("blocklist parse error: {err:?}"))?;
-    let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
-        .map_err(|err| format!("failed to build policy: {err:?}"))?;
-    if policy.policy_id() != &policy_id {
-        return Err("policy-id mismatch between policy-info and blocklist".into());
-    }
+    let zkboo_circuit_path = env::var("HORNET_ZKBOO_CIRCUIT_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let zkboo_mode = zkboo_circuit_path.is_some();
 
     // Resolve target host
-    let (target_ip, target_port) = resolve_target(host)?;
+    let (target_hostname, target_port) = parse_host_port(host, 80)?;
+    let (target_ip, target_port) = resolve_target_parts(&target_hostname, target_port)?;
     println!("Resolved {} to {:?}:{}", host, target_ip, target_port);
 
-    let base_request = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    let mut request_payload = base_request.into_bytes();
-    request_payload.extend_from_slice(payload_tail);
-    let extractor = hornet::policy::extract::HttpHostExtractor;
-    let target = extractor
-        .extract(&request_payload)
-        .map_err(|err| format!("failed to extract host: {err:?}"))?;
-    let entry = blocklist::entry_from_target(&target)
-        .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
-    let canonical_bytes = entry.leaf_bytes();
-    let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
-    let mut sender_secret = [0u8; 32];
-    let mut session_nonce = [0u8; 32];
-    rng.fill_bytes(&mut sender_secret);
-    rng.fill_bytes(&mut session_nonce);
-    let route_id = compute_route_id(&routers, &target_ip, target_port);
-    let htarget = hash_bytes(canonical_bytes.as_slice());
-    println!("Generating keybinding+policy proof...");
-    let proof_start = Instant::now();
-    let mut capsule = policy
-        .prove_payload_with_keybinding(
-            canonical_bytes.as_slice(),
-            Some(KeyBindingInputs {
-                sender_secret,
-                htarget,
-                session_nonce,
-                route_id,
-            }),
-        )
-        .map_err(|err| format!("failed to prove payload: {err:?}"))?;
-    println!(
-        "Proof generated in {:.2?}",
-        proof_start.elapsed()
-    );
-    let sequence = current_sequence()?;
-    let mut workspace = blocklist::MerkleWorkspace::new();
-    let root = blocklist.merkle_root_in_workspace(&mut workspace);
-    let hkey = capsule
-        .part(ProofKind::KeyBinding)
-        .map(|part| part.commitment)
-        .unwrap_or([0u8; 32]);
-    let init_state = PcdState {
-        hkey,
-        seq: 1,
-        root,
-        htarget,
+    let request_payload = if zkboo_mode {
+        let record = read_tls_record_bytes(payload_tail)?;
+        let _ = hornet::policy::tls::take_single_record_exact(&record)
+            .map_err(|_| "expected exactly one TLS record (header+fragment)".to_string())?;
+        record
+    } else {
+        let base_request =
+            format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        let mut request_payload = base_request.into_bytes();
+        request_payload.extend_from_slice(payload_tail);
+        request_payload
     };
-    let backend = pcd_backend_from_env();
-    let init_hash = backend.hash(&init_state);
-    let pcd_proof = backend
-        .prove_base(&init_state)
-        .unwrap_or_else(|_| Vec::new());
-    for part in capsule
-        .parts
-        .iter_mut()
-        .take(capsule.part_count as usize)
-    {
-        match part.kind {
-            ProofKind::Policy => {
-                let seq_buf = sequence.to_be_bytes();
-                let exts = [CapsuleExtensionRef {
-                    tag: EXT_TAG_SEQUENCE,
-                    data: &seq_buf,
-                }];
-                let mut aux_buf = [0u8; AUX_MAX];
-                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-                    .map_err(|_| "failed to encode policy extensions")?;
-                part.set_aux(&aux_buf[..aux_len])
-                    .map_err(|_| "failed to set policy extensions")?;
-            }
-            ProofKind::Consistency => {
-                let seq_buf = init_state.seq.to_be_bytes();
-                let exts = [
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_KEY_HASH,
-                        data: &init_state.hkey,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_ROOT,
-                        data: &init_state.root,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_TARGET_HASH,
-                        data: &init_state.htarget,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_SEQ,
-                        data: &seq_buf,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_STATE,
-                        data: &init_hash,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_PROOF,
-                        data: &pcd_proof,
-                    },
-                ];
-                let mut aux_buf = [0u8; AUX_MAX];
-                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-                    .map_err(|_| "failed to encode consistency extensions")?;
-                part.set_aux(&aux_buf[..aux_len])
-                    .map_err(|_| "failed to set consistency extensions")?;
-            }
-            ProofKind::KeyBinding => {
-                let exts = [
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_PCD_KEY_HASH,
-                        data: &hkey,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_SESSION_NONCE,
-                        data: &session_nonce,
-                    },
-                    CapsuleExtensionRef {
-                        tag: EXT_TAG_ROUTE_ID,
-                        data: &route_id,
-                    },
-                ];
-                let mut aux_buf = [0u8; AUX_MAX];
-                let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-                    .map_err(|_| "failed to encode keybinding extensions")?;
-                part.set_aux(&aux_buf[..aux_len])
-                    .map_err(|_| "failed to set keybinding extensions")?;
+    let canonical_bytes = if zkboo_mode {
+        let target = target_value_from_hostname(&target_hostname)?;
+        let entry = blocklist::entry_from_target(&target)
+            .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
+        entry.leaf_bytes()
+    } else {
+        let extractor = hornet::policy::extract::HttpHostExtractor;
+        let target = extractor
+            .extract(&request_payload)
+            .map_err(|err| format!("failed to extract host: {err:?}"))?;
+        let entry = blocklist::entry_from_target(&target)
+            .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
+        entry.leaf_bytes()
+    };
+    let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
+    let sequence = current_sequence()?;
+    let policy_aux = {
+        let seq_buf = sequence.to_be_bytes();
+        let exts = [CapsuleExtensionRef {
+            tag: EXT_TAG_SEQUENCE,
+            data: &seq_buf,
+        }];
+        let mut aux_buf = [0u8; AUX_MAX];
+        let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+            .map_err(|_| "failed to encode policy extensions")?;
+        aux_buf[..aux_len].to_vec()
+    };
+
+    let capsule = if let Some(path) = zkboo_circuit_path.as_deref() {
+        let rounds: u16 = env::var("HORNET_ZKBOO_ROUNDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(64);
+        let bytes = fs::read(path)
+            .map_err(|err| format!("failed to read ZKBoo circuit ({path}): {err}"))?;
+        let circuit = Circuit::decode(&bytes)
+            .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
+        let service = ZkBooProofService::new(circuit, rounds);
+        if service.policy_id() != &policy_id {
+            return Err("policy-id mismatch between policy-info and zkboo circuit".into());
+        }
+
+        // Prove exactly one TLS record (header+fragment).
+        let plaintext_tls_record = request_payload.as_slice();
+        println!("Generating ZKBoo policy proof (rounds={})...", rounds);
+        let proof_start = Instant::now();
+        let mut capsule = service
+            .prove_payload_lsb_first(plaintext_tls_record, &policy_aux)
+            .map_err(|err| format!("failed to prove payload with zkboo: {err:?}"))?;
+        if let Some(part) = capsule
+            .parts
+            .iter_mut()
+            .take(capsule.part_count as usize)
+            .find(|part| part.kind == ProofKind::Policy)
+        {
+            part.set_aux(&policy_aux)
+                .map_err(|_| "failed to set policy extensions")?;
+        }
+        println!("Proof generated in {:.2?}", proof_start.elapsed());
+        Ok::<_, String>(capsule)
+    } else {
+        let blocklist_path =
+            env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| "config/blocklist.json".into());
+        let block_json = fs::read_to_string(&blocklist_path)
+            .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
+        let blocklist = Blocklist::from_json(&block_json)
+            .map_err(|err| format!("blocklist parse error: {err:?}"))?;
+        let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
+            .map_err(|err| format!("failed to build policy: {err:?}"))?;
+        if policy.policy_id() != &policy_id {
+            return Err("policy-id mismatch between policy-info and blocklist".into());
+        }
+
+        let mut sender_secret = [0u8; 32];
+        let mut session_nonce = [0u8; 32];
+        rng.fill_bytes(&mut sender_secret);
+        rng.fill_bytes(&mut session_nonce);
+        let route_id = compute_route_id(&routers, &target_ip, target_port);
+        let htarget = hash_bytes(canonical_bytes.as_slice());
+        println!("Generating keybinding+policy proof...");
+        let proof_start = Instant::now();
+        let mut capsule = policy
+            .prove_payload_with_keybinding(
+                canonical_bytes.as_slice(),
+                Some(KeyBindingInputs {
+                    sender_secret,
+                    htarget,
+                    session_nonce,
+                    route_id,
+                }),
+            )
+            .map_err(|err| format!("failed to prove payload: {err:?}"))?;
+        println!("Proof generated in {:.2?}", proof_start.elapsed());
+
+        let mut workspace = blocklist::MerkleWorkspace::new();
+        let root = blocklist.merkle_root_in_workspace(&mut workspace);
+        let hkey = capsule
+            .part(ProofKind::KeyBinding)
+            .map(|part| part.commitment)
+            .unwrap_or([0u8; 32]);
+        let init_state = PcdState {
+            hkey,
+            seq: 1,
+            root,
+            htarget,
+        };
+        let backend = pcd_backend_from_env();
+        let init_hash = backend.hash(&init_state);
+        let pcd_proof = backend
+            .prove_base(&init_state)
+            .unwrap_or_else(|_| Vec::new());
+        for part in capsule
+            .parts
+            .iter_mut()
+            .take(capsule.part_count as usize)
+        {
+            match part.kind {
+                ProofKind::Policy => {
+                    part.set_aux(&policy_aux)
+                        .map_err(|_| "failed to set policy extensions")?;
+                }
+                ProofKind::Consistency => {
+                    let seq_buf = init_state.seq.to_be_bytes();
+                    let exts = [
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_KEY_HASH,
+                            data: &init_state.hkey,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_ROOT,
+                            data: &init_state.root,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_TARGET_HASH,
+                            data: &init_state.htarget,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_SEQ,
+                            data: &seq_buf,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_STATE,
+                            data: &init_hash,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_PROOF,
+                            data: &pcd_proof,
+                        },
+                    ];
+                    let mut aux_buf = [0u8; AUX_MAX];
+                    let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                        .map_err(|_| "failed to encode consistency extensions")?;
+                    part.set_aux(&aux_buf[..aux_len])
+                        .map_err(|_| "failed to set consistency extensions")?;
+                }
+                ProofKind::KeyBinding => {
+                    let exts = [
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_PCD_KEY_HASH,
+                            data: &hkey,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_SESSION_NONCE,
+                            data: &session_nonce,
+                        },
+                        CapsuleExtensionRef {
+                            tag: EXT_TAG_ROUTE_ID,
+                            data: &route_id,
+                        },
+                    ];
+                    let mut aux_buf = [0u8; AUX_MAX];
+                    let aux_len = encode_extensions_into(&exts, &mut aux_buf)
+                        .map_err(|_| "failed to encode keybinding extensions")?;
+                    part.set_aux(&aux_buf[..aux_len])
+                        .map_err(|_| "failed to set keybinding extensions")?;
+                }
             }
         }
-    }
+
+        Ok::<_, String>(capsule)
+    }?;
     let hops = routers.len();
     let rmax = hops;
     let mut keys = Vec::with_capacity(hops);
@@ -486,30 +548,75 @@ fn resolve_return_addr(local_addr: std::net::SocketAddr) -> Result<(IpAddr, u16)
     }
 }
 
-fn resolve_target(host: &str) -> Result<(IpAddr, u16), String> {
-    let (hostname, port) = if let Some((h, p)) = host.rsplit_once(':') {
-        if let Ok(port_num) = p.parse::<u16>() {
-            (h, port_num)
-        } else {
-            (host, 80)
-        }
-    } else {
-        (host, 80)
-    };
-
-    // Try to resolve
+fn resolve_target_parts(hostname: &str, port: u16) -> Result<(IpAddr, u16), String> {
     let mut addrs = (hostname, port)
         .to_socket_addrs()
-        .map_err(|e| format!("failed to resolve {}: {}", host, e))?;
+        .map_err(|e| format!("failed to resolve {hostname}:{port}: {e}"))?;
 
     let addr = addrs
         .next()
-        .ok_or_else(|| format!("no suitable address found for {}", host))?;
+        .ok_or_else(|| format!("no suitable address found for {hostname}:{port}"))?;
 
     match addr {
         std::net::SocketAddr::V4(v4) => Ok((IpAddr::V4(v4.ip().octets()), v4.port())),
         std::net::SocketAddr::V6(v6) => Ok((IpAddr::V6(v6.ip().octets()), v6.port())),
     }
+}
+
+fn parse_host_port(host: &str, default_port: u16) -> Result<(String, u16), String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("empty host".into());
+    }
+
+    if let Some(rest) = host.strip_prefix('[') {
+        let Some((inside, after)) = rest.split_once(']') else {
+            return Err("invalid host: missing closing ']'".into());
+        };
+        let port = if let Some(port_str) = after.strip_prefix(':') {
+            port_str.parse::<u16>().map_err(|_| "invalid port".to_string())?
+        } else if after.is_empty() {
+            default_port
+        } else {
+            return Err("invalid host: unexpected trailing characters after ']'".into());
+        };
+        return Ok((inside.to_string(), port));
+    }
+
+    if let Some((h, p)) = host.rsplit_once(':') {
+        // If the left side contains ':' then this is most likely an IPv6 literal without
+        // brackets; treat it as a hostname and do not attempt to parse a port.
+        if !h.contains(':') {
+            if let Ok(port) = p.parse::<u16>() {
+                return Ok((h.to_string(), port));
+            }
+        }
+    }
+
+    Ok((host.to_string(), default_port))
+}
+
+fn target_value_from_hostname(hostname: &str) -> Result<TargetValue, String> {
+    if let Ok(addr) = hostname.parse::<std::net::Ipv4Addr>() {
+        return Ok(TargetValue::Ipv4(addr.octets()));
+    }
+    if let Ok(addr) = hostname.parse::<std::net::Ipv6Addr>() {
+        return Ok(TargetValue::Ipv6(addr.octets()));
+    }
+    Ok(TargetValue::Domain(
+        hostname.to_ascii_lowercase().into_bytes(),
+    ))
+}
+
+fn read_tls_record_bytes(payload_tail: &[u8]) -> Result<Vec<u8>, String> {
+    if let Ok(path) = env::var("HORNET_TLS_RECORD_PATH") {
+        if !path.trim().is_empty() {
+            return fs::read(&path).map_err(|err| format!("failed to read {path}: {err}"));
+        }
+    }
+    let hex = core::str::from_utf8(payload_tail)
+        .map_err(|_| "TLS record must be provided as hex (or set HORNET_TLS_RECORD_PATH)".to_string())?;
+    decode_hex(hex).map_err(|err| format!("invalid TLS record hex: {err}"))
 }
 
 fn load_router_states(

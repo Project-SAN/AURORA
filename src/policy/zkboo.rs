@@ -101,6 +101,13 @@ impl ZkBooProofService {
         }
     }
 
+    pub fn new_with_policy_id(circuit: Circuit, policy_id: PolicyId, rounds: u16) -> Self {
+        Self {
+            policy: ZkBooPolicy::with_policy_id(circuit, policy_id),
+            rounds,
+        }
+    }
+
     pub fn policy_id(&self) -> &PolicyId {
         self.policy.policy_id()
     }
