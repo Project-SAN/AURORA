@@ -4,7 +4,8 @@ pub mod metadata;
 pub mod registry;
 
 pub use capsule::{
-    PolicyCapsule, ProofKind, ProofPart, AUX_MAX, COMMIT_LEN, MAX_CAPSULE_LEN, MAX_PARTS, PROOF_LEN,
+    PolicyCapsule, ProofKind, ProofPart, AUX_MAX, COMMIT_LEN, MAX_CAPSULE_LEN, MAX_PARTS,
+    POLICY_CAPSULE_VERSION,
 };
 pub use extensions::{
     extension_iter, find_extension, encode_extensions_into, CapsuleExtensionRef, ExtensionIter,

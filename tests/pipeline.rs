@@ -13,9 +13,7 @@ use std::sync::Arc;
 use suppert::RecordingForward;
 
 fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
-    let mut buf = [0u8; hornet::core::policy::MAX_CAPSULE_LEN];
-    let len = capsule.encode_into(&mut buf).expect("encode capsule");
-    buf[..len].to_vec()
+    capsule.encode().expect("encode capsule")
 }
 
 fn demo_policy() -> (PlonkPolicy, PolicyMetadata) {

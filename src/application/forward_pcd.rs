@@ -66,26 +66,19 @@ impl ForwardPipeline for PcdForwardPipeline {
             .iter()
             .position(|part| part.kind == ProofKind::KeyBinding);
 
-        let mut cons_aux_buf = [0u8; AUX_MAX];
-        let cons_aux_len = capsule.parts[cons_index].aux_len as usize;
-        cons_aux_buf[..cons_aux_len].copy_from_slice(capsule.parts[cons_index].aux());
-        let cons_aux = &cons_aux_buf[..cons_aux_len];
-
-        let mut key_aux_buf = [0u8; AUX_MAX];
+        let cons_aux = capsule.parts[cons_index].aux().to_vec();
         let key_aux = if let Some(key_idx) = key_index {
-            let key_len = capsule.parts[key_idx].aux_len as usize;
-            key_aux_buf[..key_len].copy_from_slice(capsule.parts[key_idx].aux());
-            &key_aux_buf[..key_len]
+            capsule.parts[key_idx].aux().to_vec()
         } else {
-            &[][..]
+            Vec::new()
         };
 
         let part = &mut capsule.parts[cons_index];
         let mut hkey = None;
-        if let Some(value) = find_ext_32(key_aux, EXT_TAG_PCD_KEY_HASH) {
+        if let Some(value) = find_ext_32(&key_aux, EXT_TAG_PCD_KEY_HASH) {
             hkey = Some(value);
         }
-        if let Some(value) = find_ext_32(cons_aux, EXT_TAG_PCD_KEY_HASH) {
+        if let Some(value) = find_ext_32(&cons_aux, EXT_TAG_PCD_KEY_HASH) {
             if let Some(expected) = hkey {
                 if value != expected {
                     return Err(Error::PolicyViolation);
@@ -94,11 +87,11 @@ impl ForwardPipeline for PcdForwardPipeline {
                 hkey = Some(value);
             }
         }
-        let root = find_ext_32(cons_aux, EXT_TAG_PCD_ROOT);
-        let htarget = find_ext_32(cons_aux, EXT_TAG_PCD_TARGET_HASH);
-        let seq = find_ext_u64(cons_aux, EXT_TAG_PCD_SEQ);
-        let prev_hash = find_ext_32(cons_aux, EXT_TAG_PCD_STATE);
-        let proof = find_extension(cons_aux, EXT_TAG_PCD_PROOF).ok().flatten();
+        let root = find_ext_32(&cons_aux, EXT_TAG_PCD_ROOT);
+        let htarget = find_ext_32(&cons_aux, EXT_TAG_PCD_TARGET_HASH);
+        let seq = find_ext_u64(&cons_aux, EXT_TAG_PCD_SEQ);
+        let prev_hash = find_ext_32(&cons_aux, EXT_TAG_PCD_STATE);
+        let proof = find_extension(&cons_aux, EXT_TAG_PCD_PROOF).ok().flatten();
         let state = PcdState {
             hkey: hkey.ok_or(Error::PolicyViolation)?,
             seq: seq.ok_or(Error::PolicyViolation)?,
@@ -146,13 +139,17 @@ impl ForwardPipeline for PcdForwardPipeline {
         let aux_len = encode_extensions_into(&exts, &mut aux_buf)?;
         part.set_aux(&aux_buf[..aux_len])?;
 
-        let mut encoded = [0u8; crate::core::policy::MAX_CAPSULE_LEN];
-        let encoded_len = capsule.encode_into(&mut encoded)?;
-        if encoded_len != consumed {
-            return Err(Error::Length);
+        let encoded = capsule.encode()?;
+        let encoded_len = encoded.len();
+        if encoded_len == consumed {
+            payload[..consumed].copy_from_slice(&encoded);
+        } else {
+            let tail = payload.split_off(consumed);
+            payload.clear();
+            payload.extend_from_slice(&encoded);
+            payload.extend_from_slice(&tail);
         }
-        payload[..consumed].copy_from_slice(&encoded[..encoded_len]);
-        Ok(Some((capsule, consumed)))
+        Ok(Some((capsule, encoded_len)))
     }
 }
 
@@ -183,8 +180,7 @@ mod tests {
     use crate::core::policy::{
         encode_extensions_into, find_extension, CapsuleExtensionRef, PolicyCapsule, ProofPart,
         AUX_MAX, COMMIT_LEN, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
-        EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH, MAX_CAPSULE_LEN, MAX_PARTS,
-        PROOF_LEN,
+        EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH, MAX_PARTS,
     };
     use crate::core::policy::{PolicyMetadata, PolicyRegistry, VerifierEntry};
     use alloc::vec;
@@ -210,10 +206,9 @@ mod tests {
     fn make_part(kind: ProofKind, aux: &[u8]) -> ProofPart {
         let mut part = ProofPart {
             kind,
-            proof: [0u8; PROOF_LEN],
+            proof: vec![0u8; 4],
             commitment: [0u8; COMMIT_LEN],
-            aux_len: 0,
-            aux: [0u8; AUX_MAX],
+            aux: Vec::new(),
         };
         part.set_aux(aux).expect("set aux");
         part
@@ -228,7 +223,7 @@ mod tests {
         ];
         let mut count = 0usize;
         for part in parts {
-            arr[count] = *part;
+            arr[count] = part.clone();
             count += 1;
         }
         PolicyCapsule {
@@ -240,9 +235,7 @@ mod tests {
     }
 
     fn encode_capsule(capsule: &PolicyCapsule) -> Vec<u8> {
-        let mut buf = [0u8; MAX_CAPSULE_LEN];
-        let len = capsule.encode_into(&mut buf).expect("encode capsule");
-        buf[..len].to_vec()
+        capsule.encode().expect("encode capsule")
     }
 
     #[test]
@@ -297,7 +290,7 @@ mod tests {
         ]);
         let capsule = make_capsule(
             policy_id,
-            1,
+            crate::core::policy::POLICY_CAPSULE_VERSION,
             &[
                 make_part(ProofKind::Consistency, &consistency_aux),
                 make_part(ProofKind::Policy, &[]),
@@ -381,7 +374,7 @@ mod tests {
         ]);
         let capsule = make_capsule(
             policy_id,
-            1,
+            crate::core::policy::POLICY_CAPSULE_VERSION,
             &[
                 make_part(ProofKind::Consistency, &consistency_aux),
                 make_part(ProofKind::Policy, &[]),
@@ -448,7 +441,7 @@ mod tests {
         ]);
         let capsule = make_capsule(
             policy_id,
-            1,
+            crate::core::policy::POLICY_CAPSULE_VERSION,
             &[
                 make_part(ProofKind::Consistency, &consistency_aux),
                 make_part(ProofKind::Policy, &[]),
@@ -519,7 +512,7 @@ mod tests {
         ]);
         let capsule = make_capsule(
             policy_id,
-            1,
+            crate::core::policy::POLICY_CAPSULE_VERSION,
             &[
                 make_part(ProofKind::KeyBinding, &keybinding_aux),
                 make_part(ProofKind::Consistency, &consistency_aux),
@@ -605,7 +598,7 @@ mod tests {
         ]);
         let capsule = make_capsule(
             policy_id,
-            1,
+            crate::core::policy::POLICY_CAPSULE_VERSION,
             &[
                 make_part(ProofKind::KeyBinding, &keybinding_aux),
                 make_part(ProofKind::Consistency, &consistency_aux),
