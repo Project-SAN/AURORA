@@ -53,12 +53,9 @@ fn run() -> Result<(), String> {
             HornetError::PolicyViolation => format!("host '{host}' violates the policy"),
             _ => format!("failed to generate proof: {err:?}"),
         })?;
-    let mut capsule_buf = [0u8; hornet::core::policy::MAX_CAPSULE_LEN];
-    let capsule_len = capsule
-        .encode_into(&mut capsule_buf)
+    let capsule_bytes = capsule
+        .encode()
         .map_err(|_| "failed to encode capsule")?;
-    let mut capsule_bytes = Vec::with_capacity(capsule_len);
-    capsule_bytes.extend_from_slice(&capsule_buf[..capsule_len]);
 
     let policy_hex = encode_hex(policy.policy_id());
     let expected_commit =

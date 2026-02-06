@@ -5,7 +5,7 @@ use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
-use crate::core::policy::{ProofKind, ProofPart, AUX_MAX, PROOF_LEN};
+use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
 use rand_core::{CryptoRng, RngCore};
 
@@ -112,49 +112,17 @@ impl Proof {
 
     pub fn to_part(&self, kind: ProofKind) -> Result<ProofPart> {
         let encoded = self.encode()?;
-        if encoded.len() > PROOF_LEN + AUX_MAX - 4 {
-            return Err(Error::Length);
-        }
-        let mut part = ProofPart::default();
-        part.kind = kind;
-        part.commitment = self.commit_root;
-
-        let head = core::cmp::min(PROOF_LEN, encoded.len());
-        part.proof[..head].copy_from_slice(&encoded[..head]);
-
-        let mut aux_len = 4usize;
-        part.aux[..4].copy_from_slice(&(encoded.len() as u32).to_be_bytes());
-        if encoded.len() > PROOF_LEN {
-            let tail = &encoded[PROOF_LEN..];
-            let end = 4 + tail.len();
-            part.aux[4..end].copy_from_slice(tail);
-            aux_len = end;
-        }
-        part.aux_len = aux_len as u16;
-        Ok(part)
+        Ok(ProofPart {
+            kind,
+            proof: encoded,
+            commitment: self.commit_root,
+            aux: Vec::new(),
+        })
     }
 
     pub fn from_part(part: &ProofPart) -> Result<Proof> {
-        let aux = part.aux();
-        if aux.len() < 4 {
-            return Err(Error::Length);
-        }
-        let total_len = u32::from_be_bytes([aux[0], aux[1], aux[2], aux[3]]) as usize;
-        if total_len > PROOF_LEN + aux.len().saturating_sub(4) {
-            return Err(Error::Length);
-        }
-        let head = core::cmp::min(PROOF_LEN, total_len);
-        let tail_len = total_len.saturating_sub(PROOF_LEN);
-        if aux.len() < 4 + tail_len {
-            return Err(Error::Length);
-        }
-        let mut bytes = Vec::with_capacity(total_len);
-        bytes.extend_from_slice(&part.proof[..head]);
-        if tail_len > 0 {
-            bytes.extend_from_slice(&aux[4..4 + tail_len]);
-        }
-        let (proof, consumed) = Proof::decode(&bytes)?;
-        if consumed != bytes.len() {
+        let (proof, consumed) = Proof::decode(&part.proof)?;
+        if consumed != part.proof.len() {
             return Err(Error::Length);
         }
         if proof.commit_root != part.commitment {

@@ -3,7 +3,7 @@ use hornet::pcd::{HashPcdBackend, PcdBackend, PcdState};
 use hornet::core::policy::{
     encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF,
     EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
-    EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE, MAX_CAPSULE_LEN,
+    EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE,
 };
 use hornet::policy::blocklist;
 use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
@@ -318,17 +318,17 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     full_payload.extend_from_slice(&ahdr_b.bytes);
     full_payload.extend_from_slice(&request_payload);
 
-    let mut capsule_buf = [0u8; MAX_CAPSULE_LEN];
-    let capsule_len = capsule
-        .encode_into(&mut capsule_buf)
+    let capsule_buf = capsule
+        .encode()
         .map_err(|_| "failed to encode capsule")?;
+    let capsule_len = capsule_buf.len();
     let mut encrypted_tail = Vec::new();
     encrypted_tail.extend_from_slice(canonical_bytes.as_slice());
     encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
     hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
     let mut payload = Vec::with_capacity(capsule_len + encrypted_tail.len());
-    payload.extend_from_slice(&capsule_buf[..capsule_len]);
+    payload.extend_from_slice(&capsule_buf);
     payload.extend_from_slice(&encrypted_tail);
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
