@@ -5,6 +5,7 @@ use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
+use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
 use rand_core::{CryptoRng, RngCore};
 
@@ -19,6 +20,116 @@ pub struct Proof {
     pub commit_root: [u8; 32],
     pub openings: Vec<RoundOpening>,
     pub seed_reveals: Vec<SeedRevealSet>,
+}
+
+impl Proof {
+    pub fn encoded_len(&self) -> Result<usize> {
+        let mut total = 0usize;
+        add_len(&mut total, 2 + 1 + 1 + 32 + 4)?;
+        for opening in &self.openings {
+            add_len(&mut total, 1)?;
+            add_len(&mut total, view_len(&opening.view_e)?)?;
+            add_len(&mut total, view_len(&opening.view_e1)?)?;
+        }
+        add_len(&mut total, 1)?;
+        for reveal in &self.seed_reveals {
+            add_len(&mut total, 4 + 4 + 4)?;
+            for _ in &reveal.nodes {
+                add_len(&mut total, 4 + 32)?;
+            }
+        }
+        Ok(total)
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let len = self.encoded_len()?;
+        let mut out = Vec::with_capacity(len);
+        encode_u16(&mut out, self.rounds);
+        out.push(0);
+        out.push(0);
+        out.extend_from_slice(&self.commit_root);
+        encode_u32(&mut out, self.openings.len() as u32);
+        for opening in &self.openings {
+            out.push(opening.e);
+            encode_view(&mut out, &opening.view_e)?;
+            encode_view(&mut out, &opening.view_e1)?;
+        }
+        out.push(self.seed_reveals.len() as u8);
+        for reveal in &self.seed_reveals {
+            encode_u32(&mut out, reveal.leaf_count);
+            encode_u32(&mut out, reveal.rounds);
+            encode_u32(&mut out, reveal.nodes.len() as u32);
+            for node in &reveal.nodes {
+                encode_u32(&mut out, node.node);
+                out.extend_from_slice(&node.seed);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn decode(buf: &[u8]) -> Result<(Proof, usize)> {
+        let mut cursor = 0usize;
+        let rounds = read_u16(buf, &mut cursor)?;
+        let _version = read_u8(buf, &mut cursor)?;
+        let _flags = read_u8(buf, &mut cursor)?;
+        let commit_root = read_fixed(buf, &mut cursor)?;
+        let opening_count = read_u32(buf, &mut cursor)? as usize;
+        let mut openings = Vec::with_capacity(opening_count);
+        for _ in 0..opening_count {
+            let e = read_u8(buf, &mut cursor)?;
+            let view_e = decode_view(buf, &mut cursor)?;
+            let view_e1 = decode_view(buf, &mut cursor)?;
+            openings.push(RoundOpening { e, view_e, view_e1 });
+        }
+        let seed_count = read_u8(buf, &mut cursor)? as usize;
+        let mut seed_reveals = Vec::with_capacity(seed_count);
+        for _ in 0..seed_count {
+            let leaf_count = read_u32(buf, &mut cursor)?;
+            let rounds_count = read_u32(buf, &mut cursor)?;
+            let node_count = read_u32(buf, &mut cursor)? as usize;
+            let mut nodes = Vec::with_capacity(node_count);
+            for _ in 0..node_count {
+                let node = read_u32(buf, &mut cursor)?;
+                let seed = read_fixed(buf, &mut cursor)?;
+                nodes.push(crate::crypto::zkp::seed_tree::SeedReveal { node, seed });
+            }
+            seed_reveals.push(SeedRevealSet {
+                leaf_count,
+                rounds: rounds_count,
+                nodes,
+            });
+        }
+        Ok((
+            Proof {
+                rounds,
+                commit_root,
+                openings,
+                seed_reveals,
+            },
+            cursor,
+        ))
+    }
+
+    pub fn to_part(&self, kind: ProofKind) -> Result<ProofPart> {
+        let encoded = self.encode()?;
+        Ok(ProofPart {
+            kind,
+            proof: encoded,
+            commitment: self.commit_root,
+            aux: Vec::new(),
+        })
+    }
+
+    pub fn from_part(part: &ProofPart) -> Result<Proof> {
+        let (proof, consumed) = Proof::decode(&part.proof)?;
+        if consumed != part.proof.len() {
+            return Err(Error::Length);
+        }
+        if proof.commit_root != part.commitment {
+            return Err(Error::Crypto);
+        }
+        Ok(proof)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -390,6 +501,110 @@ fn commit_view(seed: &[u8; SEED_LEN], wires: &[u8]) -> [u8; 32] {
     hasher.finalize()
 }
 
+fn view_len(view: &ViewOpening) -> Result<usize> {
+    if view.merkle_path.len() > u16::MAX as usize {
+        return Err(Error::Length);
+    }
+    let mut total = 0usize;
+    add_len(&mut total, 1 + 4)?;
+    add_len(&mut total, view.wires.len())?;
+    add_len(&mut total, 2)?;
+    add_len(&mut total, view.merkle_path.len() * 32)?;
+    Ok(total)
+}
+
+fn encode_view(out: &mut Vec<u8>, view: &ViewOpening) -> Result<()> {
+    if view.merkle_path.len() > u16::MAX as usize {
+        return Err(Error::Length);
+    }
+    out.push(view.party);
+    encode_u32(out, view.wires.len() as u32);
+    out.extend_from_slice(&view.wires);
+    encode_u16(out, view.merkle_path.len() as u16);
+    for node in &view.merkle_path {
+        out.extend_from_slice(node);
+    }
+    Ok(())
+}
+
+fn decode_view(buf: &[u8], cursor: &mut usize) -> Result<ViewOpening> {
+    let party = read_u8(buf, cursor)?;
+    let wires_len = read_u32(buf, cursor)? as usize;
+    let wires = read_bytes(buf, cursor, wires_len)?;
+    let path_len = read_u16(buf, cursor)? as usize;
+    let mut merkle_path = Vec::with_capacity(path_len);
+    for _ in 0..path_len {
+        let node = read_fixed(buf, cursor)?;
+        merkle_path.push(node);
+    }
+    Ok(ViewOpening {
+        party,
+        wires,
+        merkle_path,
+    })
+}
+
+fn add_len(total: &mut usize, add: usize) -> Result<()> {
+    *total = total.checked_add(add).ok_or(Error::Length)?;
+    Ok(())
+}
+
+fn encode_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn encode_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn read_u8(buf: &[u8], cursor: &mut usize) -> Result<u8> {
+    if *cursor + 1 > buf.len() {
+        return Err(Error::Length);
+    }
+    let val = buf[*cursor];
+    *cursor += 1;
+    Ok(val)
+}
+
+fn read_u16(buf: &[u8], cursor: &mut usize) -> Result<u16> {
+    if *cursor + 2 > buf.len() {
+        return Err(Error::Length);
+    }
+    let mut tmp = [0u8; 2];
+    tmp.copy_from_slice(&buf[*cursor..*cursor + 2]);
+    *cursor += 2;
+    Ok(u16::from_be_bytes(tmp))
+}
+
+fn read_u32(buf: &[u8], cursor: &mut usize) -> Result<u32> {
+    if *cursor + 4 > buf.len() {
+        return Err(Error::Length);
+    }
+    let mut tmp = [0u8; 4];
+    tmp.copy_from_slice(&buf[*cursor..*cursor + 4]);
+    *cursor += 4;
+    Ok(u32::from_be_bytes(tmp))
+}
+
+fn read_fixed<const N: usize>(buf: &[u8], cursor: &mut usize) -> Result<[u8; N]> {
+    if *cursor + N > buf.len() {
+        return Err(Error::Length);
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(&buf[*cursor..*cursor + N]);
+    *cursor += N;
+    Ok(out)
+}
+
+fn read_bytes(buf: &[u8], cursor: &mut usize, len: usize) -> Result<Vec<u8>> {
+    if *cursor + len > buf.len() {
+        return Err(Error::Length);
+    }
+    let out = buf[*cursor..*cursor + len].to_vec();
+    *cursor += len;
+    Ok(out)
+}
+
 struct Tape {
     seed: [u8; SEED_LEN],
     block: [u8; 32],
@@ -443,7 +658,7 @@ impl Tape {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProverConfig, VerifierConfig, ZkBooEngine};
+    use super::{Proof, ProverConfig, VerifierConfig, ZkBooEngine};
     use crate::crypto::zkp::circuit::Circuit;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
@@ -487,5 +702,47 @@ mod tests {
             VerifierConfig { rounds: 6 },
         );
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn proof_roundtrip_encode_decode() {
+        let mut circuit = Circuit::new(3);
+        let w0 = circuit.add_xor(0, 1);
+        let w1 = circuit.add_and(w0, 2);
+        circuit.set_outputs(&[w1]);
+        let input = [1u8, 1u8, 1u8];
+        let output = [0u8];
+        let cfg = ProverConfig { rounds: 4 };
+        let mut rng = ChaCha20Rng::seed_from_u64(9);
+        let engine = ZkBooEngine;
+        let proof = engine
+            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .expect("prove");
+        let encoded = proof.encode().expect("encode");
+        let (decoded, consumed) = Proof::decode(&encoded).expect("decode");
+        assert_eq!(consumed, encoded.len());
+        engine
+            .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 4 })
+            .expect("verify");
+    }
+
+    #[test]
+    fn proof_roundtrip_part_encoding() {
+        let mut circuit = Circuit::new(2);
+        let w = circuit.add_and(0, 1);
+        circuit.set_outputs(&[w]);
+        let input = [1u8, 0u8];
+        let output = [0u8];
+        let cfg = ProverConfig { rounds: 5 };
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let engine = ZkBooEngine;
+        let proof = engine
+            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .expect("prove");
+        let part = proof.to_part(crate::core::policy::ProofKind::Policy).expect("to part");
+        let decoded = Proof::from_part(&part).expect("from part");
+        engine
+            .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
+            .expect("verify");
     }
 }

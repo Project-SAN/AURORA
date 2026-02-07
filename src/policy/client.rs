@@ -473,43 +473,32 @@ impl ProofServiceResponse {
         } else {
             Vec::new()
         };
-        if proof.len() != crate::core::policy::PROOF_LEN
-            || commitment.len() != crate::core::policy::COMMIT_LEN
-            || aux.len() > crate::core::policy::AUX_MAX
-        {
+        if commitment.len() != crate::core::policy::COMMIT_LEN {
             return Err(Error::Crypto);
         }
-        let mut proof_buf = [0u8; crate::core::policy::PROOF_LEN];
-        proof_buf.copy_from_slice(&proof);
         let mut commit_buf = [0u8; crate::core::policy::COMMIT_LEN];
         commit_buf.copy_from_slice(&commitment);
-        let mut part0 = ProofPart {
+        let part0 = ProofPart {
             kind: ProofKind::KeyBinding,
-            proof: proof_buf,
+            proof: proof.clone(),
             commitment: commit_buf,
-            aux_len: 0,
-            aux: [0u8; crate::core::policy::AUX_MAX],
+            aux: aux.clone(),
         };
-        part0.set_aux(&aux)?;
-        let mut part1 = ProofPart {
+        let part1 = ProofPart {
             kind: ProofKind::Consistency,
-            proof: proof_buf,
+            proof: proof.clone(),
             commitment: commit_buf,
-            aux_len: 0,
-            aux: [0u8; crate::core::policy::AUX_MAX],
+            aux: aux.clone(),
         };
-        part1.set_aux(&aux)?;
-        let mut part2 = ProofPart {
+        let part2 = ProofPart {
             kind: ProofKind::Policy,
-            proof: proof_buf,
+            proof,
             commitment: commit_buf,
-            aux_len: 0,
-            aux: [0u8; crate::core::policy::AUX_MAX],
+            aux,
         };
-        part2.set_aux(&aux)?;
         Ok(PolicyCapsule {
             policy_id: *policy_id,
-            version: self.version.unwrap_or(1),
+            version: crate::core::policy::POLICY_CAPSULE_VERSION,
             part_count: 3,
             parts: [part0, part1, part2, ProofPart::default()],
         })
@@ -753,7 +742,7 @@ mod tests {
 
     #[test]
     fn response_to_capsule() {
-        let proof = vec![0xAA; crate::core::policy::PROOF_LEN];
+        let proof = vec![0xAA; 12];
         let commitment = vec![0xCC; crate::core::policy::COMMIT_LEN];
         let resp = ProofServiceResponse {
             proof_hex: crate::utils::encode_hex(&proof),
@@ -762,7 +751,7 @@ mod tests {
             version: Some(7),
         };
         let cap = resp.into_capsule(&[0x44; 32]).expect("capsule");
-        assert_eq!(cap.version, 7);
+        assert_eq!(cap.version, crate::core::policy::POLICY_CAPSULE_VERSION);
         assert_eq!(cap.policy_id, [0x44; 32]);
         let part = cap
             .part(ProofKind::Policy)
@@ -791,16 +780,15 @@ mod tests {
         let service = MockProofService::new(|_| {
             let mut part = ProofPart {
                 kind: ProofKind::Policy,
-                proof: [0u8; crate::core::policy::PROOF_LEN],
+                proof: vec![0u8; 4],
                 commitment: [0u8; crate::core::policy::COMMIT_LEN],
-                aux_len: 0,
-                aux: [0u8; crate::core::policy::AUX_MAX],
+                aux: Vec::new(),
             };
             part.proof[..3].copy_from_slice(&[1, 2, 3]);
             part.commitment[..2].copy_from_slice(&[4, 5]);
             Ok(PolicyCapsule {
                 policy_id: [0x33; 32],
-                version: 1,
+                version: crate::core::policy::POLICY_CAPSULE_VERSION,
                 part_count: 1,
                 parts: [part, ProofPart::default(), ProofPart::default(), ProofPart::default()],
             })
