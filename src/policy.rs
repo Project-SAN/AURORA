@@ -6,6 +6,8 @@ pub mod plonk;
 pub mod bytes;
 pub mod poseidon;
 pub mod poseidon_circuit;
+pub mod zkboo;
+pub mod tls;
 #[cfg(feature = "regex-policy")]
 pub mod regex;
 pub mod registry {

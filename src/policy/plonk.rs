@@ -265,12 +265,12 @@ impl PlonkPolicy {
             return Err(Error::Crypto);
         }
         let proof_bytes = proof.to_bytes();
+        let proof_vec = proof_bytes.to_vec();
         let part = ProofPart {
             kind: ProofKind::Policy,
-            proof: proof_bytes,
+            proof: proof_vec.clone(),
             commitment: commitment_bytes,
-            aux_len: 0,
-            aux: [0u8; crate::core::policy::AUX_MAX],
+            aux: Vec::new(),
         };
         let key_part = if let Some(input) = keybinding {
             self.ensure_keybinding()?;
@@ -311,20 +311,18 @@ impl PlonkPolicy {
             }
             Some(ProofPart {
                 kind: ProofKind::KeyBinding,
-                proof: proof.to_bytes(),
+                proof: proof.to_bytes().to_vec(),
                 commitment: hkey.to_bytes(),
-                aux_len: 0,
-                aux: [0u8; crate::core::policy::AUX_MAX],
+                aux: Vec::new(),
             })
         } else {
             None
         };
         let consistency_part = ProofPart {
             kind: ProofKind::Consistency,
-            proof: proof_bytes,
+            proof: proof_vec,
             commitment: commitment_bytes,
-            aux_len: 0,
-            aux: [0u8; crate::core::policy::AUX_MAX],
+            aux: Vec::new(),
         };
         let mut parts = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
         let mut count = 0usize;
@@ -338,7 +336,7 @@ impl PlonkPolicy {
         count += 1;
         Ok(PolicyCapsule {
             policy_id: self.policy_id,
-            version: 1,
+            version: crate::core::policy::POLICY_CAPSULE_VERSION,
             part_count: count as u8,
             parts,
         })
@@ -579,6 +577,11 @@ pub fn ensure_registry(registry: &mut PolicyRegistry, metadata: &PolicyMetadata)
     if let Some(entries) = VERIFIER_STORE.lock().get(&metadata.policy_id).cloned() {
         let mut cloned = metadata.clone();
         for entry in cloned.verifiers.iter_mut() {
+            if metadata.supports_zkboo() && entry.kind == ProofKind::Policy as u8 {
+                // Hybrid policies can carry a ZKBoo circuit blob for the Policy kind, which must
+                // not be replaced by cached Plonk verifier bytes.
+                continue;
+            }
             if let Some(found) = entries.iter().find(|stored| stored.kind == entry.kind) {
                 entry.verifier_blob = found.verifier_blob.clone();
             }
@@ -620,10 +623,10 @@ mod tests {
         let safe_leaf = BlocklistEntry::Exact(ValueBytes::new(b"safe.example").unwrap()).leaf_bytes();
         let capsule = policy.prove_payload(safe_leaf.as_slice()).expect("prove payload");
         assert_eq!(capsule.policy_id, metadata.policy_id);
-        let mut cap_buf = [0u8; crate::core::policy::MAX_CAPSULE_LEN];
-        let cap_len = capsule.encode_into(&mut cap_buf).expect("encode");
+        let cap_buf = capsule.encode().expect("encode");
+        let cap_len = cap_buf.len();
         let mut buffer = Vec::with_capacity(cap_len + "safe.example".len());
-        buffer.extend_from_slice(&cap_buf[..cap_len]);
+        buffer.extend_from_slice(&cap_buf);
         buffer.extend_from_slice(b"safe.example");
         let (_capsule, consumed) = registry.enforce(&mut buffer, &validator).expect("enforce");
         assert_eq!(consumed, cap_len);

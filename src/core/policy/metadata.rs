@@ -12,6 +12,7 @@ pub const POLICY_FLAG_BATCH: u16 = 0x0002;
 pub const POLICY_FLAG_PRECOMPUTE: u16 = 0x0004;
 pub const POLICY_FLAG_REGEX: u16 = 0x0008;
 pub const POLICY_FLAG_PCD: u16 = 0x0010;
+pub const POLICY_FLAG_ZKBOO: u16 = 0x0020;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyMetadata {
@@ -47,6 +48,10 @@ impl PolicyMetadata {
 
     pub fn supports_pcd(&self) -> bool {
         (self.flags & POLICY_FLAG_PCD) != 0
+    }
+
+    pub fn supports_zkboo(&self) -> bool {
+        (self.flags & POLICY_FLAG_ZKBOO) != 0
     }
 
     pub fn encode(&self) -> Vec<u8> {
