@@ -86,6 +86,9 @@ impl CapsuleValidator for PlonkCapsuleValidator {
             if !role.allows(part.kind) {
                 continue;
             }
+            if part.kind == ProofKind::Policy && metadata.supports_zkboo() {
+                continue;
+            }
             let Some(verifier) = self.load_verifier(metadata, part.kind as u8)? else {
                 continue;
             };
