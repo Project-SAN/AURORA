@@ -8,7 +8,6 @@ use hornet::core::policy::{
     encode_extensions_into, CapsuleExtensionRef, PolicyRole, ProofKind, AUX_MAX,
     EXT_TAG_PCD_KEY_HASH,
     EXT_TAG_PCD_TARGET_HASH, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
-    MAX_CAPSULE_LEN,
 };
 use hornet::types::{Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment};
 use rand_chacha::ChaCha20Rng;
@@ -270,10 +269,7 @@ fn verify_capsule(
     registry: &PolicyRegistry,
     validator: &PlonkCapsuleValidator,
 ) -> Result<()> {
-    let mut capsule_buf = [0u8; MAX_CAPSULE_LEN];
-    let capsule_len = capsule.encode_into(&mut capsule_buf).expect("encode");
-    let mut capsule_bytes = Vec::with_capacity(capsule_len);
-    capsule_bytes.extend_from_slice(&capsule_buf[..capsule_len]);
+    let mut capsule_bytes = capsule.encode().expect("encode");
     let (decoded, consumed) = registry.enforce(&mut capsule_bytes, validator)?;
     if consumed != capsule_bytes.len() {
         return Err(hornet::types::Error::PolicyViolation);
@@ -408,10 +404,9 @@ fn main() -> Result<()> {
                 let mut iv = fixture.iv0;
                 hornet::source::build(&mut chdr, &ahdr, &fixture.keys, &mut iv, &mut encrypted_tail)
                     .expect("build");
-                let mut cap_buf = [0u8; MAX_CAPSULE_LEN];
-                let cap_len = capsule.encode_into(&mut cap_buf).expect("encode");
-                let mut payload = Vec::with_capacity(cap_len);
-                payload.extend_from_slice(&cap_buf[..cap_len]);
+                let cap_buf = capsule.encode().expect("encode");
+                let mut payload = Vec::with_capacity(cap_buf.len());
+                payload.extend_from_slice(&cap_buf);
                 payload.extend_from_slice(&encrypted_tail);
                 let mut roles = std::collections::BTreeMap::new();
                 roles.insert(metadata.policy_id, PolicyRole::All);
