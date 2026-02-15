@@ -59,6 +59,7 @@ required-features = ["std"]
 
 [[bench]]
 name = "ascon"
+
 harness = false
 
 [[example]]
