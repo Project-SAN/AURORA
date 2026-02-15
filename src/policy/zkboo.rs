@@ -1,13 +1,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::core::policy::{PolicyCapsule, PolicyId, PolicyMetadata, ProofKind, ProofPart};
 use crate::core::policy::metadata::POLICY_FLAG_ZKBOO;
+use crate::core::policy::{PolicyCapsule, PolicyId, PolicyMetadata, ProofKind, ProofPart};
 use crate::crypto::zkp::{Circuit, ProverConfig, ZkBooEngine};
 use crate::types::{Error, Result};
 use rand_chacha::ChaCha20Rng;
-use rand_core::{CryptoRng, RngCore};
 use rand_core::SeedableRng;
+use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 
 /// Encode a ZKBoo policy circuit into a verifier blob suitable for PolicyMetadata.
@@ -73,7 +73,12 @@ impl ZkBooPolicy {
             rng,
         )?;
         let part = proof.to_part(ProofKind::Policy)?;
-        let mut parts = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
+        let mut parts = [
+            ProofPart::default(),
+            ProofPart::default(),
+            ProofPart::default(),
+            ProofPart::default(),
+        ];
         parts[0] = part;
         Ok(PolicyCapsule {
             policy_id: self.policy_id,
@@ -123,20 +128,8 @@ impl ZkBooProofService {
         }
         let seed = prove_seed(&self.policy.policy_id, payload, aux);
         let mut rng = ChaCha20Rng::from_seed(seed);
-        self.policy.prove_with_rng(&input_bits, self.rounds, &mut rng)
-    }
-}
-
-#[cfg(feature = "http-client")]
-impl crate::policy::client::ProofService for ZkBooProofService {
-    fn obtain_proof(&self, request: &crate::policy::client::ProofRequest<'_>) -> Result<PolicyCapsule> {
-        if !request.policy.supports_zkboo() {
-            return Err(Error::Crypto);
-        }
-        if request.policy.policy_id != self.policy.policy_id {
-            return Err(Error::Crypto);
-        }
-        self.prove_payload_lsb_first(request.payload, request.aux)
+        self.policy
+            .prove_with_rng(&input_bits, self.rounds, &mut rng)
     }
 }
 
@@ -200,13 +193,9 @@ mod tests {
         let policy = ZkBooPolicy::new(circuit);
         let metadata = policy.metadata(0, 0);
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
-        let capsule = policy
-            .prove_with_rng(&[1, 1], 4, &mut rng)
-            .expect("prove");
+        let capsule = policy.prove_with_rng(&[1, 1], 4, &mut rng).expect("prove");
         let validator = ZkBooCapsuleValidator::new();
-        validator
-            .validate(&capsule, &metadata)
-            .expect("validate");
+        validator.validate(&capsule, &metadata).expect("validate");
     }
 
     #[test]
@@ -231,8 +220,6 @@ mod tests {
             .prove_payload_lsb_first(&[0x01], &[])
             .expect("prove");
         let validator = ZkBooCapsuleValidator::new();
-        validator
-            .validate(&capsule, &metadata)
-            .expect("validate");
+        validator.validate(&capsule, &metadata).expect("validate");
     }
 }

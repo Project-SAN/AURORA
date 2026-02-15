@@ -8,9 +8,9 @@ pub use capsule::{
     POLICY_CAPSULE_VERSION,
 };
 pub use extensions::{
-    extension_iter, find_extension, encode_extensions_into, CapsuleExtensionRef, ExtensionIter,
-    EXT_TAG_BATCH_ID, EXT_TAG_MODE, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF, EXT_TAG_PCD_ROOT,
-    EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH, EXT_TAG_PAYLOAD_HASH,
+    encode_extensions_into, extension_iter, find_extension, CapsuleExtensionRef, ExtensionIter,
+    EXT_TAG_BATCH_ID, EXT_TAG_MODE, EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF,
+    EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
     EXT_TAG_PRECOMPUTE_ID, EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE,
     EXT_TAG_SESSION_NONCE,
 };

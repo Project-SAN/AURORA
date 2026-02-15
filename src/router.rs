@@ -1,4 +1,4 @@
-use crate::adapters::hybrid::HybridCapsuleValidator;
+use crate::adapters::zkboo::validator::ZkBooCapsuleValidator;
 use crate::application::forward::RegistryForwardPipeline;
 use crate::application::setup::RegistrySetupPipeline;
 use crate::node::pipeline::ForwardPipeline;
@@ -22,7 +22,7 @@ pub mod sync;
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {
     registry: PolicyRegistry,
-    validator: HybridCapsuleValidator,
+    validator: ZkBooCapsuleValidator,
     forward_pipeline: Box<dyn ForwardPipeline>,
     routes: BTreeMap<[u8; 32], RouteAnnouncement>,
     policy_roles: BTreeMap<[u8; 32], PolicyRole>,
@@ -34,7 +34,7 @@ impl Router {
     pub fn new() -> Self {
         Self {
             registry: PolicyRegistry::new(),
-            validator: HybridCapsuleValidator::new(),
+            validator: ZkBooCapsuleValidator::new(),
             forward_pipeline: Box::new(RegistryForwardPipeline::new()),
             routes: BTreeMap::new(),
             policy_roles: BTreeMap::new(),
@@ -53,7 +53,7 @@ impl Router {
     pub fn with_forward_pipeline(pipeline: Box<dyn ForwardPipeline>) -> Self {
         Self {
             registry: PolicyRegistry::new(),
-            validator: HybridCapsuleValidator::new(),
+            validator: ZkBooCapsuleValidator::new(),
             forward_pipeline: pipeline,
             routes: BTreeMap::new(),
             policy_roles: BTreeMap::new(),
@@ -68,7 +68,7 @@ impl Router {
     ) -> Self {
         Self {
             registry: PolicyRegistry::new(),
-            validator: HybridCapsuleValidator::new(),
+            validator: ZkBooCapsuleValidator::new(),
             forward_pipeline: pipeline,
             routes: BTreeMap::new(),
             policy_roles: BTreeMap::new(),
