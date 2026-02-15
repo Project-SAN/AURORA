@@ -1,6 +1,6 @@
-pub mod dh;
 pub mod ascon;
 pub mod ctr;
+pub mod dh;
 pub mod kdf;
 pub mod mac;
 pub mod prg;

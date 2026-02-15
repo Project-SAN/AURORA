@@ -1,12 +1,12 @@
-use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry, VerifierEntry};
-use crate::policy::blocklist::{LeafBytes, MAX_BLOCKLIST_ENTRIES};
+use crate::core::policy::metadata::POLICY_FLAG_PCD;
+use crate::core::policy::{ProofKind, ProofPart};
 #[cfg(feature = "regex-policy")]
 use crate::policy::blocklist::ValueBytes;
+use crate::policy::blocklist::{LeafBytes, MAX_BLOCKLIST_ENTRIES};
+use crate::policy::bytes::Byte;
 use crate::policy::poseidon::poseidon_hash2;
 use crate::policy::poseidon_circuit::poseidon_hash2_circuit;
-use crate::policy::bytes::Byte;
-use crate::core::policy::{ProofKind, ProofPart};
-use crate::core::policy::metadata::POLICY_FLAG_PCD;
+use crate::policy::{PolicyCapsule, PolicyId, PolicyMetadata, PolicyRegistry, VerifierEntry};
 use crate::types::{Error, Result};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -17,8 +17,8 @@ use dusk_plonk::prelude::{
     BlsScalar, Circuit, Compiler, Composer, Constraint, Error as PlonkError, Prover,
     PublicParameters,
 };
-use rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 use sha2::{Digest, Sha256, Sha512};
 use spin::Mutex;
 
@@ -70,12 +70,7 @@ struct KeyBindingCircuit {
 }
 
 impl KeyBindingCircuit {
-    fn new(
-        secret: [u8; 32],
-        salt_bytes: [u8; 32],
-        salt: BlsScalar,
-        hkey: BlsScalar,
-    ) -> Self {
+    fn new(secret: [u8; 32], salt_bytes: [u8; 32], salt: BlsScalar, hkey: BlsScalar) -> Self {
         Self {
             secret,
             salt_bytes,
@@ -90,8 +85,14 @@ impl Circuit for KeyBindingCircuit {
     where
         C: Composer,
     {
-        let mut secret = [Byte { value: 0, witness: C::ZERO }; 32];
-        let mut salt = [Byte { value: 0, witness: C::ZERO }; 32];
+        let mut secret = [Byte {
+            value: 0,
+            witness: C::ZERO,
+        }; 32];
+        let mut salt = [Byte {
+            value: 0,
+            witness: C::ZERO,
+        }; 32];
         for i in 0..32 {
             secret[i] = Byte::witness(composer, self.secret[i]);
             salt[i] = Byte::witness(composer, self.salt_bytes[i]);
@@ -148,7 +149,10 @@ impl PlonkPolicy {
                 }
                 Err(_err) => {
                     #[cfg(feature = "std")]
-                    eprintln!("blocklist compile failed (capacity={}): {:?}", capacity, _err);
+                    eprintln!(
+                        "blocklist compile failed (capacity={}): {:?}",
+                        capacity, _err
+                    );
                 }
             }
         }
@@ -180,10 +184,13 @@ impl PlonkPolicy {
     }
 
     #[cfg(feature = "regex-policy")]
-    pub fn new_from_regex_literals(label: &[u8], patterns: &[alloc::string::String]) -> Result<Self> {
+    pub fn new_from_regex_literals(
+        label: &[u8],
+        patterns: &[alloc::string::String],
+    ) -> Result<Self> {
+        use crate::core::policy::metadata::POLICY_FLAG_REGEX;
         use crate::policy::blocklist::BlocklistEntry;
         use crate::policy::regex::exact_literals;
-        use crate::core::policy::metadata::POLICY_FLAG_REGEX;
 
         let literals = exact_literals(patterns)?;
         let entries: Vec<BlocklistEntry> = literals
@@ -274,16 +281,15 @@ impl PlonkPolicy {
         };
         let key_part = if let Some(input) = keybinding {
             self.ensure_keybinding()?;
-            let salt =
-                keybinding_salt(&self.policy_id, &input.htarget, &input.session_nonce, &input.route_id);
+            let salt = keybinding_salt(
+                &self.policy_id,
+                &input.htarget,
+                &input.session_nonce,
+                &input.route_id,
+            );
             let salt_bytes = salt.to_bytes();
             let hkey = keybinding_hash_scalar(salt, &input.sender_secret);
-            let circuit = KeyBindingCircuit::new(
-                input.sender_secret,
-                salt_bytes,
-                salt,
-                hkey,
-            );
+            let circuit = KeyBindingCircuit::new(input.sender_secret, salt_bytes, salt, hkey);
             let mut rng = ChaCha20Rng::from_seed(hash_to_seed(&input.sender_secret));
             let prover = self
                 .keybinding_prover
@@ -291,13 +297,11 @@ impl PlonkPolicy {
                 .as_ref()
                 .cloned()
                 .ok_or(Error::Crypto)?;
-            let (proof, public_inputs) = prover
-                .prove(&mut rng, &circuit)
-                .map_err(|_err| {
-                    #[cfg(feature = "std")]
-                    eprintln!("keybinding prove error: {:?}", _err);
-                    Error::Crypto
-                })?;
+            let (proof, public_inputs) = prover.prove(&mut rng, &circuit).map_err(|_err| {
+                #[cfg(feature = "std")]
+                eprintln!("keybinding prove error: {:?}", _err);
+                Error::Crypto
+            })?;
             #[cfg(feature = "std")]
             eprintln!(
                 "keybinding proof public_inputs: {:?}",
@@ -324,7 +328,12 @@ impl PlonkPolicy {
             commitment: commitment_bytes,
             aux: Vec::new(),
         };
-        let mut parts = [ProofPart::default(), ProofPart::default(), ProofPart::default(), ProofPart::default()];
+        let mut parts = [
+            ProofPart::default(),
+            ProofPart::default(),
+            ProofPart::default(),
+            ProofPart::default(),
+        ];
         let mut count = 0usize;
         if let Some(key_part) = key_part {
             parts[count] = key_part;
@@ -465,12 +474,8 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
         return Ok((prover.clone(), verifier.clone()));
     }
     let label: &[u8] = b"hornet-keybinding-poseidon";
-    let keybinding_circuit = KeyBindingCircuit::new(
-        [0u8; 32],
-        [0u8; 32],
-        BlsScalar::zero(),
-        BlsScalar::zero(),
-    );
+    let keybinding_circuit =
+        KeyBindingCircuit::new([0u8; 32], [0u8; 32], BlsScalar::zero(), BlsScalar::zero());
     let capacities = keybinding_capacities();
     #[cfg(feature = "std")]
     eprintln!("keybinding capacities: {:?}", capacities);
@@ -481,7 +486,10 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
             Ok(pp) => pp,
             Err(_err) => {
                 #[cfg(feature = "std")]
-                eprintln!("keybinding setup failed (capacity={}): {:?}", capacity, _err);
+                eprintln!(
+                    "keybinding setup failed (capacity={}): {:?}",
+                    capacity, _err
+                );
                 continue;
             }
         };
@@ -492,7 +500,10 @@ fn keybinding_prover_and_verifier() -> Result<(Prover, Vec<u8>)> {
             }
             Err(_err) => {
                 #[cfg(feature = "std")]
-                eprintln!("keybinding compile failed (capacity={}): {:?}", capacity, _err);
+                eprintln!(
+                    "keybinding compile failed (capacity={}): {:?}",
+                    capacity, _err
+                );
             }
         }
     }
@@ -544,7 +555,6 @@ fn save_keybinding_verifier(bytes: &[u8]) {
         cache.save_keybinding_verifier(bytes);
     }
 }
-
 
 fn register_verifier(id: PolicyId, entries: &[VerifierEntry]) {
     VERIFIER_STORE.lock().insert(id, entries.to_vec());
@@ -620,8 +630,11 @@ mod tests {
         ensure_registry(&mut registry, &metadata).expect("registry");
         let validator = PlonkCapsuleValidator::new();
 
-        let safe_leaf = BlocklistEntry::Exact(ValueBytes::new(b"safe.example").unwrap()).leaf_bytes();
-        let capsule = policy.prove_payload(safe_leaf.as_slice()).expect("prove payload");
+        let safe_leaf =
+            BlocklistEntry::Exact(ValueBytes::new(b"safe.example").unwrap()).leaf_bytes();
+        let capsule = policy
+            .prove_payload(safe_leaf.as_slice())
+            .expect("prove payload");
         assert_eq!(capsule.policy_id, metadata.policy_id);
         let cap_buf = capsule.encode().expect("encode");
         let cap_len = cap_buf.len();

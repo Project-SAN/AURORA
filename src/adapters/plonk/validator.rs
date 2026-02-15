@@ -1,7 +1,7 @@
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::sync::Arc;
 
 use crate::core::policy::{
     find_extension, CapsuleValidator, PolicyCapsule, PolicyId, PolicyMetadata, PolicyRole,

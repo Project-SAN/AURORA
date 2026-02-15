@@ -2,15 +2,15 @@ use crate::pcd::{PcdBackend, PcdState};
 use crate::types::{Error, Result};
 use bincode;
 use ff::PrimeField;
-use num_bigint::BigUint;
 use nova_snark::frontend::num::AllocatedNum;
 use nova_snark::frontend::{ConstraintSystem, SynthesisError};
-use nova_snark::provider::{Bn256EngineKZG, GrumpkinEngine};
+use nova_snark::nova::{PublicParams, RecursiveSNARK};
 use nova_snark::provider::hyperkzg;
 use nova_snark::provider::ipa_pc;
+use nova_snark::provider::{Bn256EngineKZG, GrumpkinEngine};
 use nova_snark::traits::circuit::StepCircuit;
 use nova_snark::traits::{snark::RelaxedR1CSSNARKTrait, Engine, Group};
-use nova_snark::nova::{PublicParams, RecursiveSNARK};
+use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 
 type E1 = Bn256EngineKZG;
@@ -43,14 +43,10 @@ impl<F: PrimeField> StepCircuit<F> for PcdStepCircuit {
         let target_in = &z_in[3];
 
         let hkey_out = AllocatedNum::alloc(cs.namespace(|| "hkey_out"), || {
-            hkey_in
-                .get_value()
-                .ok_or(SynthesisError::AssignmentMissing)
+            hkey_in.get_value().ok_or(SynthesisError::AssignmentMissing)
         })?;
         let root_out = AllocatedNum::alloc(cs.namespace(|| "root_out"), || {
-            root_in
-                .get_value()
-                .ok_or(SynthesisError::AssignmentMissing)
+            root_in.get_value().ok_or(SynthesisError::AssignmentMissing)
         })?;
         let target_out = AllocatedNum::alloc(cs.namespace(|| "target_out"), || {
             target_in

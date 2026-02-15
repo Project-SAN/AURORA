@@ -1,5 +1,5 @@
-use crate::crypto::kdf::{hop_key, OpLabel};
 use crate::crypto::ctr;
+use crate::crypto::kdf::{hop_key, OpLabel};
 
 pub fn encrypt(key_src: &[u8], iv: &[u8; 16], buf: &mut [u8]) {
     let mut k = [0u8; 16];

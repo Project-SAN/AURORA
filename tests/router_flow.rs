@@ -43,8 +43,7 @@ impl Forward for RecordingForward {
     ) -> Result<()> {
         let mut cloned = Vec::with_capacity(payload.len());
         cloned.extend_from_slice(payload);
-        self.sent
-            .replace(Some((rseg.clone(), direction, cloned)));
+        self.sent.replace(Some((rseg.clone(), direction, cloned)));
         Ok(())
     }
 }
@@ -60,11 +59,7 @@ struct PacketFixture {
     body_plain: Vec<u8>,
 }
 
-fn build_single_hop_packet(
-    capsule: Vec<u8>,
-    body_plain: Vec<u8>,
-    now: u32,
-) -> PacketFixture {
+fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> PacketFixture {
     let mut rng = ChaCha20Rng::seed_from_u64(0xACCE55ED);
     let mut sv_bytes = [0u8; 16];
     rng.fill_bytes(&mut sv_bytes);
@@ -81,8 +76,7 @@ fn build_single_hop_packet(
     let fs = hornet::packet::core::create(&sv, &si, &route, exp).expect("fs create");
 
     let mut ahdr_rng = ChaCha20Rng::seed_from_u64(0xBEEF);
-    let ahdr =
-        hornet::packet::ahdr::create_ahdr(&[si], &[fs], R_MAX, &mut ahdr_rng).expect("ahdr");
+    let ahdr = hornet::packet::ahdr::create_ahdr(&[si], &[fs], R_MAX, &mut ahdr_rng).expect("ahdr");
 
     let mut iv0 = [0u8; 16];
     rng.fill_bytes(&mut iv0);
@@ -172,7 +166,9 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
     let now = 1_700_000_000u32;
     let (policy, metadata) = demo_policy();
     let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
-    let capsule = policy.prove_payload(leaf.as_slice()).expect("prove payload");
+    let capsule = policy
+        .prove_payload(leaf.as_slice())
+        .expect("prove payload");
 
     let mut body_plain = leaf.to_vec();
     body_plain.extend_from_slice(b"::payload");
@@ -217,7 +213,9 @@ fn router_rejects_capsule_with_unknown_policy_id() {
     let now = 1_700_000_000u32;
     let (policy, metadata) = demo_policy();
     let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
-    let capsule = policy.prove_payload(leaf.as_slice()).expect("prove payload");
+    let capsule = policy
+        .prove_payload(leaf.as_slice())
+        .expect("prove payload");
     let mut capsule_bytes = encode_capsule(&capsule);
     capsule_bytes[4] ^= 0xFF; // flip a bit in the policy ID to break lookup
 

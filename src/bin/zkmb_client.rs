@@ -2,15 +2,15 @@ use std::env;
 use std::fs;
 use std::process;
 
+use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
 use hornet::config::{DEFAULT_BLOCKLIST_PATH, DEFAULT_POLICY_LABEL};
+use hornet::core::policy::ProofKind;
 use hornet::policy::blocklist;
 use hornet::policy::extract::HttpHostExtractor;
 use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::Blocklist;
 use hornet::policy::Extractor;
 use hornet::policy::PolicyRegistry;
-use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
-use hornet::core::policy::ProofKind;
 use hornet::types::Error as HornetError;
 use hornet::utils::encode_hex;
 
@@ -53,9 +53,7 @@ fn run() -> Result<(), String> {
             HornetError::PolicyViolation => format!("host '{host}' violates the policy"),
             _ => format!("failed to generate proof: {err:?}"),
         })?;
-    let capsule_bytes = capsule
-        .encode()
-        .map_err(|_| "failed to encode capsule")?;
+    let capsule_bytes = capsule.encode().map_err(|_| "failed to encode capsule")?;
 
     let policy_hex = encode_hex(policy.policy_id());
     let expected_commit =

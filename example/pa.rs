@@ -1,8 +1,8 @@
 use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
+use hornet::core::policy::ProofKind;
 use hornet::policy::blocklist::{BlocklistEntry, LeafBytes, ValueBytes};
 use hornet::policy::plonk::{self, PlonkPolicy};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
-use hornet::core::policy::ProofKind;
 use hornet::types::{Error, Result};
 use hornet::utils::encode_hex;
 
@@ -29,10 +29,7 @@ fn run_demo() -> Result<()> {
         .part(ProofKind::Policy)
         .ok_or(Error::PolicyViolation)?;
     println!("  proof bytes : {}", policy_part.proof.len());
-    println!(
-        "  commitment  : {}\n",
-        encode_hex(&policy_part.commitment)
-    );
+    println!("  commitment  : {}\n", encode_hex(&policy_part.commitment));
 
     // Client submits the capsule to the PA for verification before transmission.
     verify_capsule(&metadata, &capsule, safe_leaf.as_slice())?;

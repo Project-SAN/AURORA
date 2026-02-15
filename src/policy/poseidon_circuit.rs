@@ -1,7 +1,7 @@
 use dusk_plonk::prelude::{BlsScalar, Composer, Constraint, Witness};
 
-use crate::policy::poseidon::{poseidon_params, PoseidonParams, WIDTH};
 use crate::policy::bytes::Byte;
+use crate::policy::poseidon::{poseidon_params, PoseidonParams, WIDTH};
 
 #[derive(Clone, Copy)]
 struct FieldElem {
@@ -100,8 +100,7 @@ fn mds_mul<C: Composer>(
         let coeff0 = params.mds[i][0];
         let coeff1 = params.mds[i][1];
         let coeff2 = params.mds[i][2];
-        let acc_value =
-            coeff0 * state[0].value + coeff1 * state[1].value + coeff2 * state[2].value;
+        let acc_value = coeff0 * state[0].value + coeff1 * state[1].value + coeff2 * state[2].value;
         let acc0 = composer.gate_add(
             Constraint::new()
                 .left(coeff0)
@@ -125,12 +124,7 @@ fn mds_mul<C: Composer>(
 }
 
 fn add_const<C: Composer>(composer: &mut C, a: FieldElem, c: BlsScalar) -> FieldElem {
-    let witness = composer.gate_add(
-        Constraint::new()
-            .left(1)
-            .a(a.witness)
-            .constant(c),
-    );
+    let witness = composer.gate_add(Constraint::new().left(1).a(a.witness).constant(c));
     FieldElem {
         value: a.value + c,
         witness,
