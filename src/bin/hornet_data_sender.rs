@@ -73,12 +73,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let (target_ip, target_port) = resolve_target_parts(&target_hostname, target_port)?;
     println!("Resolved {} to {:?}:{}", host, target_ip, target_port);
 
-    let request_payload = {
-        let record = read_tls_record_bytes(payload_tail)?;
-        let _ = hornet::policy::tls::take_single_record_exact(&record)
-            .map_err(|_| "expected exactly one TLS record (header+fragment)".to_string())?;
-        record
-    };
+    let request_payload = read_request_bytes(payload_tail)?;
     let canonical_bytes = {
         let target = target_value_from_hostname(&target_hostname)?;
         let entry = blocklist::entry_from_target(&target)
@@ -481,16 +476,27 @@ fn target_value_from_hostname(hostname: &str) -> Result<TargetValue, String> {
     ))
 }
 
-fn read_tls_record_bytes(payload_tail: &[u8]) -> Result<Vec<u8>, String> {
+fn read_request_bytes(payload_tail: &[u8]) -> Result<Vec<u8>, String> {
+    // ZKBoo input bytes. Caller must ensure the circuit input size matches (len * 8).
+    //
+    // Priority:
+    // 1) HORNET_REQUEST_PATH: raw bytes
+    // 2) HORNET_TLS_RECORD_PATH: legacy env name (raw bytes)
+    // 3) CLI payload_tail: hex bytes
+    if let Ok(path) = env::var("HORNET_REQUEST_PATH") {
+        if !path.trim().is_empty() {
+            return fs::read(&path).map_err(|err| format!("failed to read {path}: {err}"));
+        }
+    }
     if let Ok(path) = env::var("HORNET_TLS_RECORD_PATH") {
         if !path.trim().is_empty() {
             return fs::read(&path).map_err(|err| format!("failed to read {path}: {err}"));
         }
     }
     let hex = core::str::from_utf8(payload_tail).map_err(|_| {
-        "TLS record must be provided as hex (or set HORNET_TLS_RECORD_PATH)".to_string()
+        "request bytes must be provided as hex (or set HORNET_REQUEST_PATH)".to_string()
     })?;
-    decode_hex(hex).map_err(|err| format!("invalid TLS record hex: {err}"))
+    decode_hex(hex).map_err(|err| format!("invalid request hex: {err}"))
 }
 
 fn load_router_states(
