@@ -1,7 +1,5 @@
 use hornet::core::policy::PolicyMetadata;
 use hornet::forward::Forward;
-use hornet::policy::blocklist::{BlocklistEntry, ValueBytes};
-use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::zkboo::ZkBooPolicy;
 use hornet::router::Router;
 use hornet::routing::{self, IpAddr, RouteElem};
@@ -106,16 +104,6 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
     }
 }
 
-fn demo_policy() -> (PlonkPolicy, PolicyMetadata) {
-    let blocklist = vec![
-        BlocklistEntry::Exact(ValueBytes::new(b"blocked.router.test").unwrap()).leaf_bytes(),
-        BlocklistEntry::Exact(ValueBytes::new(b"deny.router.test").unwrap()).leaf_bytes(),
-    ];
-    let policy = PlonkPolicy::new_with_blocklist(b"router-test", &blocklist).unwrap();
-    let metadata = policy.metadata(1_700_000_600, 0);
-    (policy, metadata)
-}
-
 fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) {
     router.set_node_id(Some(node_id.to_string()));
     let routes = vec![
@@ -164,14 +152,15 @@ fn demo_zkboo_policy() -> (hornet::crypto::zkp::Circuit, PolicyMetadata) {
 #[test]
 fn router_forwards_valid_capsule_and_decrypts_body() {
     let now = 1_700_000_000u32;
-    let (policy, metadata) = demo_policy();
-    let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
+    let (circuit, metadata) = demo_zkboo_policy();
+    let policy = ZkBooPolicy::with_policy_id(circuit, metadata.policy_id);
+    let mut rng = ChaCha20Rng::seed_from_u64(0xCAFE_BEEF);
+    // n_inputs=8: prove with first bit set so circuit output is 1.
     let capsule = policy
-        .prove_payload(leaf.as_slice())
-        .expect("prove payload");
+        .prove_with_rng(&[1, 0, 0, 0, 0, 0, 0, 0], 16, &mut rng)
+        .expect("prove zkboo");
 
-    let mut body_plain = leaf.to_vec();
-    body_plain.extend_from_slice(b"::payload");
+    let body_plain = b"opaque-body::payload".to_vec();
 
     let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
 
@@ -211,15 +200,16 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
 #[test]
 fn router_rejects_capsule_with_unknown_policy_id() {
     let now = 1_700_000_000u32;
-    let (policy, metadata) = demo_policy();
-    let leaf = BlocklistEntry::Exact(ValueBytes::new(b"ok.router.test").unwrap()).leaf_bytes();
+    let (circuit, metadata) = demo_zkboo_policy();
+    let policy = ZkBooPolicy::with_policy_id(circuit, metadata.policy_id);
+    let mut rng = ChaCha20Rng::seed_from_u64(0x1234_0001);
     let capsule = policy
-        .prove_payload(leaf.as_slice())
-        .expect("prove payload");
+        .prove_with_rng(&[1, 0, 0, 0, 0, 0, 0, 0], 16, &mut rng)
+        .expect("prove zkboo");
     let mut capsule_bytes = encode_capsule(&capsule);
     capsule_bytes[4] ^= 0xFF; // flip a bit in the policy ID to break lookup
 
-    let mut packet = build_single_hop_packet(capsule_bytes, leaf.to_vec(), now);
+    let mut packet = build_single_hop_packet(capsule_bytes, b"opaque-body".to_vec(), now);
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-exit");

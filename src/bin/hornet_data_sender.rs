@@ -18,6 +18,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,6 +50,7 @@ fn run() -> Result<(), String> {
 }
 
 fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), String> {
+    let start_total = Instant::now();
     let info: PolicyInfo = {
         let json = fs::read_to_string(info_path)
             .map_err(|err| format!("failed to read {info_path}: {err}"))?;
@@ -260,6 +262,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
     let entry_override = env::var("HORNET_ENTRY_ADDR").ok().filter(|s| !s.is_empty());
+    let start_rtt = Instant::now();
     if let Some(addr) = entry_override.as_deref() {
         println!("Sending frame to entry override {}", addr);
         send_frame_to(addr, &frame)?;
@@ -280,23 +283,21 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("set nonblocking failed: {e}"))?;
-    let start = Instant::now();
-    let (mut stream, addr) = loop {
-        match listener.accept() {
-            Ok(pair) => break pair,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > Duration::from_secs(timeout_secs) {
-                    return Err(format!(
-                        "response timeout after {}s (no backward packet)",
-                        timeout_secs
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(err) => return Err(format!("accept failed: {err}")),
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(listener.accept());
+    });
+    let (mut stream, addr) = match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(err)) => return Err(format!("accept failed: {err}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(format!(
+                "response timeout after {}s (no backward packet)",
+                timeout_secs
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("response accept thread disconnected".to_string());
         }
     };
     println!("Connection from {}", addr);
@@ -358,6 +359,8 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     )
     .map_err(|e| format!("decrypt failed: {e:?}"))?;
 
+    println!("Round-trip time: {:.2?}", start_rtt.elapsed());
+    println!("Total time: {:.2?}", start_total.elapsed());
     println!(
         "Received Response:\n{}",
         String::from_utf8_lossy(&encrypted_response)

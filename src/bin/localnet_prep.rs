@@ -1,7 +1,5 @@
 use hornet::crypto::zkp::Circuit;
-use hornet::policy::plonk::PlonkPolicy;
 use hornet::policy::zkboo::ZkBooPolicy;
-use hornet::policy::Blocklist;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::{from_signed_json, public_key_from_seed, to_signed_json};
 use hornet::setup::directory::{DirectoryAnnouncement, RouteAnnouncement};
@@ -12,7 +10,6 @@ use std::env;
 use std::fs;
 use std::net::Ipv4Addr;
 
-const DEFAULT_BLOCKLIST: &str = "config/blocklist.json";
 const LOCAL_SECRET: &str = "localnet-secret";
 const DIRECTORY_EPOCH: u64 = 1_700_000_000;
 
@@ -41,25 +38,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "target/localnet"
     };
 
-    let blocklist_path =
-        env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| DEFAULT_BLOCKLIST.to_string());
-    let zkboo_circuit_path = env::var("LOCALNET_ZKBOO_CIRCUIT_PATH")
+    let path = env::var("LOCALNET_ZKBOO_CIRCUIT_PATH")
         .ok()
-        .filter(|value| !value.trim().is_empty());
-    let metadata = if let Some(path) = zkboo_circuit_path.as_deref() {
-        let bytes = fs::read(path)?;
-        let circuit = Circuit::decode(&bytes)
-            .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
-        let policy = ZkBooPolicy::new(circuit);
-        policy.metadata(900, 0)
-    } else {
-        let block_json = fs::read_to_string(&blocklist_path)?;
-        let blocklist =
-            Blocklist::from_json(&block_json).map_err(|err| format!("blocklist error: {err:?}"))?;
-        let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
-            .map_err(|err| format!("policy init failed: {err:?}"))?;
-        policy.metadata(900, 0)
-    };
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("ZKBoo-only: set LOCALNET_ZKBOO_CIRCUIT_PATH to a ZKBC circuit file")?;
+    let bytes = fs::read(&path)?;
+    let circuit = Circuit::decode(&bytes)
+        .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
+    let policy = ZkBooPolicy::new(circuit);
+    let metadata = policy.metadata(900, 0);
     fs::create_dir_all(out_dir)?;
     fs::create_dir_all(storage_dir)?;
 

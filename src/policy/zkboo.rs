@@ -133,22 +133,6 @@ impl ZkBooProofService {
     }
 }
 
-#[cfg(feature = "http-client")]
-impl crate::policy::client::ProofService for ZkBooProofService {
-    fn obtain_proof(
-        &self,
-        request: &crate::policy::client::ProofRequest<'_>,
-    ) -> Result<PolicyCapsule> {
-        if !request.policy.supports_zkboo() {
-            return Err(Error::Crypto);
-        }
-        if request.policy.policy_id != self.policy.policy_id {
-            return Err(Error::Crypto);
-        }
-        self.prove_payload_lsb_first(request.payload, request.aux)
-    }
-}
-
 fn compute_policy_id(bytes: &[u8]) -> PolicyId {
     let mut id = [0u8; 32];
     let hash = Sha256::digest(bytes);
