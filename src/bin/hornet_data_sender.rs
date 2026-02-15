@@ -141,10 +141,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     for (hop, (state, _route)) in routers.iter().enumerate() {
         let segment = if hop == hops - 1 {
             // Last hop: construct dynamic exit segment
+            let force_tls = env::var("HORNET_EXIT_TLS").ok().as_deref() == Some("1");
+            let tls = force_tls || target_port == 443;
             let elem = RouteElem::ExitTcp {
                 addr: target_ip.clone(),
                 port: target_port,
-                tls: false, // TODO: infer from port or scheme?
+                tls,
             };
             routing::segment_from_elems(&[elem])
         } else {
