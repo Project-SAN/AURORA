@@ -1,11 +1,11 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::core::policy::{ProofKind, ProofPart};
 use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
-use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
 use rand_core::{CryptoRng, RngCore};
 
@@ -186,15 +186,9 @@ impl ZkBooEngine {
 
         for round in 0..rounds {
             let seeds = [
-                seed_trees[0]
-                    .seed_for_round(round)
-                    .ok_or(Error::Length)?,
-                seed_trees[1]
-                    .seed_for_round(round)
-                    .ok_or(Error::Length)?,
-                seed_trees[2]
-                    .seed_for_round(round)
-                    .ok_or(Error::Length)?,
+                seed_trees[0].seed_for_round(round).ok_or(Error::Length)?,
+                seed_trees[1].seed_for_round(round).ok_or(Error::Length)?,
+                seed_trees[2].seed_for_round(round).ok_or(Error::Length)?,
             ];
             let state = simulate_round(circuit, input_bits, public_output, seeds)?;
             commitments.extend_from_slice(&state.commitments);
@@ -257,8 +251,7 @@ impl ZkBooEngine {
             return Err(Error::Length);
         }
         let rounds = proof.rounds as usize;
-        if proof.openings.len() != rounds || proof.seed_reveals.len() != 3
-        {
+        if proof.openings.len() != rounds || proof.seed_reveals.len() != 3 {
             return Err(Error::Length);
         }
 
@@ -413,10 +406,7 @@ fn simulate_round(
         commitments[i] = commit_view(&seeds[i], &views[i]);
     }
 
-    Ok(RoundState {
-        views,
-        commitments,
-    })
+    Ok(RoundState { views, commitments })
 }
 
 fn extract_outputs(circuit: &Circuit, wires: &[u8]) -> Result<Vec<u8>> {
@@ -466,11 +456,7 @@ fn check_branch(
             Gate::And { a, b } => {
                 let r_i = tape_i.next_bit();
                 let r_i1 = tape_i1.next_bit();
-                (calc[a] & calc[b])
-                    ^ (view_i1[a] & calc[b])
-                    ^ (calc[a] & view_i1[b])
-                    ^ r_i
-                    ^ r_i1
+                (calc[a] & calc[b]) ^ (view_i1[a] & calc[b]) ^ (calc[a] & view_i1[b]) ^ r_i ^ r_i1
             }
         };
         if (view_i[out] & 1) != (expected & 1) {
@@ -695,12 +681,8 @@ mod tests {
             .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let bad_output = [0u8];
-        let res = engine.verify_circuit(
-            &circuit,
-            &bad_output,
-            &proof,
-            VerifierConfig { rounds: 6 },
-        );
+        let res =
+            engine.verify_circuit(&circuit, &bad_output, &proof, VerifierConfig { rounds: 6 });
         assert!(res.is_err());
     }
 
@@ -739,7 +721,9 @@ mod tests {
         let proof = engine
             .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
-        let part = proof.to_part(crate::core::policy::ProofKind::Policy).expect("to part");
+        let part = proof
+            .to_part(crate::core::policy::ProofKind::Policy)
+            .expect("to part");
         let decoded = Proof::from_part(&part).expect("from part");
         engine
             .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })

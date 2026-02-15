@@ -1,5 +1,5 @@
-use crate::crypto::kdf::{hop_key, OpLabel};
 use crate::crypto::ctr;
+use crate::crypto::kdf::{hop_key, OpLabel};
 
 fn prg(key_src: &[u8], out: &mut [u8], label: OpLabel) {
     let mut k = [0u8; 16];

@@ -1,4 +1,4 @@
-use crate::types::{Ahdr, Chdr, Result, RoutingSegment, PacketDirection};
+use crate::types::{Ahdr, Chdr, PacketDirection, Result, RoutingSegment};
 use alloc::vec::Vec;
 
 // Minimal forwarding abstraction for no_std environments.

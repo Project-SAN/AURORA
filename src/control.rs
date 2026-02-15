@@ -67,7 +67,10 @@ pub fn decode(buf: &[u8]) -> Result<ControlMessage> {
             } else {
                 None
             };
-            Ok(ControlMessage::ResendRequest { policy_id, sequence })
+            Ok(ControlMessage::ResendRequest {
+                policy_id,
+                sequence,
+            })
         }
         _ => Err(Error::Length),
     }

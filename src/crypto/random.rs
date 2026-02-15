@@ -26,7 +26,10 @@ impl fmt::Display for XdrbgError {
                 write!(f, "alpha too long: {len} bytes (max {max})")
             }
             XdrbgError::SeedTooShort { len, required } => {
-                write!(f, "seed too short: {len} bytes (require at least {required})")
+                write!(
+                    f,
+                    "seed too short: {len} bytes (require at least {required})"
+                )
             }
             XdrbgError::MaxOutExceeded { requested, max } => {
                 write!(f, "requested {requested} bytes exceeds maxout {max} bytes")
@@ -37,8 +40,6 @@ impl fmt::Display for XdrbgError {
         }
     }
 }
-
-
 
 /// Parameter set for an XDRBG instantiation.
 ///

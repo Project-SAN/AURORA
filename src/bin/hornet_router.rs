@@ -1,6 +1,8 @@
+use hornet::application::forward_pcd::PcdForwardPipeline;
 use hornet::application::setup::RegistrySetupPipeline;
-use hornet::node::NoReplay;
+use hornet::control::{self, ControlMessage};
 use hornet::node::exit::TcpExitTransport;
+use hornet::node::NoReplay;
 use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
 use hornet::router::config::RouterConfig;
 use hornet::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
@@ -8,10 +10,8 @@ use hornet::router::runtime::RouterRuntime;
 use hornet::router::storage::{FileRouterStorage, RouterStorage, StoredState};
 use hornet::router::sync::client::{sync_once, DirectoryClient};
 use hornet::router::Router;
-use hornet::application::forward_pcd::PcdForwardPipeline;
 use hornet::setup::wire;
 use hornet::types::{self, PacketType, Result as HornetResult};
-use hornet::control::{self, ControlMessage};
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
@@ -71,16 +71,26 @@ fn main() {
                     Some(&mut exit),
                 ) {
                     eprintln!("packet processing failed: {:?}", err);
-                    eprintln!("  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}", 
-                              packet.direction, packet.chdr.hops, 
-                              packet.ahdr.bytes.len(), packet.payload.len());
+                    eprintln!(
+                        "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
+                        packet.direction,
+                        packet.chdr.hops,
+                        packet.ahdr.bytes.len(),
+                        packet.payload.len()
+                    );
                 } else {
                     if let Ok(actions) = runtime.handle_async_violations() {
                         for req in actions.resend {
                             if let Some(seq) = req.sequence {
-                                eprintln!("async violation: resend requested for policy {:x?} seq {}", req.policy_id, seq);
+                                eprintln!(
+                                    "async violation: resend requested for policy {:x?} seq {}",
+                                    req.policy_id, seq
+                                );
                             } else {
-                                eprintln!("async violation: resend requested for policy {:x?}", req.policy_id);
+                                eprintln!(
+                                    "async violation: resend requested for policy {:x?}",
+                                    req.policy_id
+                                );
                             }
                             if let Ok(addr) = control_target() {
                                 let msg = ControlMessage::ResendRequest {
@@ -93,7 +103,10 @@ fn main() {
                             }
                         }
                         if !actions.blocked.is_empty() {
-                            eprintln!("async violations exceeded threshold; blocked policies: {:?}", actions.blocked);
+                            eprintln!(
+                                "async violations exceeded threshold; blocked policies: {:?}",
+                                actions.blocked
+                            );
                         }
                     }
                 }
@@ -244,9 +257,9 @@ mod tests {
     use hornet::policy::PolicyMetadata;
     use hornet::setup::directory::RouteAnnouncement;
     use hornet::types::{self, PacketDirection, RoutingSegment};
-    use rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;
     use rand_core::RngCore;
+    use rand_core::SeedableRng;
     use serde_json;
     use std::sync::Mutex;
     use x25519_dalek::x25519;

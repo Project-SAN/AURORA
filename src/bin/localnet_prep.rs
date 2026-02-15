@@ -1,18 +1,15 @@
-use hornet::policy::plonk::PlonkPolicy;
+use hornet::crypto::zkp::Circuit;
 use hornet::policy::zkboo::ZkBooPolicy;
-use hornet::policy::Blocklist;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::{from_signed_json, public_key_from_seed, to_signed_json};
 use hornet::setup::directory::{DirectoryAnnouncement, RouteAnnouncement};
 use hornet::utils::encode_hex;
-use hornet::crypto::zkp::Circuit;
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::net::Ipv4Addr;
 
-const DEFAULT_BLOCKLIST: &str = "config/blocklist.json";
 const LOCAL_SECRET: &str = "localnet-secret";
 const DIRECTORY_EPOCH: u64 = 1_700_000_000;
 
@@ -30,28 +27,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if qemu_from_localnet {
         return run_qemu_from_localnet();
     }
-    let out_dir = if qemu { "config/qemu" } else { "config/localnet" };
-    let storage_dir = if qemu { "target/qemu" } else { "target/localnet" };
-
-    let blocklist_path =
-        env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| DEFAULT_BLOCKLIST.to_string());
-    let zkboo_circuit_path = env::var("LOCALNET_ZKBOO_CIRCUIT_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let metadata = if let Some(path) = zkboo_circuit_path.as_deref() {
-        let bytes = fs::read(path)?;
-        let circuit = Circuit::decode(&bytes)
-            .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
-        let policy = ZkBooPolicy::new(circuit);
-        policy.metadata(900, 0)
+    let out_dir = if qemu {
+        "config/qemu"
     } else {
-        let block_json = fs::read_to_string(&blocklist_path)?;
-        let blocklist =
-            Blocklist::from_json(&block_json).map_err(|err| format!("blocklist error: {err:?}"))?;
-        let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
-            .map_err(|err| format!("policy init failed: {err:?}"))?;
-        policy.metadata(900, 0)
+        "config/localnet"
     };
+    let storage_dir = if qemu {
+        "target/qemu"
+    } else {
+        "target/localnet"
+    };
+
+    let path = env::var("LOCALNET_ZKBOO_CIRCUIT_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("ZKBoo-only: set LOCALNET_ZKBOO_CIRCUIT_PATH to a ZKBC circuit file")?;
+    let bytes = fs::read(&path)?;
+    let circuit = Circuit::decode(&bytes)
+        .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
+    let policy = ZkBooPolicy::new(circuit);
+    let metadata = policy.metadata(900, 0);
     fs::create_dir_all(out_dir)?;
     fs::create_dir_all(storage_dir)?;
 
@@ -190,9 +185,8 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
-    let local_info: PolicyInfo = serde_json::from_str(
-        &fs::read_to_string("config/localnet/policy-info.json")?,
-    )?;
+    let local_info: PolicyInfo =
+        serde_json::from_str(&fs::read_to_string("config/localnet/policy-info.json")?)?;
     for spec in routers.iter() {
         let local_path = format!("config/localnet/{}.directory.json", spec.name);
         let signed = fs::read_to_string(local_path)?;
