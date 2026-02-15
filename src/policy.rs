@@ -1,11 +1,5 @@
 pub mod blocklist;
-pub mod bytes;
-#[cfg(feature = "http-client")]
-pub mod client;
 pub mod extract;
-pub mod plonk;
-pub mod poseidon;
-pub mod poseidon_circuit;
 #[cfg(feature = "regex-policy")]
 pub mod regex;
 pub mod tls;

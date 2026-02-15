@@ -2,9 +2,8 @@ use crate::types::Error;
 use alloc::vec::Vec;
 use core::mem;
 use core::str;
-use dusk_plonk::prelude::BlsScalar;
 use serde::Deserialize;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 
 use super::extract::TargetValue;
 
@@ -463,17 +462,6 @@ impl Blocklist {
         self.merkle_root_with(level, next)
     }
 
-    pub fn hashes_as_scalars_into(&self, out: &mut [BlsScalar]) -> crate::types::Result<usize> {
-        let len = self.entries.len();
-        if out.len() < len {
-            return Err(Error::Crypto);
-        }
-        for (idx, entry) in self.entries.iter().enumerate() {
-            out[idx] = scalar_from_leaf(entry.leaf_bytes().as_slice());
-        }
-        Ok(len)
-    }
-
     pub fn from_json(json: &str) -> crate::types::Result<Self> {
         let parsed: BlocklistJson<'_> = serde_json::from_str(json).map_err(|_| Error::Crypto)?;
         let mut entries = Vec::with_capacity(parsed.entries.len());
@@ -577,13 +565,6 @@ fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     out
-}
-
-fn scalar_from_leaf(leaf: &[u8]) -> BlsScalar {
-    let digest = Sha512::digest(leaf);
-    let mut wide = [0u8; 64];
-    wide.copy_from_slice(&digest);
-    BlsScalar::from_bytes_wide(&wide)
 }
 
 fn normalize_ascii(input: &str) -> crate::types::Result<ValueBytes> {

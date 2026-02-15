@@ -1,7 +1,6 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use dusk_plonk::prelude::BlsScalar;
 
 /// Result type for extraction routines.
 pub type Result<T> = core::result::Result<T, ExtractionError>;
@@ -45,23 +44,6 @@ impl TargetValue {
         let mut out = vec![0u8; total];
         out[..data.len()].copy_from_slice(&data);
         Ok(out)
-    }
-
-    pub fn to_field_elements(&self, limb: usize) -> Result<Vec<BlsScalar>> {
-        let data = self.as_bytes();
-        if limb == 0 {
-            return Err(ExtractionError::Overflow);
-        }
-        let mut result = Vec::new();
-        for chunk in data.chunks(limb) {
-            let mut wide = [0u8; 64];
-            if chunk.len() > 64 {
-                return Err(ExtractionError::Overflow);
-            }
-            wide[..chunk.len()].copy_from_slice(chunk);
-            result.push(BlsScalar::from_bytes_wide(&wide));
-        }
-        Ok(result)
     }
 }
 
@@ -163,9 +145,10 @@ mod tests {
     }
 
     #[test]
-    fn witness_to_scalar() {
+    fn witness_padding() {
         let value = TargetValue::Domain(b"abc".to_vec());
-        let scalars = value.to_field_elements(16).expect("scalars");
-        assert_eq!(scalars.len(), 1);
+        let buf = value.to_witness_bytes(16, 2).expect("witness bytes");
+        assert_eq!(buf.len(), 32);
+        assert_eq!(&buf[..3], b"abc");
     }
 }
