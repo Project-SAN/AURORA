@@ -163,7 +163,16 @@ fn cover_range(
         return;
     }
     let half = span / 2;
-    cover_range(nodes, leaf_count, rounds, node * 2, start, half, prefix, out);
+    cover_range(
+        nodes,
+        leaf_count,
+        rounds,
+        node * 2,
+        start,
+        half,
+        prefix,
+        out,
+    );
     cover_range(
         nodes,
         leaf_count,

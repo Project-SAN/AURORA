@@ -58,5 +58,10 @@ pub fn exact_literals(patterns: &[String]) -> Result<Vec<String>> {
 }
 
 fn contains_regex_meta(pattern: &str) -> bool {
-    pattern.chars().any(|c| matches!(c, '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'))
+    pattern.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        )
+    })
 }

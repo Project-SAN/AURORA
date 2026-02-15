@@ -17,6 +17,7 @@ impl<'a> RegistrySetupPipeline<'a> {
 
 impl<'a> SetupPipeline for RegistrySetupPipeline<'a> {
     fn install(&mut self, metadata: PolicyMetadata) -> Result<()> {
-        crate::policy::plonk::ensure_registry(self.registry, &metadata)
+        // ZKBoo-only: registry stores metadata; no Plonk-specific verifier cache.
+        self.registry.register(metadata)
     }
 }

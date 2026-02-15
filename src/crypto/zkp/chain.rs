@@ -41,7 +41,11 @@ pub struct ChainInputs {
 }
 
 impl ChainInputs {
-    pub fn new(meta: ChunkMeta, prev_commit: [u8; COMMIT_LEN], next_commit: [u8; COMMIT_LEN]) -> Self {
+    pub fn new(
+        meta: ChunkMeta,
+        prev_commit: [u8; COMMIT_LEN],
+        next_commit: [u8; COMMIT_LEN],
+    ) -> Self {
         Self {
             meta,
             prev_commit,

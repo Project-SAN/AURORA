@@ -34,7 +34,10 @@ pub enum ProofError {
 pub trait ProofPipeline {
     fn prove(&self, request: ProveInput<'_>) -> Result<PolicyCapsule, ProofError>;
 
-    fn prove_batch(&self, requests: &[ProveInput<'_>]) -> Result<alloc::vec::Vec<PolicyCapsule>, ProofError> {
+    fn prove_batch(
+        &self,
+        requests: &[ProveInput<'_>],
+    ) -> Result<alloc::vec::Vec<PolicyCapsule>, ProofError> {
         let mut out = alloc::vec::Vec::with_capacity(requests.len());
         for request in requests {
             out.push(self.prove(ProveInput {

@@ -57,7 +57,8 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         role: PolicyRole,
     ) -> Result<()> {
         if !metadata.supports_zkboo() {
-            return Ok(());
+            // ZKBoo-only build: reject non-ZKBoo policies explicitly.
+            return Err(Error::PolicyViolation);
         }
         let part = capsule
             .part(ProofKind::Policy)
