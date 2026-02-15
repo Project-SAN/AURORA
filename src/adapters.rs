@@ -1,3 +1,3 @@
+pub mod hybrid;
 pub mod plonk;
 pub mod zkboo;
-pub mod hybrid;

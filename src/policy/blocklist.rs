@@ -349,7 +349,11 @@ impl Blocklist {
             let mut i = 0usize;
             while i < level_len {
                 let left = level[i];
-                let right = if i + 1 < level_len { level[i + 1] } else { level[i] };
+                let right = if i + 1 < level_len {
+                    level[i + 1]
+                } else {
+                    level[i]
+                };
                 next[next_len] = hash_pair(&left, &right);
                 next_len += 1;
                 i += 2;
@@ -421,7 +425,11 @@ impl Blocklist {
             let mut i = 0usize;
             while i < level_len {
                 let left = level[i];
-                let right = if i + 1 < level_len { level[i + 1] } else { level[i] };
+                let right = if i + 1 < level_len {
+                    level[i + 1]
+                } else {
+                    level[i]
+                };
                 next[next_len] = hash_pair(&left, &right);
                 next_len += 1;
                 i += 2;
@@ -455,10 +463,7 @@ impl Blocklist {
         self.merkle_root_with(level, next)
     }
 
-    pub fn hashes_as_scalars_into(
-        &self,
-        out: &mut [BlsScalar],
-    ) -> crate::types::Result<usize> {
+    pub fn hashes_as_scalars_into(&self, out: &mut [BlsScalar]) -> crate::types::Result<usize> {
         let len = self.entries.len();
         if out.len() < len {
             return Err(Error::Crypto);
@@ -492,10 +497,8 @@ impl Blocklist {
                     let end = rule.end.ok_or(Error::Crypto)?;
                     let normalized_start = normalize_ascii(start)?;
                     let normalized_end = normalize_ascii(end)?;
-                    let (start_bytes, end_bytes) = ensure_range_order(
-                        normalized_start,
-                        normalized_end,
-                    );
+                    let (start_bytes, end_bytes) =
+                        ensure_range_order(normalized_start, normalized_end);
                     BlocklistEntry::Range {
                         start: start_bytes,
                         end: end_bytes,
@@ -799,9 +802,15 @@ mod tests {
         let mut leaves = [LeafBytes::empty(); 8];
         let len = blocklist.canonical_leaves_into(&mut leaves).unwrap();
         let leaves = &leaves[..len];
-        assert!(leaves.iter().any(|leaf| leaf.as_slice().first() == Some(&TAG_EXACT)));
-        assert!(leaves.iter().any(|leaf| leaf.as_slice().first() == Some(&TAG_PREFIX)));
-        assert!(leaves.iter().any(|leaf| leaf.as_slice().first() == Some(&TAG_RANGE)));
+        assert!(leaves
+            .iter()
+            .any(|leaf| leaf.as_slice().first() == Some(&TAG_EXACT)));
+        assert!(leaves
+            .iter()
+            .any(|leaf| leaf.as_slice().first() == Some(&TAG_PREFIX)));
+        assert!(leaves
+            .iter()
+            .any(|leaf| leaf.as_slice().first() == Some(&TAG_RANGE)));
         assert!(leaves.iter().any(|leaf| leaf.as_slice() == b"raw"));
     }
 

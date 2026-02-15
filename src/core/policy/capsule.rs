@@ -115,7 +115,12 @@ mod tests {
             policy_id: [0x22; 32],
             version: POLICY_CAPSULE_VERSION,
             part_count: 1,
-            parts: [part, ProofPart::default(), ProofPart::default(), ProofPart::default()],
+            parts: [
+                part,
+                ProofPart::default(),
+                ProofPart::default(),
+                ProofPart::default(),
+            ],
         };
         let mut buffer = capsule.encode().expect("encode");
         buffer.extend_from_slice(b"tail");

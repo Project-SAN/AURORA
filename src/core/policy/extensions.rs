@@ -97,8 +97,8 @@ impl<'a> Iterator for ExtensionIter<'a> {
             return Some(Err(Error::Length));
         }
         let tag = self.bytes[self.cursor];
-        let len = u16::from_be_bytes([self.bytes[self.cursor + 1], self.bytes[self.cursor + 2]])
-            as usize;
+        let len =
+            u16::from_be_bytes([self.bytes[self.cursor + 1], self.bytes[self.cursor + 2]]) as usize;
         self.cursor += 3;
         if self.cursor + len > self.bytes.len() {
             self.remaining = 0;

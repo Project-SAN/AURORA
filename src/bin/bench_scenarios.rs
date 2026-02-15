@@ -1,14 +1,13 @@
 use hornet::adapters::plonk::validator::PlonkCapsuleValidator;
 use hornet::application::forward::RegistryForwardPipeline;
+use hornet::core::policy::{
+    encode_extensions_into, CapsuleExtensionRef, PolicyRole, ProofKind, AUX_MAX,
+    EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_TARGET_HASH, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
+};
 use hornet::node::{NodeCtx, PolicyRuntime};
 use hornet::policy::blocklist::{BlocklistEntry, LeafBytes, ValueBytes};
 use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
-use hornet::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, PolicyRole, ProofKind, AUX_MAX,
-    EXT_TAG_PCD_KEY_HASH,
-    EXT_TAG_PCD_TARGET_HASH, EXT_TAG_ROUTE_ID, EXT_TAG_SESSION_NONCE,
-};
 use hornet::types::{Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
@@ -23,8 +22,14 @@ fn cpu_time() -> Duration {
         if libc::getrusage(libc::RUSAGE_SELF, &mut usage) != 0 {
             return Duration::from_secs(0);
         }
-        let user = Duration::new(usage.ru_utime.tv_sec as u64, (usage.ru_utime.tv_usec as u32) * 1000);
-        let sys = Duration::new(usage.ru_stime.tv_sec as u64, (usage.ru_stime.tv_usec as u32) * 1000);
+        let user = Duration::new(
+            usage.ru_utime.tv_sec as u64,
+            (usage.ru_utime.tv_usec as u32) * 1000,
+        );
+        let sys = Duration::new(
+            usage.ru_stime.tv_sec as u64,
+            (usage.ru_stime.tv_usec as u32) * 1000,
+        );
         user + sys
     }
 }
@@ -214,51 +219,46 @@ fn attach_keybinding_extensions(
         .part(ProofKind::KeyBinding)
         .map(|part| part.commitment)
         .unwrap_or([0u8; 32]);
-        for part in capsule
-            .parts
-            .iter_mut()
-            .take(capsule.part_count as usize)
-        {
-            match part.kind {
-                ProofKind::Consistency => {
-                    let exts = [
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_KEY_HASH,
-                            data: &hkey,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_TARGET_HASH,
-                            data: &keybinding.htarget,
-                        },
-                    ];
-                    let mut aux_buf = [0u8; AUX_MAX];
-                    let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-                        .expect("encode consistency exts");
-                    part.set_aux(&aux_buf[..aux_len]).expect("set aux");
-                }
-                ProofKind::KeyBinding => {
-                    let exts = [
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_KEY_HASH,
-                            data: &hkey,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_SESSION_NONCE,
-                            data: &keybinding.session_nonce,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_ROUTE_ID,
-                            data: &keybinding.route_id,
-                        },
-                    ];
-                    let mut aux_buf = [0u8; AUX_MAX];
-                    let aux_len =
-                        encode_extensions_into(&exts, &mut aux_buf).expect("encode key exts");
-                    part.set_aux(&aux_buf[..aux_len]).expect("set aux");
-                }
-                _ => {}
+    for part in capsule.parts.iter_mut().take(capsule.part_count as usize) {
+        match part.kind {
+            ProofKind::Consistency => {
+                let exts = [
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_KEY_HASH,
+                        data: &hkey,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_TARGET_HASH,
+                        data: &keybinding.htarget,
+                    },
+                ];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len =
+                    encode_extensions_into(&exts, &mut aux_buf).expect("encode consistency exts");
+                part.set_aux(&aux_buf[..aux_len]).expect("set aux");
             }
+            ProofKind::KeyBinding => {
+                let exts = [
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_PCD_KEY_HASH,
+                        data: &hkey,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_SESSION_NONCE,
+                        data: &keybinding.session_nonce,
+                    },
+                    CapsuleExtensionRef {
+                        tag: EXT_TAG_ROUTE_ID,
+                        data: &keybinding.route_id,
+                    },
+                ];
+                let mut aux_buf = [0u8; AUX_MAX];
+                let aux_len = encode_extensions_into(&exts, &mut aux_buf).expect("encode key exts");
+                part.set_aux(&aux_buf[..aux_len]).expect("set aux");
+            }
+            _ => {}
         }
+    }
     Ok(())
 }
 
@@ -363,11 +363,12 @@ fn main() -> Result<()> {
 
         println!("== Proving / Verify ==");
         let prove_iters = 5usize;
-        let (prove_wall, prove_cpu) = bench_loop("prove_payload_with_keybinding", prove_iters, || {
-            let _ = policy
-                .prove_payload_with_keybinding(leaf.as_slice(), Some(keybinding))
-                .expect("prove");
-        });
+        let (prove_wall, prove_cpu) =
+            bench_loop("prove_payload_with_keybinding", prove_iters, || {
+                let _ = policy
+                    .prove_payload_with_keybinding(leaf.as_slice(), Some(keybinding))
+                    .expect("prove");
+            });
         let prove_avg_ms = prove_wall.as_secs_f64() * 1e3 / prove_iters as f64;
         let prove_cpu_ms = prove_cpu.as_secs_f64() * 1e3 / prove_iters as f64;
         println!(
@@ -402,8 +403,14 @@ fn main() -> Result<()> {
                 let mut ahdr = clone_ahdr(&fixture.ahdr);
                 let mut encrypted_tail = tail.clone();
                 let mut iv = fixture.iv0;
-                hornet::source::build(&mut chdr, &ahdr, &fixture.keys, &mut iv, &mut encrypted_tail)
-                    .expect("build");
+                hornet::source::build(
+                    &mut chdr,
+                    &ahdr,
+                    &fixture.keys,
+                    &mut iv,
+                    &mut encrypted_tail,
+                )
+                .expect("build");
                 let cap_buf = capsule.encode().expect("encode");
                 let mut payload = Vec::with_capacity(cap_buf.len());
                 payload.extend_from_slice(&cap_buf);

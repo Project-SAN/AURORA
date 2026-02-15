@@ -1,9 +1,9 @@
+use crate::core::policy::{ProofKind, ProofPart};
 use crate::policy::blocklist::{
     self, Blocklist, BlocklistEntry, LeafBytes, MerkleProof, MerkleWorkspace,
 };
 use crate::policy::plonk::{self, PlonkPolicy};
 use crate::policy::{Extractor, PolicyCapsule, PolicyMetadata, TargetValue};
-use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -220,7 +220,7 @@ impl<S> CachedProofService<S> {
         }
     }
 
-    pub fn precompute(&mut self, request: &ProofRequest<'_>) -> Result<()> 
+    pub fn precompute(&mut self, request: &ProofRequest<'_>) -> Result<()>
     where
         S: ProofService,
     {
@@ -629,9 +629,9 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::policy::blocklist::ValueBytes;
     use crate::policy::VerifierEntry;
+    use alloc::vec;
 
     #[test]
     fn proof_request_serialises() {
@@ -707,9 +707,10 @@ mod tests {
                 verifier_blob: vec![],
             }],
         };
-        let blocked_leaf =
-            crate::policy::blocklist::BlocklistEntry::Exact(ValueBytes::new(b"blocked.example").unwrap())
-                .leaf_bytes();
+        let blocked_leaf = crate::policy::blocklist::BlocklistEntry::Exact(
+            ValueBytes::new(b"blocked.example").unwrap(),
+        )
+        .leaf_bytes();
         let blocklist = Blocklist::from_canonical_bytes(vec![blocked_leaf]).unwrap();
         let mut preprocessor = ProofPreprocessor::new(HttpHostExtractor::default(), blocklist);
         let payload = b"GET / HTTP/1.1\r\nHost: safe.example\r\n\r\n";
@@ -753,9 +754,7 @@ mod tests {
         let cap = resp.into_capsule(&[0x44; 32]).expect("capsule");
         assert_eq!(cap.version, crate::core::policy::POLICY_CAPSULE_VERSION);
         assert_eq!(cap.policy_id, [0x44; 32]);
-        let part = cap
-            .part(ProofKind::Policy)
-            .expect("policy part");
+        let part = cap.part(ProofKind::Policy).expect("policy part");
         assert_eq!(&part.proof[..2], &[0xAA, 0xAA]);
     }
 
@@ -790,13 +789,16 @@ mod tests {
                 policy_id: [0x33; 32],
                 version: crate::core::policy::POLICY_CAPSULE_VERSION,
                 part_count: 1,
-                parts: [part, ProofPart::default(), ProofPart::default(), ProofPart::default()],
+                parts: [
+                    part,
+                    ProofPart::default(),
+                    ProofPart::default(),
+                    ProofPart::default(),
+                ],
             })
         });
         let capsule = service.obtain_proof(&req).expect("capsule");
-        let part = capsule
-            .part(ProofKind::Policy)
-            .expect("policy part");
+        let part = capsule.part(ProofKind::Policy).expect("policy part");
         assert_eq!(&part.proof[..3], &[1, 2, 3]);
     }
 
