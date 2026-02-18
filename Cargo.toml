@@ -12,7 +12,7 @@ name = "hornet"
 
 [features]
 default = []
-std = []
+std = ["dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots"]
 http-client = ["std", "dep:ureq"]
 bench = []
 regex-policy = ["std", "dep:regex"]
@@ -41,6 +41,9 @@ bincode = { version = "1", optional = true }
 num-bigint = { version = "0.4", optional = true }
 ff = { version = "0.13" }
 libc = { version = "0.2" }
+rustls = { version = "0.23.32", default-features = false, features = ["std", "ring"], optional = true }
+rustls-pki-types = { version = "1.12.0", default-features = false, optional = true }
+webpki-roots = { version = "0.26.11", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
@@ -60,6 +63,10 @@ required-features = ["std"]
 [[bench]]
 name = "ascon"
 
+harness = false
+
+[[bench]]
+name = "zkboo"
 harness = false
 
 [[example]]
@@ -84,4 +91,9 @@ required-features = ["std"]
 [[bin]]
 name = "localnet_prep"
 path = "src/bin/localnet_prep.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "hornet_proxy"
+path = "src/bin/hornet_proxy.rs"
 required-features = ["std"]

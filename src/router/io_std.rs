@@ -77,7 +77,7 @@ impl TcpForward {
         let hop = elems.first().ok_or(Error::Length)?;
         match hop {
             RouteElem::NextHop { addr, port } => Ok(format_ip(addr, *port)),
-            RouteElem::ExitTcp { addr, port, .. } => Ok(format_ip(addr, *port)),
+            RouteElem::ExitTcp { addr, port } => Ok(format_ip(addr, *port)),
         }
     }
 }
@@ -109,7 +109,7 @@ impl Forward for TcpForward {
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
                 std::io::Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
             }
-            RouteElem::ExitTcp { addr, port, .. } => {
+            RouteElem::ExitTcp { addr, port } => {
                 let addr_str = format_ip(addr, *port);
                 eprintln!(
                     "[FORWARD] send {:?} -> {} (payload={}, ahdr={})",
@@ -144,7 +144,6 @@ mod tests {
             RouteElem::ExitTcp {
                 addr: RouteIp::V4([203, 0, 113, 5]),
                 port: 443,
-                tls: true,
             },
         ]);
         let addr = TcpForward::resolve_next_hop(&segment).expect("first hop");

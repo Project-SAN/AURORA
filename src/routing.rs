@@ -12,14 +12,14 @@ pub enum IpAddr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteElem {
     NextHop { addr: IpAddr, port: u16 },
-    ExitTcp { addr: IpAddr, port: u16, tls: bool },
+    ExitTcp { addr: IpAddr, port: u16 },
 }
 
 // TLV type identifiers
 const T_NEXT_HOP4: u8 = 0x01;
 const T_NEXT_HOP6: u8 = 0x02;
 const T_EXIT_TCP4: u8 = 0x11;
-const T_EXIT_TCP6: u8 = 0x12; // value layout includes flags (bit0: TLS)
+const T_EXIT_TCP6: u8 = 0x12;
 
 fn be_u16(x: u16) -> [u8; 2] {
     x.to_be_bytes()
@@ -55,22 +55,18 @@ pub fn encode_elems(elems: &[RouteElem]) -> Vec<u8> {
             RouteElem::ExitTcp {
                 addr: IpAddr::V4(ip),
                 port,
-                tls,
             } => {
                 out.push(T_EXIT_TCP4);
-                out.push(7); // flags(1) + ip4(4) + port(2)
-                out.push(if *tls { 1 } else { 0 });
+                out.push(6); // ip4(4) + port(2)
                 out.extend_from_slice(ip);
                 out.extend_from_slice(&be_u16(*port));
             }
             RouteElem::ExitTcp {
                 addr: IpAddr::V6(ip),
                 port,
-                tls,
             } => {
                 out.push(T_EXIT_TCP6);
-                out.push(19); // flags(1) + ip6(16) + port(2)
-                out.push(if *tls { 1 } else { 0 });
+                out.push(18); // ip6(16) + port(2)
                 out.extend_from_slice(ip);
                 out.extend_from_slice(&be_u16(*port));
             }
@@ -121,26 +117,22 @@ pub fn decode_elems(mut bytes: &[u8]) -> Result<Vec<RouteElem>> {
                     port,
                 });
             }
-            (T_EXIT_TCP4, 7) => {
-                let flags = val[0];
+            (T_EXIT_TCP4, 6) => {
                 let mut ip = [0u8; 4];
-                ip.copy_from_slice(&val[1..5]);
-                let port = read_be_u16(&val[5..7]);
+                ip.copy_from_slice(&val[0..4]);
+                let port = read_be_u16(&val[4..6]);
                 out.push(RouteElem::ExitTcp {
                     addr: IpAddr::V4(ip),
                     port,
-                    tls: (flags & 1) != 0,
                 });
             }
-            (T_EXIT_TCP6, 19) => {
-                let flags = val[0];
+            (T_EXIT_TCP6, 18) => {
                 let mut ip = [0u8; 16];
-                ip.copy_from_slice(&val[1..17]);
-                let port = read_be_u16(&val[17..19]);
+                ip.copy_from_slice(&val[0..16]);
+                let port = read_be_u16(&val[16..18]);
                 out.push(RouteElem::ExitTcp {
                     addr: IpAddr::V6(ip),
                     port,
-                    tls: (flags & 1) != 0,
                 });
             }
             _ => return Err(Error::Length),
@@ -173,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_mixed_v6_and_exit_tls() {
+    fn roundtrip_mixed_v6_and_exit() {
         let elems = [
             RouteElem::NextHop {
                 addr: IpAddr::V6([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
@@ -182,7 +174,6 @@ mod tests {
             RouteElem::ExitTcp {
                 addr: IpAddr::V4([93, 184, 216, 34]),
                 port: 443,
-                tls: true,
             }, // example.com
         ];
         let seg = segment_from_elems(&elems);
