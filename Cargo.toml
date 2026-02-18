@@ -64,6 +64,10 @@ required-features = ["std"]
 name = "ascon"
 harness = false
 
+[[bench]]
+name = "zkboo"
+harness = false
+
 [[example]]
 name = "routing"
 path = "example/routing.rs"
