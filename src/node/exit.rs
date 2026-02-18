@@ -4,6 +4,8 @@ use crate::routing::IpAddr;
 use crate::types::Result;
 
 pub trait ExitTransport {
+    // L4 passthrough transport.
+    // `tls` is kept for wire compatibility and is ignored by the std implementation.
     fn send(&mut self, addr: &IpAddr, port: u16, tls: bool, request: &[u8]) -> Result<Vec<u8>>;
 }
 
