@@ -1,4 +1,5 @@
-use hornet::crypto::zkp::Circuit;
+use hornet::crypto::zkp::ascon_circuit;
+use hornet::core::policy::{ProofKind, VerifierEntry};
 use hornet::policy::zkboo::ZkBooPolicy;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::{from_signed_json, public_key_from_seed, to_signed_json};
@@ -38,15 +39,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "target/localnet"
     };
 
-    let path = env::var("LOCALNET_ZKBOO_CIRCUIT_PATH")
+    let secret_len_bytes = env::var("LOCALNET_ZKBOO_SECRET_LEN_BYTES")
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or("ZKBoo-only: set LOCALNET_ZKBOO_CIRCUIT_PATH to a ZKBC circuit file")?;
-    let bytes = fs::read(&path)?;
-    let circuit = Circuit::decode(&bytes)
-        .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
-    let policy = ZkBooPolicy::new(circuit);
-    let metadata = policy.metadata(900, 0);
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(32);
+    let payload_len_bytes = env::var("LOCALNET_ZKBOO_PAYLOAD_LEN_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(96);
+    let host = env::var("LOCALNET_ZKBOO_ALLOWED_HOST").unwrap_or_else(|_| "example.com".into());
+    let host_offset = env::var("LOCALNET_ZKBOO_HOST_OFFSET")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16);
+
+    // For the localnet demo, generate three ZKBoo verifier circuits:
+    // - KeyBinding: outputs hkey = mix_fold(secret)
+    // - Consistency: outputs (hkey, payload_hash) = (mix_fold(secret), mix_fold(payload))
+    // - Policy: outputs (payload_hash, allow_bit) where allow_bit==1 iff Host header matches.
+    let keybinding_circuit = ascon_circuit::build_keybinding_circuit(secret_len_bytes);
+    let consistency_circuit =
+        ascon_circuit::build_consistency_circuit(secret_len_bytes, payload_len_bytes);
+    let policy_circuit =
+        ascon_circuit::build_policy_allow_host_circuit(payload_len_bytes, host_offset, &host);
+
+    let policy = ZkBooPolicy::new(policy_circuit.clone());
+    let mut metadata = policy.metadata(900, 0);
+    // ZKBoo-only: provide verifiers for each ProofKind so routers can enforce role-specific parts.
+    metadata.verifiers = vec![
+        VerifierEntry {
+            kind: ProofKind::KeyBinding as u8,
+            verifier_blob: keybinding_circuit.encode(),
+        },
+        VerifierEntry {
+            kind: ProofKind::Consistency as u8,
+            verifier_blob: consistency_circuit.encode(),
+        },
+        VerifierEntry {
+            kind: ProofKind::Policy as u8,
+            verifier_blob: policy_circuit.encode(),
+        },
+    ];
     fs::create_dir_all(out_dir)?;
     fs::create_dir_all(storage_dir)?;
 
@@ -116,7 +149,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     for spec in routers.iter() {
-        write_directory(spec, &metadata, out_dir)?;
+        // Each router needs the full route list to determine its Entry/Middle/Exit role.
+        // Write the same signed directory to every node in this demo.
+        write_directory(routers.as_slice(), &metadata, out_dir)?;
         write_router_config(spec, out_dir)?;
         if !qemu {
             write_env(spec, out_dir)?;
@@ -187,26 +222,30 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
 
     let local_info: PolicyInfo =
         serde_json::from_str(&fs::read_to_string("config/localnet/policy-info.json")?)?;
+    // Load the localnet directory (policies etc.) from a single file and reuse it for qemu.
+    // We then attach all qemu routes so each router can derive its role.
+    let base_signed = fs::read_to_string("config/localnet/router-entry.directory.json")?;
+    let base_announcement = from_signed_json(&base_signed, &local_public_key())
+        .map_err(|err| format!("invalid localnet directory: {err:?}"))?;
+    let policy_id = base_announcement
+        .policies()
+        .first()
+        .ok_or("no policies in localnet directory")?
+        .policy_id;
+
     for spec in routers.iter() {
-        let local_path = format!("config/localnet/{}.directory.json", spec.name);
-        let signed = fs::read_to_string(local_path)?;
-        let announcement = from_signed_json(&signed, &local_public_key())
-            .map_err(|err| format!("invalid localnet directory: {err:?}"))?;
         let mut directory = DirectoryAnnouncement::new();
-        for policy in announcement.policies() {
+        for policy in base_announcement.policies() {
             directory.push_policy(policy.clone());
         }
-        let policy_id = announcement
-            .policies()
-            .first()
-            .ok_or("no policies in localnet directory")?
-            .policy_id;
-        let segment = routing::segment_from_elems(std::slice::from_ref(&spec.route));
-        directory.push_route(RouteAnnouncement {
-            policy_id,
-            segment,
-            interface: Some(spec.name.to_string()),
-        });
+        for spec in routers.iter() {
+            let segment = routing::segment_from_elems(std::slice::from_ref(&spec.route));
+            directory.push_route(RouteAnnouncement {
+                policy_id,
+                segment,
+                interface: Some(spec.name.to_string()),
+            });
+        }
         let signed = to_signed_json(&directory, &local_private_key(), DIRECTORY_EPOCH)
             .map_err(|err| format!("directory signing failed: {err:?}"))?;
         let path = format!("{out_dir}/{}.directory.json", spec.name);
@@ -236,22 +275,26 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn write_directory(
-    spec: &RouterSpec,
+    routers: &[RouterSpec],
     metadata: &hornet::policy::PolicyMetadata,
     out_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut directory = DirectoryAnnouncement::new();
     directory.push_policy(metadata.clone());
-    let segment = routing::segment_from_elems(std::slice::from_ref(&spec.route));
-    directory.push_route(RouteAnnouncement {
-        policy_id: metadata.policy_id,
-        segment,
-        interface: Some(spec.name.to_string()),
-    });
+    for spec in routers {
+        let segment = routing::segment_from_elems(std::slice::from_ref(&spec.route));
+        directory.push_route(RouteAnnouncement {
+            policy_id: metadata.policy_id,
+            segment,
+            interface: Some(spec.name.to_string()),
+        });
+    }
     let signed = to_signed_json(&directory, &local_private_key(), DIRECTORY_EPOCH)
-        .map_err(|err| format!("directory signing failed for {}: {err:?}", spec.name))?;
-    let path = format!("{out_dir}/{}.directory.json", spec.name);
-    fs::write(path, signed)?;
+        .map_err(|err| format!("directory signing failed: {err:?}"))?;
+    for spec in routers {
+        let path = format!("{out_dir}/{}.directory.json", spec.name);
+        fs::write(path, signed.as_bytes())?;
+    }
     Ok(())
 }
 
