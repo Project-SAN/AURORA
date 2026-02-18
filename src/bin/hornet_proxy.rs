@@ -37,10 +37,9 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
     let req = read_http_request(stream)?;
     let (method, target_host, target_port) = parse_target(&req)?;
     if method.eq_ignore_ascii_case("CONNECT") {
-        return Err(
-            "CONNECT is not supported in current single-shot HORNET mode (no stream tunnel yet)"
-                .into(),
-        );
+        let body = "CONNECT is not supported in current single-shot HORNET mode (no stream tunnel yet)";
+        send_http_error(stream, 501, "Not Implemented", body)?;
+        return Ok(());
     }
 
     let req_path = write_temp_request(&req)?;
@@ -227,4 +226,48 @@ fn send_http_error(
     stream
         .write_all(resp.as_bytes())
         .map_err(|e| format!("write error response: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_target_origin_form_uses_host_header() {
+        let req = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let (method, host, port) = parse_target(req).expect("parse");
+        assert_eq!(method, "GET");
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn parse_target_absolute_uri() {
+        let req = b"GET http://example.com/path HTTP/1.1\r\nHost: ignored.invalid\r\n\r\n";
+        let (_method, host, port) = parse_target(req).expect("parse");
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn parse_target_connect_tunnel() {
+        let req = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
+        let (method, host, port) = parse_target(req).expect("parse");
+        assert_eq!(method, "CONNECT");
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn parse_content_length_zero_by_default() {
+        let len = parse_content_length(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n").expect("len");
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn parse_content_length_value() {
+        let len = parse_content_length(b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 12\r\n\r\n")
+            .expect("len");
+        assert_eq!(len, 12);
+    }
 }
