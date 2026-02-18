@@ -26,17 +26,12 @@ impl TcpExitTransport {
 }
 
 impl ExitTransport for TcpExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, tls: bool, request: &[u8]) -> Result<Vec<u8>> {
+    fn send(&mut self, addr: &IpAddr, port: u16, request: &[u8]) -> Result<Vec<u8>> {
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
         }
 
         let addr_str = socket_addr_string(addr, port);
-        if tls {
-            eprintln!(
-                "[exit] RouteElem::ExitTcp.tls is deprecated and ignored (L4 passthrough mode)"
-            );
-        }
 
         let mut stream = TcpStream::connect(&addr_str).map_err(|_| Error::Crypto)?;
         stream.set_read_timeout(Some(Duration::from_secs(5))).ok();

@@ -201,14 +201,10 @@ enum RouteElemMessage {
     ExitTcp4 {
         ip: String,
         port: u16,
-        #[serde(default)]
-        tls: bool,
     },
     ExitTcp6 {
         ip: String,
         port: u16,
-        #[serde(default)]
-        tls: bool,
     },
 }
 
@@ -232,20 +228,16 @@ impl RouteElemMessage {
             RouteElem::ExitTcp {
                 addr: routing::IpAddr::V4(ip),
                 port,
-                tls,
             } => Ok(RouteElemMessage::ExitTcp4 {
                 ip: Ipv4Addr::from(ip).to_string(),
                 port,
-                tls,
             }),
             RouteElem::ExitTcp {
                 addr: routing::IpAddr::V6(ip),
                 port,
-                tls,
             } => Ok(RouteElemMessage::ExitTcp6 {
                 ip: Ipv6Addr::from(ip).to_string(),
                 port,
-                tls,
             }),
         }
     }
@@ -266,20 +258,18 @@ impl RouteElemMessage {
                     port: *port,
                 })
             }
-            RouteElemMessage::ExitTcp4 { ip, port, tls } => {
+            RouteElemMessage::ExitTcp4 { ip, port } => {
                 let addr = parse_ipv4(ip)?;
                 Ok(RouteElem::ExitTcp {
                     addr: routing::IpAddr::V4(addr.octets()),
                     port: *port,
-                    tls: *tls,
                 })
             }
-            RouteElemMessage::ExitTcp6 { ip, port, tls } => {
+            RouteElemMessage::ExitTcp6 { ip, port } => {
                 let addr = parse_ipv6(ip)?;
                 Ok(RouteElem::ExitTcp {
                     addr: routing::IpAddr::V6(addr.octets()),
                     port: *port,
-                    tls: *tls,
                 })
             }
         }
