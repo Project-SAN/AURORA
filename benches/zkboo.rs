@@ -1,8 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use hornet::crypto::zkp::ascon_circuit;
-use hornet::crypto::zkp::{Circuit, ProverConfig, VerifierConfig, ZkBooEngine};
+use hornet::crypto::zkp::{Proof, ProverConfig, VerifierConfig, ZkBooEngine};
 use rand_chacha::ChaCha20Rng;
-use rand_core::{RngCore, SeedableRng};
+use rand_core::SeedableRng;
+
+const ROUND_CASES: &[u16] = &[1, 4, 8, 16, 32];
 
 fn bits_lsb(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len() * 8);
@@ -14,127 +16,104 @@ fn bits_lsb(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-fn bench_zkboo_prove(c: &mut Criterion) {
-    let mut group = c.benchmark_group("zkboo/prove");
-
-    let mut small = Circuit::new(2);
-    let and_wire = small.add_and(0, 1);
-    small.set_outputs(&[and_wire]);
-    let small_input = vec![1u8, 1u8];
-    let small_output = vec![1u8];
-    let small_cfg = ProverConfig { rounds: 16 };
-    group.bench_function(BenchmarkId::from_parameter("and_rounds16"), |b| {
-        b.iter(|| {
-            let mut rng = ChaCha20Rng::seed_from_u64(0x11AA_2233_4455_6677);
-            let proof = ZkBooEngine
-                .prove_circuit_with_rng(
-                    &small,
-                    black_box(&small_input),
-                    black_box(&small_output),
-                    small_cfg,
-                    &mut rng,
-                )
-                .expect("prove");
-            black_box(proof);
-        });
-    });
-
+fn payload_hash_fixture_32b() -> (hornet::crypto::zkp::Circuit, Vec<u8>, Vec<u8>) {
     let payload = vec![0xA5u8; 32];
     let payload_bits = bits_lsb(&payload);
     let hash_circuit = ascon_circuit::build_payload_hash_circuit(32);
     let hash_output = hash_circuit.eval(&payload_bits).expect("eval");
-    let hash_cfg = ProverConfig { rounds: 16 };
-    group.bench_function(BenchmarkId::from_parameter("payload_hash_32b_rounds16"), |b| {
+    (hash_circuit, payload_bits, hash_output)
+}
+
+fn bench_zkboo_eval(c: &mut Criterion) {
+    let mut group = c.benchmark_group("zkboo/eval");
+    let (circuit, input, _) = payload_hash_fixture_32b();
+    group.bench_function(BenchmarkId::from_parameter("payload_hash_32b"), |b| {
         b.iter(|| {
-            let mut rng = ChaCha20Rng::seed_from_u64(0x88BB_99CC_DDEE_F011);
-            let proof = ZkBooEngine
-                .prove_circuit_with_rng(
-                    &hash_circuit,
-                    black_box(&payload_bits),
-                    black_box(&hash_output),
-                    hash_cfg,
-                    &mut rng,
-                )
-                .expect("prove");
-            black_box(proof);
+            let out = circuit.eval(black_box(&input)).expect("eval");
+            black_box(out);
         });
     });
-
     group.finish();
 }
 
-fn bench_zkboo_verify(c: &mut Criterion) {
-    let mut group = c.benchmark_group("zkboo/verify");
-
-    let mut small = Circuit::new(2);
-    let and_wire = small.add_and(0, 1);
-    small.set_outputs(&[and_wire]);
-    let small_input = vec![1u8, 1u8];
-    let small_output = vec![1u8];
-    let small_rounds = 16u16;
-    let mut small_rng = ChaCha20Rng::seed_from_u64(7);
-    let small_proof = ZkBooEngine
-        .prove_circuit_with_rng(
-            &small,
-            &small_input,
-            &small_output,
-            ProverConfig {
-                rounds: small_rounds,
-            },
-            &mut small_rng,
-        )
-        .expect("prove");
-    group.bench_function(BenchmarkId::from_parameter("and_rounds16"), |b| {
-        b.iter(|| {
-            ZkBooEngine
-                .verify_circuit(
-                    &small,
-                    black_box(&small_output),
-                    black_box(&small_proof),
-                    VerifierConfig {
-                        rounds: small_rounds,
-                    },
-                )
-                .expect("verify");
+fn bench_zkboo_prove_round_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("zkboo/prove_round_scaling");
+    let (circuit, input, output) = payload_hash_fixture_32b();
+    for &rounds in ROUND_CASES {
+        group.bench_function(BenchmarkId::from_parameter(format!("rounds{rounds}")), |b| {
+            let mut rng = ChaCha20Rng::seed_from_u64(0x88BB_99CC_DDEE_F011 + rounds as u64);
+            b.iter(|| {
+                let proof = ZkBooEngine
+                    .prove_circuit_with_rng(
+                        &circuit,
+                        black_box(&input),
+                        black_box(&output),
+                        ProverConfig { rounds },
+                        &mut rng,
+                    )
+                    .expect("prove");
+                black_box(proof);
+            });
         });
-    });
-
-    let mut payload = vec![0u8; 32];
-    let mut payload_rng = ChaCha20Rng::seed_from_u64(19);
-    payload_rng.fill_bytes(&mut payload);
-    let payload_bits = bits_lsb(&payload);
-    let hash_circuit = ascon_circuit::build_payload_hash_circuit(32);
-    let hash_output = hash_circuit.eval(&payload_bits).expect("eval");
-    let hash_rounds = 16u16;
-    let mut hash_rng = ChaCha20Rng::seed_from_u64(27);
-    let hash_proof = ZkBooEngine
-        .prove_circuit_with_rng(
-            &hash_circuit,
-            &payload_bits,
-            &hash_output,
-            ProverConfig {
-                rounds: hash_rounds,
-            },
-            &mut hash_rng,
-        )
-        .expect("prove");
-    group.bench_function(BenchmarkId::from_parameter("payload_hash_32b_rounds16"), |b| {
-        b.iter(|| {
-            ZkBooEngine
-                .verify_circuit(
-                    &hash_circuit,
-                    black_box(&hash_output),
-                    black_box(&hash_proof),
-                    VerifierConfig {
-                        rounds: hash_rounds,
-                    },
-                )
-                .expect("verify");
-        });
-    });
-
+    }
     group.finish();
 }
 
-criterion_group!(benches, bench_zkboo_prove, bench_zkboo_verify);
+fn bench_zkboo_verify_round_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("zkboo/verify_round_scaling");
+    let (circuit, input, output) = payload_hash_fixture_32b();
+    for &rounds in ROUND_CASES {
+        let mut rng = ChaCha20Rng::seed_from_u64(0xC0FF_EE00 + rounds as u64);
+        let proof = ZkBooEngine
+            .prove_circuit_with_rng(&circuit, &input, &output, ProverConfig { rounds }, &mut rng)
+            .expect("prove");
+        group.bench_function(BenchmarkId::from_parameter(format!("rounds{rounds}")), |b| {
+            b.iter(|| {
+                ZkBooEngine
+                    .verify_circuit(
+                        &circuit,
+                        black_box(&output),
+                        black_box(&proof),
+                        VerifierConfig { rounds },
+                    )
+                    .expect("verify");
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_zkboo_proof_serdes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("zkboo/proof_serdes");
+    let (circuit, input, output) = payload_hash_fixture_32b();
+    let rounds = 16u16;
+    let mut rng = ChaCha20Rng::seed_from_u64(0xDEAD_BEEF_1234);
+    let proof = ZkBooEngine
+        .prove_circuit_with_rng(&circuit, &input, &output, ProverConfig { rounds }, &mut rng)
+        .expect("prove");
+    let encoded = proof.encode().expect("encode");
+
+    group.bench_function(BenchmarkId::from_parameter("encode_rounds16"), |b| {
+        b.iter(|| {
+            let bytes = proof.encode().expect("encode");
+            black_box(bytes);
+        });
+    });
+    group.bench_function(BenchmarkId::from_parameter("decode_rounds16"), |b| {
+        b.iter(|| {
+            let (decoded, consumed) = Proof::decode(black_box(&encoded)).expect("decode");
+            black_box(decoded);
+            black_box(consumed);
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_zkboo_eval,
+    bench_zkboo_prove_round_scaling,
+    bench_zkboo_verify_round_scaling,
+    bench_zkboo_proof_serdes
+);
 criterion_main!(benches);
