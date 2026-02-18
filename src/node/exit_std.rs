@@ -145,7 +145,34 @@ fn parse_http_host_header(request: &[u8]) -> Option<String> {
 }
 
 fn tls_config_webpki_roots() -> rustls::ClientConfig {
-    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut roots = rustls::RootCertStore::empty();
+
+    // Optional extra roots (DER-encoded certificates).
+    //
+    // This is mainly for environments with TLS interception or custom CAs, where
+    // `webpki-roots` will not validate the proxy-issued chain.
+    //
+    // Format: a path to a single DER file, or multiple paths separated by `;`.
+    if let Ok(paths) = std::env::var("HORNET_TLS_ROOT_DER_PATHS") {
+        for path in paths.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let _ = roots.add(rustls::pki_types::CertificateDer::from(bytes));
+                }
+                Err(err) => {
+                    eprintln!("[exit-tls] failed to read root DER {path}: {err}");
+                }
+            }
+        }
+    }
+
+    if std::env::var("HORNET_TLS_DISABLE_WEBPKI_ROOTS")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth()

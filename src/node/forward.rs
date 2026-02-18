@@ -4,7 +4,7 @@ use crate::{crypto::prg, types::PacketType};
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
-    policy::{PolicyCapsule, PolicyRole},
+    policy::PolicyCapsule,
     routing::{self, RouteElem},
     sphinx::derive_tau_tag,
     types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
@@ -31,22 +31,17 @@ pub fn process_data(
     let capsule_len = if let Some(policy) = ctx.policy {
         let role = match PolicyCapsule::decode(payload.as_slice()) {
             Ok((capsule, _)) => {
-                let base = policy
-                    .roles
-                    .get(&capsule.policy_id)
-                    .copied()
-                    .ok_or(Error::PolicyViolation)?;
-                let meta = policy
+                // Role must be configured for this policy/router. Do not silently
+                // substitute a different role for ZKBoo.
+                let _meta = policy
                     .registry
                     .get(&capsule.policy_id)
                     .ok_or(Error::PolicyViolation)?;
-                if meta.supports_zkboo() {
-                    // ZKBoo policies are currently enforced as "Policy-at-every-hop" to avoid
-                    // requiring plonk KeyBinding/Consistency parts.
-                    PolicyRole::Exit
-                } else {
-                    base
-                }
+                policy
+                    .roles
+                    .get(&capsule.policy_id)
+                    .copied()
+                    .ok_or(Error::PolicyViolation)?
             }
             Err(_) => return Err(Error::PolicyViolation),
         };

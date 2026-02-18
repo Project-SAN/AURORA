@@ -1,6 +1,7 @@
 //! ZKP-related building blocks (streaming-friendly scaffolding).
 
 pub mod chain;
+pub mod ascon_circuit;
 pub mod circuit;
 pub mod commitment;
 pub mod merkle;
