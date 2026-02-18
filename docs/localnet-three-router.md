@@ -88,6 +88,26 @@ cargo run --bin hornet_data_sender config/localnet/policy-info.json safe.example
 - 第3引数: 任意のメッセージ文字列（省略可）。ポリシーカプセル + ターゲット葉に続いてペイロード末尾へ追加されます。
 - CLI は AHDR/CHDR/ペイロードを構築し、入口ルータ (`127.0.0.1:7101`) に forward フレームを送信します。
 
+## HTTP プロキシ (`hornet_proxy`)
+
+`hornet_proxy` はローカル HTTP プロキシとして待ち受け、受信した HTTP リクエストを `hornet_data_sender` 経由で送信します。
+
+```bash
+HORNET_PROXY_BIND=127.0.0.1:18080 \
+HORNET_POLICY_INFO=config/localnet/policy-info.json \
+HORNET_PROXY_ZKBOO_ROUNDS=8 \
+cargo run --features std --bin hornet_proxy
+```
+
+例:
+
+```bash
+curl -x http://127.0.0.1:18080 http://example.com/
+```
+
+> [!IMPORTANT]
+> 現在の `hornet_proxy` は単発 request/response モードです。`CONNECT` による TLS トンネルは未対応です。
+
 ## 動作確認
 
 1. 各ルータのログにエラーが出ず、`target/localnet/router-*-state.json` が生成されること。

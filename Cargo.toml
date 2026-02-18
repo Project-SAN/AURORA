@@ -87,3 +87,8 @@ required-features = ["std"]
 name = "localnet_prep"
 path = "src/bin/localnet_prep.rs"
 required-features = ["std"]
+
+[[bin]]
+name = "hornet_proxy"
+path = "src/bin/hornet_proxy.rs"
+required-features = ["std"]
