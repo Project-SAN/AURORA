@@ -15,7 +15,6 @@ fn main() {
         RouteElem::ExitTcp {
             addr: IpAddr::V4([203, 0, 113, 10]),
             port: 443,
-            tls: true,
         },
     ];
 
@@ -47,11 +46,11 @@ fn main() {
 fn describe_route_elem(elem: &RouteElem) -> String {
     match elem {
         RouteElem::NextHop { addr, port } => format!("NextHop {}:{}", fmt_ip(addr), port),
-        RouteElem::ExitTcp { addr, port, tls } => format!(
+        RouteElem::ExitTcp { addr, port } => format!(
             "ExitTcp {}:{} ({})",
             fmt_ip(addr),
             port,
-            if *tls { "tls" } else { "plaintext" }
+            "plaintext"
         ),
     }
 }
