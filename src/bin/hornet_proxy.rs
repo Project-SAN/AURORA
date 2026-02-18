@@ -4,7 +4,21 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const STREAM_MAGIC: &[u8; 4] = b"HRS1";
+const STREAM_OP_OPEN: u8 = 1;
+const STREAM_OP_DATA: u8 = 2;
+const STREAM_OP_CLOSE: u8 = 3;
+const STREAM_DATA_OFFSET: usize = 64;
+
+struct SenderConfig {
+    policy_info: String,
+    sender_bin: String,
+    rounds: String,
+    payload_len: usize,
+    host_offset: usize,
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -36,32 +50,138 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
 
     let req = read_http_request(stream)?;
     let (method, target_host, target_port) = parse_target(&req)?;
-    if method.eq_ignore_ascii_case("CONNECT") {
-        let body = "CONNECT is not supported in current single-shot HORNET mode (no stream tunnel yet)";
-        send_http_error(stream, 501, "Not Implemented", body)?;
-        return Ok(());
-    }
-
-    let req_path = write_temp_request(&req)?;
-    let policy_info = env::var("HORNET_POLICY_INFO")
-        .unwrap_or_else(|_| "config/localnet/policy-info.json".to_string());
-    let sender_bin =
-        env::var("HORNET_DATA_SENDER_BIN").unwrap_or_else(|_| "target/debug/hornet_data_sender".into());
-    let rounds = env::var("HORNET_PROXY_ZKBOO_ROUNDS").unwrap_or_else(|_| "8".to_string());
+    let cfg = SenderConfig {
+        policy_info: env::var("HORNET_POLICY_INFO")
+            .unwrap_or_else(|_| "config/localnet/policy-info.json".to_string()),
+        sender_bin: env::var("HORNET_DATA_SENDER_BIN")
+            .unwrap_or_else(|_| "target/debug/hornet_data_sender".into()),
+        rounds: env::var("HORNET_PROXY_ZKBOO_ROUNDS").unwrap_or_else(|_| "8".to_string()),
+        payload_len: env::var("HORNET_PROXY_PAYLOAD_LEN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(96),
+        host_offset: env::var("HORNET_PROXY_HOST_OFFSET")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16),
+    };
     let target = format!("{target_host}:{target_port}");
 
-    let output = Command::new(sender_bin)
-        .arg(&policy_info)
-        .arg(&target)
+    if method.eq_ignore_ascii_case("CONNECT") {
+        handle_connect_tunnel(stream, &cfg, &target, &target_host)
+    } else {
+        let outbound = normalize_http_request_for_policy(&req, &target_host, &cfg)?;
+        eprintln!(
+            "[proxy] forward HTTP {}:{} (in={} out={})",
+            target_host,
+            target_port,
+            req.len(),
+            outbound.len()
+        );
+        let response = run_sender(&cfg, &target, &outbound)?;
+        eprintln!("[proxy] got response bytes={}", response.len());
+        stream
+            .write_all(&response)
+            .map_err(|e| format!("write response: {e}"))
+    }
+}
+
+fn handle_connect_tunnel(
+    stream: &mut TcpStream,
+    cfg: &SenderConfig,
+    target: &str,
+    host: &str,
+) -> Result<(), String> {
+    let session_id = fresh_session_id()?;
+
+    let open_payload = build_stream_payload(
+        cfg.payload_len,
+        cfg.host_offset,
+        host,
+        STREAM_OP_OPEN,
+        session_id,
+        &[],
+    )?;
+    let _ = run_sender(cfg, target, &open_payload)?;
+    stream
+        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        .map_err(|e| format!("write connect ok: {e}"))?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .ok();
+    loop {
+        let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET);
+        let mut chunk = vec![0u8; max_chunk.max(1)];
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let payload = build_stream_payload(
+                    cfg.payload_len,
+                    cfg.host_offset,
+                    host,
+                    STREAM_OP_DATA,
+                    session_id,
+                    &chunk[..n],
+                )?;
+                let response = run_sender(cfg, target, &payload)?;
+                if !response.is_empty() {
+                    stream
+                        .write_all(&response)
+                        .map_err(|e| format!("write tunnel response: {e}"))?;
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                let payload = build_stream_payload(
+                    cfg.payload_len,
+                    cfg.host_offset,
+                    host,
+                    STREAM_OP_DATA,
+                    session_id,
+                    &[],
+                )?;
+                let response = run_sender(cfg, target, &payload)?;
+                if !response.is_empty() {
+                    stream
+                        .write_all(&response)
+                        .map_err(|err| format!("write tunnel poll response: {err}"))?;
+                }
+            }
+            Err(e) => return Err(format!("read tunnel client: {e}")),
+        }
+    }
+
+    let close_payload = build_stream_payload(
+        cfg.payload_len,
+        cfg.host_offset,
+        host,
+        STREAM_OP_CLOSE,
+        session_id,
+        &[],
+    )?;
+    let _ = run_sender(cfg, target, &close_payload)?;
+    Ok(())
+}
+
+fn run_sender(cfg: &SenderConfig, target: &str, request: &[u8]) -> Result<Vec<u8>, String> {
+    let req_path = write_temp_request(request)?;
+    let rsp_path = temp_path("hornet-proxy-rsp")?;
+    let output = Command::new(&cfg.sender_bin)
+        .arg(&cfg.policy_info)
+        .arg(target)
         .arg("00")
         .env("HORNET_REQUEST_PATH", &req_path)
-        .env("HORNET_ZKBOO_ROUNDS", &rounds)
+        .env("HORNET_RESPONSE_OUTPUT_PATH", &rsp_path)
+        .env("HORNET_ZKBOO_ROUNDS", &cfg.rounds)
         .output()
         .map_err(|e| format!("spawn hornet_data_sender: {e}"))?;
-
     let _ = fs::remove_file(&req_path);
 
     if !output.status.success() {
+        let _ = fs::remove_file(&rsp_path);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(format!(
@@ -72,19 +192,98 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let marker = "Received Response:\n";
-    let Some(pos) = stdout.find(marker) else {
-        return Err(format!(
-            "unexpected sender output (missing marker): {}",
-            stdout.trim()
-        ));
+    let bytes = fs::read(&rsp_path).map_err(|e| format!("read sender response output: {e}"))?;
+    eprintln!(
+        "[proxy] sender ok target={} req_bytes={} rsp_bytes={}",
+        target,
+        request.len(),
+        bytes.len()
+    );
+    let _ = fs::remove_file(&rsp_path);
+    Ok(bytes)
+}
+
+fn build_stream_payload(
+    payload_len: usize,
+    host_offset: usize,
+    host: &str,
+    op: u8,
+    session_id: u64,
+    data: &[u8],
+) -> Result<Vec<u8>, String> {
+    if payload_len < STREAM_DATA_OFFSET {
+        return Err(format!("payload len must be >= {}", STREAM_DATA_OFFSET));
+    }
+    let host_header = {
+        let mut v = Vec::with_capacity(6 + host.len() + 2);
+        v.extend_from_slice(b"Host: ");
+        v.extend_from_slice(host.as_bytes());
+        v.extend_from_slice(b"\r\n");
+        v
     };
-    let response = &stdout[pos + marker.len()..];
-    stream
-        .write_all(response.as_bytes())
-        .map_err(|e| format!("write response: {e}"))?;
-    Ok(())
+    if host_offset + host_header.len() > payload_len {
+        return Err("host header does not fit payload policy window".into());
+    }
+    if data.len() > u16::MAX as usize {
+        return Err("data too large".into());
+    }
+    if STREAM_DATA_OFFSET + data.len() > payload_len {
+        return Err("data does not fit payload frame".into());
+    }
+
+    let mut out = vec![0u8; payload_len];
+    out[..4].copy_from_slice(STREAM_MAGIC);
+    out[4] = op;
+    out[6..8].copy_from_slice(&(data.len() as u16).to_be_bytes());
+    out[8..16].copy_from_slice(&session_id.to_be_bytes());
+    out[STREAM_DATA_OFFSET..STREAM_DATA_OFFSET + data.len()].copy_from_slice(data);
+    out[host_offset..host_offset + host_header.len()].copy_from_slice(&host_header);
+    Ok(out)
+}
+
+fn fresh_session_id() -> Result<u64, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "clock error")?
+        .as_nanos();
+    Ok((now & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+}
+
+fn normalize_http_request_for_policy(
+    req: &[u8],
+    host: &str,
+    cfg: &SenderConfig,
+) -> Result<Vec<u8>, String> {
+    if req.len() == cfg.payload_len {
+        return Ok(req.to_vec());
+    }
+    build_fixed_http_get(host, cfg.payload_len, cfg.host_offset)
+}
+
+fn build_fixed_http_get(host: &str, payload_len: usize, host_offset: usize) -> Result<Vec<u8>, String> {
+    let prefix = b"GET / HTTP/1.1\r\n";
+    if host_offset != prefix.len() {
+        return Err(format!(
+            "host_offset={} is unsupported for fixed GET template (expected {})",
+            host_offset,
+            prefix.len()
+        ));
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(b"Host: ");
+    out.extend_from_slice(host.as_bytes());
+    out.extend_from_slice(b"\r\nConnection: close\r\nX-Pad: ");
+    if out.len() + 4 > payload_len {
+        return Err("payload_len too small for fixed request".into());
+    }
+    let pad_len = payload_len - out.len() - 4;
+    out.extend(core::iter::repeat_n(b'a', pad_len));
+    out.extend_from_slice(b"\r\n\r\n");
+    if out.len() != payload_len {
+        return Err("failed to construct fixed payload length request".into());
+    }
+    Ok(out)
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
@@ -203,13 +402,17 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 }
 
 fn write_temp_request(req: &[u8]) -> Result<PathBuf, String> {
+    let path = temp_path("hornet-proxy-req")?;
+    fs::write(&path, req).map_err(|e| format!("write temp request: {e}"))?;
+    Ok(path)
+}
+
+fn temp_path(prefix: &str) -> Result<PathBuf, String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "clock error")?
         .as_nanos();
-    let path = PathBuf::from(format!("/tmp/hornet-proxy-{now}.req"));
-    fs::write(&path, req).map_err(|e| format!("write temp request: {e}"))?;
-    Ok(path)
+    Ok(PathBuf::from(format!("/tmp/{prefix}-{now}.bin")))
 }
 
 fn send_http_error(

@@ -504,6 +504,13 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     )
     .map_err(|e| format!("decrypt failed: {e:?}"))?;
 
+    if let Ok(path) = env::var("HORNET_RESPONSE_OUTPUT_PATH") {
+        if !path.trim().is_empty() {
+            fs::write(&path, &encrypted_response)
+                .map_err(|e| format!("failed to write response output {path}: {e}"))?;
+        }
+    }
+
     println!("Round-trip time: {:.2?}", start_rtt.elapsed());
     println!("Total time: {:.2?}", start_total.elapsed());
     println!(
