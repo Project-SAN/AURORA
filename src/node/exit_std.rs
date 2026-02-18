@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt::Write as FmtWrite;
 use std::io::{Read, Write};
@@ -10,16 +11,26 @@ use crate::types::{Error, Result};
 
 use super::ExitTransport;
 
-pub struct TcpExitTransport;
+const STREAM_DATA_OFFSET: usize = 64;
+
+pub struct TcpExitTransport {
+    sessions: BTreeMap<u64, TcpStream>,
+}
 
 impl TcpExitTransport {
     pub fn new() -> Self {
-        Self
+        Self {
+            sessions: BTreeMap::new(),
+        }
     }
 }
 
 impl ExitTransport for TcpExitTransport {
     fn send(&mut self, addr: &IpAddr, port: u16, tls: bool, request: &[u8]) -> Result<Vec<u8>> {
+        if let Some(frame) = parse_stream_frame(request) {
+            return self.handle_stream_frame(addr, port, frame);
+        }
+
         let addr_str = socket_addr_string(addr, port);
         if tls {
             eprintln!(
@@ -36,6 +47,105 @@ impl ExitTransport for TcpExitTransport {
         let _ = stream.read_to_end(&mut response);
         Ok(response)
     }
+}
+
+impl TcpExitTransport {
+    fn handle_stream_frame(
+        &mut self,
+        addr: &IpAddr,
+        port: u16,
+        frame: StreamFrame<'_>,
+    ) -> Result<Vec<u8>> {
+        match frame.op {
+            StreamOp::Open => {
+                let key = frame.session_id;
+                if !self.sessions.contains_key(&key) {
+                    let addr_str = socket_addr_string(addr, port);
+                    let stream = TcpStream::connect(&addr_str).map_err(|_| Error::Crypto)?;
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(60)))
+                        .ok();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .ok();
+                    self.sessions.insert(key, stream);
+                }
+                Ok(b"OK".to_vec())
+            }
+            StreamOp::Data => {
+                let stream = self.sessions.get_mut(&frame.session_id).ok_or(Error::Crypto)?;
+                stream.write_all(frame.data).map_err(|_| Error::Crypto)?;
+                stream.flush().map_err(|_| Error::Crypto)?;
+                read_available(stream)
+            }
+            StreamOp::Close => {
+                self.sessions.remove(&frame.session_id);
+                Ok(Vec::new())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StreamOp {
+    Open,
+    Data,
+    Close,
+}
+
+struct StreamFrame<'a> {
+    op: StreamOp,
+    session_id: u64,
+    data: &'a [u8],
+}
+
+fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
+    if req.len() < STREAM_DATA_OFFSET || &req[..4] != b"HRS1" {
+        return None;
+    }
+    let op = match req[4] {
+        1 => StreamOp::Open,
+        2 => StreamOp::Data,
+        3 => StreamOp::Close,
+        _ => return None,
+    };
+    let mut sid = [0u8; 8];
+    sid.copy_from_slice(&req[8..16]);
+    let session_id = u64::from_be_bytes(sid);
+    let data_len = u16::from_be_bytes([req[6], req[7]]) as usize;
+    let off = STREAM_DATA_OFFSET;
+    if off + data_len > req.len() {
+        return None;
+    }
+    Some(StreamFrame {
+        op,
+        session_id,
+        data: &req[off..off + data_len],
+    })
+}
+
+fn read_available(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                out.extend_from_slice(&buf[..n]);
+                if n < buf.len() {
+                    break;
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
+            Err(_) => return Err(Error::Crypto),
+        }
+    }
+    Ok(out)
 }
 
 fn socket_addr_string(addr: &IpAddr, port: u16) -> String {
