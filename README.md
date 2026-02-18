@@ -122,3 +122,12 @@ Forward 際には、同じ形式で `direction=0`（forward）として次ホッ
 - `docs/zkmb-hornet-protocol.md` – end-to-end overview of AURORA (legacy filename), including TLV formats, API schema, and roadmap items.
 - `src/policy/blocklist.rs` – JSON schema, canonical leaf encoding, and Merkle proof helpers used by the client.
 - `src/policy/client.rs` – proof preprocessor, HTTP client, and non-membership witness serialization.
+
+## Formal Verification (Verus)
+
+Verus-based proofs for kernel invariants are tracked under:
+
+- `kernel/verus/README.md`
+
+Initial scope includes arithmetic and page-table index properties derived from `kernel/src/paging.rs`.
+Proofs are colocated with kernel code at `kernel/src/paging.verus.rs` and executed via `kernel/verus/run-verus.sh`.
