@@ -61,9 +61,6 @@ impl ZkBooPolicy {
         rng: &mut R,
     ) -> Result<PolicyCapsule> {
         let outputs = self.circuit.eval(input_bits)?;
-        if outputs.len() != 1 || outputs[0] != 1 {
-            return Err(Error::PolicyViolation);
-        }
         let engine = ZkBooEngine;
         let proof = engine.prove_circuit_with_rng(
             &self.circuit,

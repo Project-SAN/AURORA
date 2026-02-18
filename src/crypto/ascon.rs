@@ -53,6 +53,49 @@ pub fn permute12(state: &mut [u64; 5]) {
 const RATE_BYTES: usize = 8;
 const HASH_IV: u64 = 0x0000_0801_00cc_0002;
 
+pub const MIX_DOMAIN_KEYBIND: u64 = u64::from_le_bytes(*b"KBIND\0\0\0");
+pub const MIX_DOMAIN_PAYLOAD: u64 = u64::from_le_bytes(*b"PAYLOAD\0");
+
+/// A lightweight Ascon-based mixing function for fixed-size inputs.
+///
+/// This is **not** Ascon-Hash256: it folds the message into the 320-bit state,
+/// applies one Ascon-p[12] permutation, and returns 256 bits of output.
+///
+/// The folding is done in 64-bit little-endian words:
+/// `state[(word_index % 5)] ^= word`.
+/// `state[4] ^= len(data)`.
+pub fn mix_fold(domain: u64, data: &[u8]) -> [u8; 32] {
+    let mut state = [0u64; 5];
+    state[0] = HASH_IV ^ domain;
+    state[4] ^= data.len() as u64;
+
+    let mut idx = 0usize;
+    for chunk in data.chunks_exact(RATE_BYTES) {
+        let mut buf = [0u8; RATE_BYTES];
+        buf.copy_from_slice(chunk);
+        let word = u64::from_le_bytes(buf);
+        state[idx % 5] ^= word;
+        idx += 1;
+    }
+    // If the caller passes a non-multiple of 8 bytes, fold the remainder with zero padding.
+    let rem = data.chunks_exact(RATE_BYTES).remainder();
+    if !rem.is_empty() {
+        let mut buf = [0u8; RATE_BYTES];
+        buf[..rem.len()].copy_from_slice(rem);
+        let word = u64::from_le_bytes(buf);
+        state[idx % 5] ^= word;
+    }
+
+    permute12(&mut state);
+
+    let mut out = [0u8; 32];
+    out[0..8].copy_from_slice(&state[0].to_le_bytes());
+    out[8..16].copy_from_slice(&state[1].to_le_bytes());
+    out[16..24].copy_from_slice(&state[2].to_le_bytes());
+    out[24..32].copy_from_slice(&state[3].to_le_bytes());
+    out
+}
+
 /// Ascon-Hash256 (NIST SP 800-232) with a 64-bit rate and 256-bit output.
 pub struct AsconHash256 {
     state: [u64; 5],

@@ -4,7 +4,7 @@ use crate::routing::IpAddr;
 use crate::types::Result;
 
 pub trait ExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, tls: bool, request: &[u8]) -> Result<Vec<u8>>;
+    fn send(&mut self, addr: &IpAddr, port: u16, request: &[u8]) -> Result<Vec<u8>>;
 }
 
 #[cfg(feature = "std")]

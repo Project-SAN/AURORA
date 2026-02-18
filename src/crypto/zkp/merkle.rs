@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 
 use crate::crypto::ascon::AsconHash256;
 
-const LEAF_DOMAIN: &[u8] = b"AURORA-ZKBOO-LEAF";
-const NODE_DOMAIN: &[u8] = b"AURORA-ZKBOO-NODE";
+const LEAF_DOMAIN: &[u8] = b"LEAF";
+const NODE_DOMAIN: &[u8] = b"NODE";
 
 #[derive(Clone, Debug)]
 pub struct MerkleTree {

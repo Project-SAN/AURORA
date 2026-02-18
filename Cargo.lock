@@ -72,6 +72,8 @@ dependencies = [
  "rand_chacha",
  "rand_core 0.6.4",
  "regex",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
@@ -79,6 +81,7 @@ dependencies = [
  "spin",
  "subtle",
  "ureq",
+ "webpki-roots 0.26.11",
  "x25519-dalek",
 ]
 
