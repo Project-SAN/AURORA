@@ -283,16 +283,18 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         keys.push(Si(si));
     }
     let exp = compute_expiry(600);
+    if env::var("HORNET_EXIT_TLS").is_ok() {
+        eprintln!("[sender] HORNET_EXIT_TLS is deprecated and ignored (Exit is L4 passthrough)");
+    }
     let mut fses = Vec::with_capacity(hops);
     for (hop, (state, _route)) in routers.iter().enumerate() {
         let segment = if hop == hops - 1 {
-            // Last hop: construct dynamic exit segment
-            let force_tls = env::var("HORNET_EXIT_TLS").ok().as_deref() == Some("1");
-            let tls = force_tls || target_port == 443;
+            // Last hop: construct dynamic exit segment.
+            // tls is kept only for wire compatibility and is ignored by Exit.
             let elem = RouteElem::ExitTcp {
                 addr: target_ip.clone(),
                 port: target_port,
-                tls,
+                tls: false,
             };
             routing::segment_from_elems(&[elem])
         } else {
