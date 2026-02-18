@@ -131,7 +131,6 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
             segment: routing::segment_from_elems(&[RouteElem::ExitTcp {
                 addr: IpAddr::V4([127, 0, 0, 1]),
                 port: 7003,
-                tls: false,
             }]),
         },
     ];

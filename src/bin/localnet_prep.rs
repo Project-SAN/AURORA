@@ -111,7 +111,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 route: RouteElem::ExitTcp {
                     addr: IpAddr::V4(parse_ipv4(host)),
                     port: 8080,
-                    tls: false,
                 },
             },
         ]
@@ -142,7 +141,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 route: RouteElem::ExitTcp {
                     addr: IpAddr::V4(parse_ipv4("127.0.0.1")),
                     port: 7200,
-                    tls: false,
                 },
             },
         ]
@@ -215,7 +213,6 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
             route: RouteElem::ExitTcp {
                 addr: IpAddr::V4(parse_ipv4(host)),
                 port: 8080,
-                tls: false,
             },
         },
     ];
