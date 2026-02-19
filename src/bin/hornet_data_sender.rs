@@ -1,17 +1,15 @@
 use hornet::core::policy::ProofKind;
-use hornet::pcd::{HashPcdBackend, PcdBackend, PcdState};
 use hornet::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH, EXT_TAG_PCD_PROOF,
-    EXT_TAG_PCD_ROOT, EXT_TAG_PCD_SEQ, EXT_TAG_PCD_STATE, EXT_TAG_PCD_TARGET_HASH,
-    EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE,
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_SEQUENCE,
+    EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH,
 };
+use hornet::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use hornet::crypto::zkp::Circuit;
+use hornet::crypto::zkp::{Proof, VerifierConfig, ZkBooEngine};
+use hornet::policy::PolicyMetadata;
 use hornet::policy::blocklist;
-use hornet::policy::plonk::{KeyBindingInputs, PlonkPolicy};
 use hornet::policy::zkboo::ZkBooProofService;
-use hornet::policy::{Blocklist, TargetValue};
-use sha2::{Digest, Sha256};
-use hornet::policy::Extractor;
+use hornet::policy::TargetValue;
 use hornet::router::storage::StoredState;
 use hornet::routing::{self, IpAddr, RouteElem};
 use hornet::setup::directory::RouteAnnouncement;
@@ -24,6 +22,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -46,11 +45,16 @@ fn run() -> Result<(), String> {
     let message = args
         .next()
         .unwrap_or_else(|| "hello from hornet_data_sender".into());
-    let _control = spawn_control_listener(info_path.to_string(), host.to_string(), message.as_bytes().to_vec());
+    let _control = spawn_control_listener(
+        info_path.to_string(),
+        host.to_string(),
+        message.as_bytes().to_vec(),
+    );
     send_data(&info_path, &host, message.as_bytes())
 }
 
 fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), String> {
+    let start_total = Instant::now();
     let info: PolicyInfo = {
         let json = fs::read_to_string(info_path)
             .map_err(|err| format!("failed to read {info_path}: {err}"))?;
@@ -61,209 +65,215 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     }
     let policy_id = decode_policy_id(&info.policy_id)?;
     let routers = load_router_states(&info.routers, &policy_id)?;
-    let zkboo_circuit_path = env::var("HORNET_ZKBOO_CIRCUIT_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let zkboo_mode = zkboo_circuit_path.is_some();
+    let policy_meta = load_policy_metadata(&info.routers, &policy_id)?;
 
     // Resolve target host
     let (target_hostname, target_port) = parse_host_port(host, 80)?;
     let (target_ip, target_port) = resolve_target_parts(&target_hostname, target_port)?;
     println!("Resolved {} to {:?}:{}", host, target_ip, target_port);
 
-    let request_payload = if zkboo_mode {
-        let record = read_tls_record_bytes(payload_tail)?;
-        let _ = hornet::policy::tls::take_single_record_exact(&record)
-            .map_err(|_| "expected exactly one TLS record (header+fragment)".to_string())?;
-        record
-    } else {
-        let base_request =
-            format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-        let mut request_payload = base_request.into_bytes();
-        request_payload.extend_from_slice(payload_tail);
-        request_payload
-    };
-    let canonical_bytes = if zkboo_mode {
+    let request_payload = read_request_bytes(payload_tail)?;
+    let canonical_bytes = {
         let target = target_value_from_hostname(&target_hostname)?;
-        let entry = blocklist::entry_from_target(&target)
-            .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
-        entry.leaf_bytes()
-    } else {
-        let extractor = hornet::policy::extract::HttpHostExtractor;
-        let target = extractor
-            .extract(&request_payload)
-            .map_err(|err| format!("failed to extract host: {err:?}"))?;
         let entry = blocklist::entry_from_target(&target)
             .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
         entry.leaf_bytes()
     };
     let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
     let sequence = current_sequence()?;
-    let policy_aux = {
-        let seq_buf = sequence.to_be_bytes();
-        let exts = [CapsuleExtensionRef {
-            tag: EXT_TAG_SEQUENCE,
-            data: &seq_buf,
-        }];
-        let mut aux_buf = [0u8; AUX_MAX];
-        let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-            .map_err(|_| "failed to encode policy extensions")?;
-        aux_buf[..aux_len].to_vec()
-    };
+    let seq_buf = sequence.to_be_bytes();
 
-    let capsule = if let Some(path) = zkboo_circuit_path.as_deref() {
+    let capsule = {
         let rounds: u16 = env::var("HORNET_ZKBOO_ROUNDS")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(64);
-        let bytes = fs::read(path)
-            .map_err(|err| format!("failed to read ZKBoo circuit ({path}): {err}"))?;
-        let circuit = Circuit::decode(&bytes)
-            .map_err(|err| format!("failed to decode ZKBoo circuit ({path}): {err:?}"))?;
-        let service = ZkBooProofService::new(circuit, rounds);
-        if service.policy_id() != &policy_id {
-            return Err("policy-id mismatch between policy-info and zkboo circuit".into());
+        let policy_payload = request_payload.as_slice();
+
+        let kb_circuit = circuit_from_metadata(&policy_meta, ProofKind::KeyBinding)?;
+        let cons_circuit = circuit_from_metadata(&policy_meta, ProofKind::Consistency)?;
+        let pol_circuit = circuit_from_metadata(&policy_meta, ProofKind::Policy)?;
+        let local_verify_enabled = env::var("HORNET_LOCAL_VERIFY").ok().as_deref() == Some("1");
+        let kb_verify = local_verify_enabled.then(|| kb_circuit.clone());
+        let cons_verify = local_verify_enabled.then(|| cons_circuit.clone());
+        let pol_verify = local_verify_enabled.then(|| pol_circuit.clone());
+
+        let kb_len = kb_circuit.n_inputs / 8;
+        if kb_len * 8 != kb_circuit.n_inputs {
+            return Err("keybinding circuit n_inputs must be byte-aligned".into());
+        }
+        let pol_len = pol_circuit.n_inputs / 8;
+        if pol_len * 8 != pol_circuit.n_inputs {
+            return Err("policy circuit n_inputs must be byte-aligned".into());
+        }
+        if policy_payload.len() != pol_len {
+            return Err(format!(
+                "request length mismatch: got {} bytes, policy circuit expects {} bytes",
+                policy_payload.len(),
+                pol_len
+            ));
+        }
+        let cons_len = cons_circuit.n_inputs / 8;
+        if cons_len * 8 != cons_circuit.n_inputs {
+            return Err("consistency circuit n_inputs must be byte-aligned".into());
+        }
+        if cons_len != kb_len + pol_len {
+            return Err(format!(
+                "consistency circuit input must be secret+payload ({}+{} bytes), got {} bytes",
+                kb_len, pol_len, cons_len
+            ));
         }
 
-        // Prove exactly one TLS record (header+fragment).
-        let plaintext_tls_record = request_payload.as_slice();
-        println!("Generating ZKBoo policy proof (rounds={})...", rounds);
-        let proof_start = Instant::now();
-        let mut capsule = service
-            .prove_payload_lsb_first(plaintext_tls_record, &policy_aux)
-            .map_err(|err| format!("failed to prove payload with zkboo: {err:?}"))?;
-        if let Some(part) = capsule
-            .parts
-            .iter_mut()
-            .take(capsule.part_count as usize)
-            .find(|part| part.kind == ProofKind::Policy)
-        {
-            part.set_aux(&policy_aux)
-                .map_err(|_| "failed to set policy extensions")?;
-        }
-        println!("Proof generated in {:.2?}", proof_start.elapsed());
-        Ok::<_, String>(capsule)
-    } else {
-        let blocklist_path =
-            env::var("LOCALNET_BLOCKLIST").unwrap_or_else(|_| "config/blocklist.json".into());
-        let block_json = fs::read_to_string(&blocklist_path)
-            .map_err(|err| format!("failed to read {blocklist_path}: {err}"))?;
-        let blocklist = Blocklist::from_json(&block_json)
-            .map_err(|err| format!("blocklist parse error: {err:?}"))?;
-        let policy = PlonkPolicy::new_from_blocklist(b"localnet-demo", &blocklist)
-            .map_err(|err| format!("failed to build policy: {err:?}"))?;
-        if policy.policy_id() != &policy_id {
-            return Err("policy-id mismatch between policy-info and blocklist".into());
-        }
-
-        let mut sender_secret = [0u8; 32];
-        let mut session_nonce = [0u8; 32];
-        rng.fill_bytes(&mut sender_secret);
-        rng.fill_bytes(&mut session_nonce);
-        let route_id = compute_route_id(&routers, &target_ip, target_port);
-        let htarget = hash_bytes(canonical_bytes.as_slice());
-        println!("Generating keybinding+policy proof...");
-        let proof_start = Instant::now();
-        let mut capsule = policy
-            .prove_payload_with_keybinding(
-                canonical_bytes.as_slice(),
-                Some(KeyBindingInputs {
-                    sender_secret,
-                    htarget,
-                    session_nonce,
-                    route_id,
-                }),
-            )
-            .map_err(|err| format!("failed to prove payload: {err:?}"))?;
-        println!("Proof generated in {:.2?}", proof_start.elapsed());
-
-        let mut workspace = blocklist::MerkleWorkspace::new();
-        let root = blocklist.merkle_root_in_workspace(&mut workspace);
-        let hkey = capsule
-            .part(ProofKind::KeyBinding)
-            .map(|part| part.commitment)
-            .unwrap_or([0u8; 32]);
-        let init_state = PcdState {
-            hkey,
-            seq: 1,
-            root,
-            htarget,
-        };
-        let backend = pcd_backend_from_env();
-        let init_hash = backend.hash(&init_state);
-        let pcd_proof = backend
-            .prove_base(&init_state)
-            .unwrap_or_else(|_| Vec::new());
-        for part in capsule
-            .parts
-            .iter_mut()
-            .take(capsule.part_count as usize)
-        {
-            match part.kind {
-                ProofKind::Policy => {
-                    part.set_aux(&policy_aux)
-                        .map_err(|_| "failed to set policy extensions")?;
+        let secret = {
+            if let Ok(hex) = env::var("HORNET_ZKBOO_SECRET_HEX") {
+                if !hex.trim().is_empty() {
+                    let bytes = decode_hex(&hex)
+                        .map_err(|err| format!("invalid HORNET_ZKBOO_SECRET_HEX: {err}"))?;
+                    if bytes.len() != kb_len {
+                        return Err(format!(
+                            "HORNET_ZKBOO_SECRET_HEX must be {} bytes (got {})",
+                            kb_len,
+                            bytes.len()
+                        ));
+                    }
+                    bytes
+                } else {
+                    Vec::new()
                 }
-                ProofKind::Consistency => {
-                    let seq_buf = init_state.seq.to_be_bytes();
-                    let exts = [
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_KEY_HASH,
-                            data: &init_state.hkey,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_ROOT,
-                            data: &init_state.root,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_TARGET_HASH,
-                            data: &init_state.htarget,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_SEQ,
-                            data: &seq_buf,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_STATE,
-                            data: &init_hash,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_PROOF,
-                            data: &pcd_proof,
-                        },
-                    ];
-                    let mut aux_buf = [0u8; AUX_MAX];
-                    let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-                        .map_err(|_| "failed to encode consistency extensions")?;
-                    part.set_aux(&aux_buf[..aux_len])
-                        .map_err(|_| "failed to set consistency extensions")?;
-                }
-                ProofKind::KeyBinding => {
-                    let exts = [
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_PCD_KEY_HASH,
-                            data: &hkey,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_SESSION_NONCE,
-                            data: &session_nonce,
-                        },
-                        CapsuleExtensionRef {
-                            tag: EXT_TAG_ROUTE_ID,
-                            data: &route_id,
-                        },
-                    ];
-                    let mut aux_buf = [0u8; AUX_MAX];
-                    let aux_len = encode_extensions_into(&exts, &mut aux_buf)
-                        .map_err(|_| "failed to encode keybinding extensions")?;
-                    part.set_aux(&aux_buf[..aux_len])
-                        .map_err(|_| "failed to set keybinding extensions")?;
-                }
+            } else {
+                Vec::new()
             }
+        };
+        let secret = if secret.is_empty() {
+            let mut buf = vec![0u8; kb_len];
+            rng.fill_bytes(&mut buf);
+            buf
+        } else {
+            secret
+        };
+
+        let hkey = mix_fold(MIX_DOMAIN_KEYBIND, &secret);
+        let payload_hash = mix_fold(MIX_DOMAIN_PAYLOAD, policy_payload);
+
+        let aux_keybinding = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_SEQUENCE,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &hkey,
+            },
+        ])?;
+        let aux_consistency = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_SEQUENCE,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PCD_KEY_HASH,
+                data: &hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PAYLOAD_HASH,
+                data: &payload_hash,
+            },
+        ])?;
+        let aux_policy = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_SEQUENCE,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PAYLOAD_HASH,
+                data: &payload_hash,
+            },
+        ])?;
+
+        let mut consistency_payload = Vec::with_capacity(secret.len() + policy_payload.len());
+        consistency_payload.extend_from_slice(&secret);
+        consistency_payload.extend_from_slice(policy_payload);
+
+        println!(
+            "Generating ZKBoo proofs (rounds={}): KeyBinding/Consistency/Policy...",
+            rounds
+        );
+        let proof_start = Instant::now();
+
+        let kb = make_part(
+            &policy_id,
+            kb_circuit,
+            rounds,
+            &secret,
+            &aux_keybinding,
+            ProofKind::KeyBinding,
+        )?;
+        let cons = make_part(
+            &policy_id,
+            cons_circuit,
+            rounds,
+            &consistency_payload,
+            &aux_consistency,
+            ProofKind::Consistency,
+        )?;
+        let pol = make_part(
+            &policy_id,
+            pol_circuit,
+            rounds,
+            policy_payload,
+            &aux_policy,
+            ProofKind::Policy,
+        )?;
+
+        if local_verify_enabled {
+            local_verify_part(
+                "KeyBinding",
+                kb_verify.as_ref().ok_or_else(|| "missing kb circuit".to_string())?,
+                &kb,
+                &bits_from_bytes_lsb_first(&hkey),
+            )?;
+            let mut cons_out = Vec::with_capacity(32 * 8 * 2);
+            cons_out.extend_from_slice(&bits_from_bytes_lsb_first(&hkey));
+            cons_out.extend_from_slice(&bits_from_bytes_lsb_first(&payload_hash));
+            local_verify_part(
+                "Consistency",
+                cons_verify
+                    .as_ref()
+                    .ok_or_else(|| "missing cons circuit".to_string())?,
+                &cons,
+                &cons_out,
+            )?;
+            let mut pol_out = Vec::with_capacity(32 * 8 + 1);
+            pol_out.extend_from_slice(&bits_from_bytes_lsb_first(&payload_hash));
+            pol_out.push(1);
+            local_verify_part(
+                "Policy",
+                pol_verify
+                    .as_ref()
+                    .ok_or_else(|| "missing pol circuit".to_string())?,
+                &pol,
+                &pol_out,
+            )?;
+            println!("[local-verify] all parts verified");
         }
 
-        Ok::<_, String>(capsule)
-    }?;
+        println!("Proofs generated in {:.2?}", proof_start.elapsed());
+
+        hornet::policy::PolicyCapsule {
+            policy_id,
+            version: hornet::core::policy::POLICY_CAPSULE_VERSION,
+            part_count: 3,
+            parts: [kb, cons, pol, hornet::policy::ProofPart::default()],
+        }
+    };
+
+    if env::var("HORNET_DRY_RUN").ok().as_deref() == Some("1") {
+        let capsule_len = capsule
+            .encoded_len()
+            .map_err(|_| "failed to compute capsule length".to_string())?;
+        println!("[dry-run] capsule_len={capsule_len} bytes");
+        return Ok(());
+    }
     let hops = routers.len();
     let rmax = hops;
     let mut keys = Vec::with_capacity(hops);
@@ -276,11 +286,10 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut fses = Vec::with_capacity(hops);
     for (hop, (state, _route)) in routers.iter().enumerate() {
         let segment = if hop == hops - 1 {
-            // Last hop: construct dynamic exit segment
+            // Last hop: construct dynamic exit segment.
             let elem = RouteElem::ExitTcp {
                 addr: target_ip.clone(),
                 port: target_port,
-                tls: false, // TODO: infer from port or scheme?
             };
             routing::segment_from_elems(&[elem])
         } else {
@@ -290,12 +299,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         };
 
         let fs = hornet::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
-            .map_err(|err| {
-                format!(
-                    "failed to build FS for hop {}: {err:?}",
-                    hop
-                )
-            })?;
+            .map_err(|err| format!("failed to build FS for hop {}: {err:?}", hop))?;
         fses.push(fs);
     }
     let mut ahdr_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xA55AA55A);
@@ -310,8 +314,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut chdr = hornet::packet::chdr::data_header(hops as u8, iv);
 
     // Setup listener for response
-    let bind_addr =
-        env::var("HORNET_RESPONSE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
+    let bind_addr = env::var("HORNET_RESPONSE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
     let listener = TcpListener::bind(&bind_addr)
         .map_err(|e| format!("failed to bind listener {bind_addr}: {e}"))?;
     let local_addr = listener
@@ -326,7 +329,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     // Construct Backward Path
     // Path: Exit -> Middle -> Entry -> Client
     // We need keys and FSes for [Exit, Middle, Entry]
-    
+
     let mut keys_b = Vec::with_capacity(hops);
     for _ in 0..hops {
         let mut si = [0u8; 16];
@@ -339,7 +342,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     for (i, hop_idx) in (0..hops).rev().enumerate() {
         // hop_idx: 2 (Exit), 1 (Middle), 0 (Entry)
         // i: 0, 1, 2 (Index in backward path)
-        
+
         let segment = if hop_idx == 0 {
             // Entry -> Client
             let elem = RouteElem::NextHop {
@@ -351,20 +354,26 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             // Exit -> Middle or Middle -> Entry
             // The next hop in backward path is the previous hop in forward path (hop_idx - 1)
             let prev_router = &routers[hop_idx - 1].1;
-             // Parse bind address of prev router to get IP/Port
-             // Assuming bind is "IP:Port"
-            let (ip_str, port_str) = prev_router.bind.rsplit_once(':').ok_or("invalid bind addr")?;
+            // Parse bind address of prev router to get IP/Port
+            // Assuming bind is "IP:Port"
+            let (ip_str, port_str) = prev_router
+                .bind
+                .rsplit_once(':')
+                .ok_or("invalid bind addr")?;
             let port: u16 = port_str.parse().map_err(|_| "invalid port")?;
             let ip_octets = parse_ipv4_octets(ip_str)?; // Helper needed
-            let elem = RouteElem::NextHop { addr: IpAddr::V4(ip_octets), port };
+            let elem = RouteElem::NextHop {
+                addr: IpAddr::V4(ip_octets),
+                port,
+            };
             routing::segment_from_elems(&[elem])
         };
 
         // Use keys_b[i]
-        // Note: StoredState sv is needed. 
+        // Note: StoredState sv is needed.
         // routers[hop_idx].0 is the state for the node we are processing (Exit, Middle, Entry)
         let state = &routers[hop_idx].0;
-        
+
         let fs = hornet::packet::core::create(&state.sv(), &keys_b[i], &segment, exp)
             .map_err(|err| format!("failed to build FS for backward hop {}: {err:?}", i))?;
         fses_b.push(fs);
@@ -380,9 +389,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     full_payload.extend_from_slice(&ahdr_b.bytes);
     full_payload.extend_from_slice(&request_payload);
 
-    let capsule_buf = capsule
-        .encode()
-        .map_err(|_| "failed to encode capsule")?;
+    let capsule_buf = capsule.encode().map_err(|_| "failed to encode capsule")?;
     let capsule_len = capsule_buf.len();
     let mut encrypted_tail = Vec::new();
     encrypted_tail.extend_from_slice(canonical_bytes.as_slice());
@@ -395,6 +402,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;
     let entry_override = env::var("HORNET_ENTRY_ADDR").ok().filter(|s| !s.is_empty());
+    let start_rtt = Instant::now();
     if let Some(addr) = entry_override.as_deref() {
         println!("Sending frame to entry override {}", addr);
         send_frame_to(addr, &frame)?;
@@ -415,57 +423,67 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("set nonblocking failed: {e}"))?;
-    let start = Instant::now();
-    let (mut stream, addr) = loop {
-        match listener.accept() {
-            Ok(pair) => break pair,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > Duration::from_secs(timeout_secs) {
-                    return Err(format!(
-                        "response timeout after {}s (no backward packet)",
-                        timeout_secs
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(err) => return Err(format!("accept failed: {err}")),
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(listener.accept());
+    });
+    let (mut stream, addr) = match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(err)) => return Err(format!("accept failed: {err}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(format!(
+                "response timeout after {}s (no backward packet)",
+                timeout_secs
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("response accept thread disconnected".to_string());
         }
     };
     println!("Connection from {}", addr);
-    
+
     // Read response frame
     // Frame format: [direction:1][type:1][hops:1][res:1][specific:16][ahdr_len:4][payload_len:4][ahdr][payload]
     // But wait, the router sends back a HORNET packet.
     // The Client is NOT a router, but it needs to parse the frame.
     // Let's reuse `read_incoming_packet` logic or just read manually.
-    
+
     // Simple read for now
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header).map_err(|e| format!("read header failed: {e}"))?;
+    stream
+        .read_exact(&mut header)
+        .map_err(|e| format!("read header failed: {e}"))?;
     // direction should be 1 (Backward)
     // type should be 1 (Data)
-    
+
     let mut specific = [0u8; 16];
-    stream.read_exact(&mut specific).map_err(|e| format!("read specific failed: {e}"))?;
-    
+    stream
+        .read_exact(&mut specific)
+        .map_err(|e| format!("read specific failed: {e}"))?;
+
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).map_err(|e| format!("read ahdr len failed: {e}"))?;
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|e| format!("read ahdr len failed: {e}"))?;
     let ahdr_len = u32::from_le_bytes(len_buf) as usize;
-    
-    stream.read_exact(&mut len_buf).map_err(|e| format!("read payload len failed: {e}"))?;
+
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|e| format!("read payload len failed: {e}"))?;
     let payload_len = u32::from_le_bytes(len_buf) as usize;
-    
+
     if ahdr_len > 0 {
         let mut ahdr_buf = vec![0u8; ahdr_len];
-        stream.read_exact(&mut ahdr_buf).map_err(|e| format!("read ahdr failed: {e}"))?;
+        stream
+            .read_exact(&mut ahdr_buf)
+            .map_err(|e| format!("read ahdr failed: {e}"))?;
     }
-    
+
     let mut encrypted_response = vec![0u8; payload_len];
-        stream.read_exact(&mut encrypted_response).map_err(|e| format!("read response failed: {e}"))?;
-    
+    stream
+        .read_exact(&mut encrypted_response)
+        .map_err(|e| format!("read response failed: {e}"))?;
+
     // Decrypt response
     // Keys for backward path: keys_b
     // IV: specific
@@ -474,35 +492,76 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut iv_resp = specific;
     let mut keys_b_reversed = keys_b.clone();
     keys_b_reversed.reverse();
-    hornet::source::decrypt_backward_payload(&keys_b_reversed, &mut iv_resp, &mut encrypted_response)
-         .map_err(|e| format!("decrypt failed: {e:?}"))?;
-         
-    println!("Received Response:\n{}", String::from_utf8_lossy(&encrypted_response));
+    hornet::source::decrypt_backward_payload(
+        &keys_b_reversed,
+        &mut iv_resp,
+        &mut encrypted_response,
+    )
+    .map_err(|e| format!("decrypt failed: {e:?}"))?;
+
+    if let Ok(path) = env::var("HORNET_RESPONSE_OUTPUT_PATH") {
+        if !path.trim().is_empty() {
+            fs::write(&path, &encrypted_response)
+                .map_err(|e| format!("failed to write response output {path}: {e}"))?;
+        }
+    }
+
+    println!("Round-trip time: {:.2?}", start_rtt.elapsed());
+    println!("Total time: {:.2?}", start_total.elapsed());
+    println!(
+        "Received Response:\n{}",
+        String::from_utf8_lossy(&encrypted_response)
+    );
 
     Ok(())
 }
 
-#[cfg(feature = "pcd-nova")]
-fn pcd_backend_from_env() -> Box<dyn PcdBackend> {
-    if env::var("HORNET_PCD_BACKEND").ok().as_deref() == Some("nova") {
-        match hornet::pcd::nova::NovaPcdBackend::new() {
-            Ok(backend) => Box::new(backend),
-            Err(err) => {
-                eprintln!("pcd: failed to init nova backend ({err:?}), using hash backend");
-                Box::new(HashPcdBackend)
-            }
-        }
-    } else {
-        Box::new(HashPcdBackend)
+fn local_verify_part(
+    label: &str,
+    circuit: &Circuit,
+    part: &hornet::policy::ProofPart,
+    expected_outputs: &[u8],
+) -> Result<(), String> {
+    if expected_outputs.len() != circuit.outputs.len() {
+        return Err(format!(
+            "[local-verify] {label}: output len mismatch (expected_outputs={} circuit_outputs={})",
+            expected_outputs.len(),
+            circuit.outputs.len()
+        ));
     }
+    let proof = Proof::from_part(part).map_err(|err| format!("[local-verify] {label}: {err:?}"))?;
+    let engine = ZkBooEngine;
+    engine
+        .verify_circuit(
+            circuit,
+            expected_outputs,
+            &proof,
+            VerifierConfig { rounds: proof.rounds },
+        )
+        .map_err(|err| format!("[local-verify] {label}: verify failed: {err:?}"))?;
+    println!(
+        "[local-verify] {label}: ok (rounds={}, proof_len={})",
+        proof.rounds,
+        part.proof.len()
+    );
+    Ok(())
 }
 
-#[cfg(not(feature = "pcd-nova"))]
-fn pcd_backend_from_env() -> Box<dyn PcdBackend> {
-    Box::new(HashPcdBackend)
+fn bits_from_bytes_lsb_first(bytes: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() * 8);
+    for &b in bytes.iter() {
+        for bit in 0..8u8 {
+            out.push(((b >> bit) & 1) as u8);
+        }
+    }
+    out
 }
 
-fn spawn_control_listener(info_path: String, host: String, payload: Vec<u8>) -> Option<std::thread::JoinHandle<()>> {
+fn spawn_control_listener(
+    info_path: String,
+    host: String,
+    payload: Vec<u8>,
+) -> Option<std::thread::JoinHandle<()>> {
     let bind = env::var("HORNET_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1:7100".into());
     let listener = TcpListener::bind(&bind).ok()?;
     Some(thread::spawn(move || {
@@ -574,7 +633,9 @@ fn parse_host_port(host: &str, default_port: u16) -> Result<(String, u16), Strin
             return Err("invalid host: missing closing ']'".into());
         };
         let port = if let Some(port_str) = after.strip_prefix(':') {
-            port_str.parse::<u16>().map_err(|_| "invalid port".to_string())?
+            port_str
+                .parse::<u16>()
+                .map_err(|_| "invalid port".to_string())?
         } else if after.is_empty() {
             default_port
         } else {
@@ -608,15 +669,27 @@ fn target_value_from_hostname(hostname: &str) -> Result<TargetValue, String> {
     ))
 }
 
-fn read_tls_record_bytes(payload_tail: &[u8]) -> Result<Vec<u8>, String> {
+fn read_request_bytes(payload_tail: &[u8]) -> Result<Vec<u8>, String> {
+    // ZKBoo input bytes. Caller must ensure the circuit input size matches (len * 8).
+    //
+    // Priority:
+    // 1) HORNET_REQUEST_PATH: raw bytes
+    // 2) HORNET_TLS_RECORD_PATH: legacy env name (raw bytes)
+    // 3) CLI payload_tail: hex bytes
+    if let Ok(path) = env::var("HORNET_REQUEST_PATH") {
+        if !path.trim().is_empty() {
+            return fs::read(&path).map_err(|err| format!("failed to read {path}: {err}"));
+        }
+    }
     if let Ok(path) = env::var("HORNET_TLS_RECORD_PATH") {
         if !path.trim().is_empty() {
             return fs::read(&path).map_err(|err| format!("failed to read {path}: {err}"));
         }
     }
-    let hex = core::str::from_utf8(payload_tail)
-        .map_err(|_| "TLS record must be provided as hex (or set HORNET_TLS_RECORD_PATH)".to_string())?;
-    decode_hex(hex).map_err(|err| format!("invalid TLS record hex: {err}"))
+    let hex = core::str::from_utf8(payload_tail).map_err(|_| {
+        "request bytes must be provided as hex (or set HORNET_REQUEST_PATH)".to_string()
+    })?;
+    decode_hex(hex).map_err(|err| format!("invalid request hex: {err}"))
 }
 
 fn load_router_states(
@@ -645,10 +718,7 @@ fn load_router_states(
     Ok(out)
 }
 
-fn select_route(
-    state: &StoredState,
-    policy_id: &[u8; 32],
-) -> Result<RouteAnnouncement, String> {
+fn select_route(state: &StoredState, policy_id: &[u8; 32]) -> Result<RouteAnnouncement, String> {
     let routes = state.routes();
     routes
         .into_iter()
@@ -720,42 +790,6 @@ fn derive_seed() -> u64 {
     (nanos ^ (std::process::id() as u128)) as u64
 }
 
-fn hash_bytes(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
-}
-
-fn compute_route_id(
-    routers: &[(StoredState, RouterInfo)],
-    target_ip: &IpAddr,
-    target_port: u16,
-) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    for (_state, info) in routers {
-        hasher.update(info.name.as_bytes());
-        hasher.update(info.bind.as_bytes());
-    }
-    match target_ip {
-        IpAddr::V4(ip) => {
-            hasher.update([4u8]);
-            hasher.update(ip);
-        }
-        IpAddr::V6(ip) => {
-            hasher.update([6u8]);
-            hasher.update(ip);
-        }
-    }
-    hasher.update(target_port.to_be_bytes());
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
-}
-
 fn current_sequence() -> Result<u64, String> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -774,7 +808,63 @@ struct PolicyInfo {
 struct RouterInfo {
     name: String,
     bind: String,
-    #[serde(rename = "directory_path")]
-    _directory_path: String,
+    directory_path: String,
     storage_path: String,
+}
+
+fn load_policy_metadata(routers: &[RouterInfo], policy_id: &[u8; 32]) -> Result<PolicyMetadata, String> {
+    let first = routers.first().ok_or_else(|| "policy-info has no routers".to_string())?;
+    let body = fs::read_to_string(&first.directory_path)
+        .map_err(|err| format!("failed to read directory {}: {err}", first.directory_path))?;
+    #[derive(Deserialize)]
+    struct DirectoryLike {
+        #[serde(default)]
+        policies: Vec<PolicyMetadata>,
+    }
+    let directory: DirectoryLike =
+        serde_json::from_str(&body).map_err(|err| format!("invalid directory JSON: {err}"))?;
+    directory
+        .policies
+        .into_iter()
+        .find(|p| &p.policy_id == policy_id)
+        .ok_or_else(|| "directory did not contain policy metadata for policy_id".to_string())
+}
+
+fn circuit_from_metadata(meta: &PolicyMetadata, kind: ProofKind) -> Result<Circuit, String> {
+    let entry = meta
+        .verifiers
+        .iter()
+        .find(|e| e.kind == kind as u8)
+        .ok_or_else(|| format!("policy metadata missing verifier for {:?}", kind))?;
+    Circuit::decode(&entry.verifier_blob)
+        .map_err(|err| format!("failed to decode verifier circuit for {:?}: {err:?}", kind))
+}
+
+fn make_aux(exts: &[CapsuleExtensionRef<'_>]) -> Result<Vec<u8>, String> {
+    let mut buf = [0u8; AUX_MAX];
+    let len = encode_extensions_into(exts, &mut buf)
+        .map_err(|_| "failed to encode policy extensions".to_string())?;
+    Ok(buf[..len].to_vec())
+}
+
+fn make_part(
+    policy_id: &[u8; 32],
+    circuit: Circuit,
+    rounds: u16,
+    payload: &[u8],
+    aux: &[u8],
+    kind: ProofKind,
+) -> Result<hornet::policy::ProofPart, String> {
+    let service = ZkBooProofService::new_with_policy_id(circuit, *policy_id, rounds);
+    let capsule = service
+        .prove_payload_lsb_first(payload, aux)
+        .map_err(|err| format!("failed to prove {:?} with zkboo: {err:?}", kind))?;
+    if capsule.part_count as usize != 1 {
+        return Err("unexpected zkboo capsule layout".into());
+    }
+    let mut part = capsule.parts[0].clone();
+    part.kind = kind;
+    part.set_aux(aux)
+        .map_err(|_| "failed to set policy extensions".to_string())?;
+    Ok(part)
 }

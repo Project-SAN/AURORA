@@ -4,7 +4,7 @@ use crate::{crypto::prg, types::PacketType};
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
-    policy::{PolicyCapsule, PolicyRole},
+    policy::PolicyCapsule,
     routing::{self, RouteElem},
     sphinx::derive_tau_tag,
     types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
@@ -31,22 +31,17 @@ pub fn process_data(
     let capsule_len = if let Some(policy) = ctx.policy {
         let role = match PolicyCapsule::decode(payload.as_slice()) {
             Ok((capsule, _)) => {
-                let base = policy
-                    .roles
-                    .get(&capsule.policy_id)
-                    .copied()
-                    .ok_or(Error::PolicyViolation)?;
-                let meta = policy
+                // Role must be configured for this policy/router. Do not silently
+                // substitute a different role for ZKBoo.
+                let _meta = policy
                     .registry
                     .get(&capsule.policy_id)
                     .ok_or(Error::PolicyViolation)?;
-                if meta.supports_zkboo() {
-                    // ZKBoo policies are currently enforced as "Policy-at-every-hop" to avoid
-                    // requiring plonk KeyBinding/Consistency parts.
-                    PolicyRole::Exit
-                } else {
-                    base
-                }
+                policy
+                    .roles
+                    .get(&capsule.policy_id)
+                    .copied()
+                    .ok_or(Error::PolicyViolation)?
             }
             Err(_) => return Err(Error::PolicyViolation),
         };
@@ -84,10 +79,10 @@ pub fn process_data(
     chdr.specific = iv;
 
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
-        if let Some(RouteElem::ExitTcp { addr, port, tls }) = elems.first() {
+        if let Some(RouteElem::ExitTcp { addr, port }) = elems.first() {
             let mut exit = ctx.exit.take();
             let res = if let Some(exit) = exit.as_deref_mut() {
-                handle_exit(ctx, exit, addr, *port, *tls, chdr.hops, tail)
+                handle_exit(ctx, exit, addr, *port, chdr.hops, tail)
             } else {
                 Err(Error::NotImplemented)
             };
@@ -121,7 +116,6 @@ fn handle_exit(
     exit: &mut dyn crate::node::ExitTransport,
     addr: &crate::routing::IpAddr,
     port: u16,
-    tls: bool,
     hops: u8,
     tail: &mut [u8],
 ) -> Result<()> {
@@ -144,7 +138,7 @@ fn handle_exit(
     cursor += ahdr_len;
     let request = &tail[cursor..];
 
-    let mut response = exit.send(addr, port, tls, request)?;
+    let mut response = exit.send(addr, port, request)?;
 
     let mut ahdr_b = Ahdr { bytes: ahdr_bytes };
     let mut chdr_b = Chdr {

@@ -1,11 +1,11 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::core::policy::{ProofKind, ProofPart};
 use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
-use crate::core::policy::{ProofKind, ProofPart};
 use crate::types::{Error, Result};
 use rand_core::{CryptoRng, RngCore};
 
@@ -186,15 +186,9 @@ impl ZkBooEngine {
 
         for round in 0..rounds {
             let seeds = [
-                seed_trees[0]
-                    .seed_for_round(round)
-                    .ok_or(Error::Length)?,
-                seed_trees[1]
-                    .seed_for_round(round)
-                    .ok_or(Error::Length)?,
-                seed_trees[2]
-                    .seed_for_round(round)
-                    .ok_or(Error::Length)?,
+                seed_trees[0].seed_for_round(round).ok_or(Error::Length)?,
+                seed_trees[1].seed_for_round(round).ok_or(Error::Length)?,
+                seed_trees[2].seed_for_round(round).ok_or(Error::Length)?,
             ];
             let state = simulate_round(circuit, input_bits, public_output, seeds)?;
             commitments.extend_from_slice(&state.commitments);
@@ -257,8 +251,7 @@ impl ZkBooEngine {
             return Err(Error::Length);
         }
         let rounds = proof.rounds as usize;
-        if proof.openings.len() != rounds || proof.seed_reveals.len() != 3
-        {
+        if proof.openings.len() != rounds || proof.seed_reveals.len() != 3 {
             return Err(Error::Length);
         }
 
@@ -267,6 +260,7 @@ impl ZkBooEngine {
             SeedDeriver::new(&proof.seed_reveals[1]),
             SeedDeriver::new(&proof.seed_reveals[2]),
         ];
+        let mut branch_calc = vec![0u8; circuit.wire_count()];
 
         for round in 0..rounds {
             let expected_e = derive_challenge(public_output, proof.commit_root, round);
@@ -308,10 +302,18 @@ impl ZkBooEngine {
                 return Err(Error::Crypto);
             }
 
-            let out_e = extract_outputs(circuit, &opening.view_e.wires)?;
-            let out_e1 = extract_outputs(circuit, &opening.view_e1.wires)?;
+            if opening.view_e.wires.len() != circuit.wire_count()
+                || opening.view_e1.wires.len() != circuit.wire_count()
+            {
+                return Err(Error::Length);
+            }
             for (idx, &bit) in public_output.iter().enumerate() {
-                let recombined = (out_e[idx] ^ out_e1[idx] ^ bit) & 1;
+                let wire = circuit.outputs[idx];
+                if wire >= opening.view_e.wires.len() {
+                    return Err(Error::Length);
+                }
+                let recombined =
+                    (opening.view_e.wires[wire] ^ opening.view_e1.wires[wire] ^ bit) & 1;
                 if recombined > 1 {
                     return Err(Error::Crypto);
                 }
@@ -324,6 +326,7 @@ impl ZkBooEngine {
                 &opening.view_e1.wires,
                 &seed_e,
                 &seed_e1,
+                &mut branch_calc,
             )? {
                 return Err(Error::Crypto);
             }
@@ -334,7 +337,7 @@ impl ZkBooEngine {
 }
 
 struct RoundState {
-    views: Vec<Vec<u8>>,
+    views: [Vec<u8>; 3],
     commitments: [[u8; 32]; 3],
 }
 
@@ -345,8 +348,8 @@ fn simulate_round(
     seeds: [[u8; SEED_LEN]; 3],
 ) -> Result<RoundState> {
     let n_wires = circuit.wire_count();
-    let mut views = vec![vec![0u8; n_wires], vec![0u8; n_wires], vec![0u8; n_wires]];
-    let mut tapes = vec![
+    let mut views = [vec![0u8; n_wires], vec![0u8; n_wires], vec![0u8; n_wires]];
+    let mut tapes = [
         Tape::new(seeds[0]),
         Tape::new(seeds[1]),
         Tape::new(seeds[2]),
@@ -398,11 +401,12 @@ fn simulate_round(
         }
     }
 
-    let out0 = extract_outputs(circuit, &views[0])?;
-    let out1 = extract_outputs(circuit, &views[1])?;
-    let out2 = extract_outputs(circuit, &views[2])?;
     for (idx, &bit) in public_output.iter().enumerate() {
-        let recombined = (out0[idx] ^ out1[idx] ^ out2[idx]) & 1;
+        let wire = circuit.outputs[idx];
+        if wire >= n_wires {
+            return Err(Error::Length);
+        }
+        let recombined = (views[0][wire] ^ views[1][wire] ^ views[2][wire]) & 1;
         if recombined != (bit & 1) {
             return Err(Error::Crypto);
         }
@@ -413,24 +417,7 @@ fn simulate_round(
         commitments[i] = commit_view(&seeds[i], &views[i]);
     }
 
-    Ok(RoundState {
-        views,
-        commitments,
-    })
-}
-
-fn extract_outputs(circuit: &Circuit, wires: &[u8]) -> Result<Vec<u8>> {
-    if wires.len() != circuit.wire_count() {
-        return Err(Error::Length);
-    }
-    let mut out = Vec::with_capacity(circuit.outputs.len());
-    for &wire in &circuit.outputs {
-        if wire >= wires.len() {
-            return Err(Error::Length);
-        }
-        out.push(wires[wire] & 1);
-    }
-    Ok(out)
+    Ok(RoundState { views, commitments })
 }
 
 fn check_branch(
@@ -440,8 +427,10 @@ fn check_branch(
     view_i1: &[u8],
     seed_i: &[u8; SEED_LEN],
     seed_i1: &[u8; SEED_LEN],
+    calc: &mut [u8],
 ) -> Result<bool> {
-    if view_i.len() != circuit.wire_count() || view_i1.len() != circuit.wire_count() {
+    let n_wires = circuit.wire_count();
+    if view_i.len() != n_wires || view_i1.len() != n_wires || calc.len() != n_wires {
         return Err(Error::Length);
     }
     let mut tape_i = Tape::new(*seed_i);
@@ -449,7 +438,6 @@ fn check_branch(
     tape_i.skip_bits(circuit.n_inputs);
     tape_i1.skip_bits(circuit.n_inputs);
 
-    let mut calc = vec![0u8; circuit.wire_count()];
     calc[..circuit.n_inputs].copy_from_slice(&view_i[..circuit.n_inputs]);
 
     for (g_idx, gate) in circuit.gates.iter().enumerate() {
@@ -466,11 +454,7 @@ fn check_branch(
             Gate::And { a, b } => {
                 let r_i = tape_i.next_bit();
                 let r_i1 = tape_i1.next_bit();
-                (calc[a] & calc[b])
-                    ^ (view_i1[a] & calc[b])
-                    ^ (calc[a] & view_i1[b])
-                    ^ r_i
-                    ^ r_i1
+                (calc[a] & calc[b]) ^ (view_i1[a] & calc[b]) ^ (calc[a] & view_i1[b]) ^ r_i ^ r_i1
             }
         };
         if (view_i[out] & 1) != (expected & 1) {
@@ -695,12 +679,8 @@ mod tests {
             .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let bad_output = [0u8];
-        let res = engine.verify_circuit(
-            &circuit,
-            &bad_output,
-            &proof,
-            VerifierConfig { rounds: 6 },
-        );
+        let res =
+            engine.verify_circuit(&circuit, &bad_output, &proof, VerifierConfig { rounds: 6 });
         assert!(res.is_err());
     }
 
@@ -739,7 +719,9 @@ mod tests {
         let proof = engine
             .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
-        let part = proof.to_part(crate::core::policy::ProofKind::Policy).expect("to part");
+        let part = proof
+            .to_part(crate::core::policy::ProofKind::Policy)
+            .expect("to part");
         let decoded = Proof::from_part(&part).expect("from part");
         engine
             .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })

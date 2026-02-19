@@ -427,8 +427,7 @@ fn create_header_internal(
         base[..KAPPA_BYTES].copy_from_slice(&node_ids[idx + 1]);
         base[KAPPA_BYTES..2 * KAPPA_BYTES].copy_from_slice(&gamma_next);
         let tail_len = total_beta_len - 2 * KAPPA_BYTES;
-        base[2 * KAPPA_BYTES..2 * KAPPA_BYTES + tail_len]
-            .copy_from_slice(&beta_next[..tail_len]);
+        base[2 * KAPPA_BYTES..2 * KAPPA_BYTES + tail_len].copy_from_slice(&beta_next[..tail_len]);
 
         rho_buf[..total_beta_len].fill(0);
         derive_rho_stream(&shared_list[idx], &mut rho_buf[..total_beta_len]);

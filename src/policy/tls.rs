@@ -75,4 +75,3 @@ mod tests {
         assert!(matches!(take_single_record_exact(&buf), Err(Error::Length)));
     }
 }
-
