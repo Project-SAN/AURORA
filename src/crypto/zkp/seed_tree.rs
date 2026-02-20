@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::crypto::ascon::AsconHash256;
 
-const SEEDTREE_DOMAIN: &[u8] = b"AURORA-ZKBOO-SEEDTREE";
+const SEEDTREE_DOMAIN: &[u8] = b"SEEDTREE";
 
 #[derive(Clone, Debug)]
 pub struct SeedTree {

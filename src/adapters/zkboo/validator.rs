@@ -6,7 +6,7 @@ use crate::core::policy::{
     find_extension, CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRole, ProofKind,
     EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH,
 };
-use crate::crypto::zkp::{Circuit, Proof, VerifierConfig, ZkBooEngine};
+use crate::crypto::zkp::{Circuit, Engine, Proof, VerifierConfig};
 use crate::types::{Error, Result};
 use spin::Mutex;
 
@@ -119,9 +119,9 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         if outputs.len() != circuit.outputs.len() {
             return Err(Error::PolicyViolation);
         }
-        let engine = ZkBooEngine;
+        let engine = Engine;
         engine
-            .verify_circuit(
+            .verify(
                 circuit.as_ref(),
                 &outputs,
                 &proof,
