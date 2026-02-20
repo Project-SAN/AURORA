@@ -61,11 +61,6 @@ harness = false
 required-features = ["std"]
 
 [[bench]]
-name = "ascon"
-
-harness = false
-
-[[bench]]
 name = "zkboo"
 harness = false
 
