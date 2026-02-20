@@ -5,7 +5,7 @@ use hornet::core::policy::{
 };
 use hornet::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use hornet::crypto::zkp::Circuit;
-use hornet::crypto::zkp::{Proof, VerifierConfig, ZkBooEngine};
+use hornet::crypto::zkp::{Engine, Proof, VerifierConfig};
 use hornet::policy::PolicyMetadata;
 use hornet::policy::blocklist;
 use hornet::policy::zkboo::ZkBooProofService;
@@ -530,9 +530,9 @@ fn local_verify_part(
         ));
     }
     let proof = Proof::from_part(part).map_err(|err| format!("[local-verify] {label}: {err:?}"))?;
-    let engine = ZkBooEngine;
+    let engine = Engine;
     engine
-        .verify_circuit(
+        .verify(
             circuit,
             expected_outputs,
             &proof,
