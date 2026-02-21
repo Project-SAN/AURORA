@@ -109,6 +109,59 @@ spec fn free_list_inv(regions: Seq<(u64, u64)>) -> bool {
     regions_non_empty(regions) && regions_strictly_sorted_disjoint(regions)
 }
 
+spec fn regions_bounded(regions: Seq<(u64, u64)>) -> bool {
+    forall|i: int|
+        #![auto]
+        0 <= i < regions.len() ==> regions[i].1 <= MAX_PHYS_ADDR
+}
+
+spec fn region_fits(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    min: u64,
+    max: u64,
+    pages: u64,
+) -> bool {
+    0 <= idx < regions.len()
+        && alloc_candidate_alloc_end(regions[idx].0, min, pages)
+            <= alloc_candidate_end(regions[idx].1, max)
+}
+
+spec fn first_fit_idx_from(
+    regions: Seq<(u64, u64)>,
+    start: int,
+    min: u64,
+    max: u64,
+    pages: u64,
+) -> Option<int>
+    decreases regions.len() - start
+{
+    if start >= regions.len() {
+        Option::None
+    } else if region_fits(regions, start, min, max, pages) {
+        Option::Some(start)
+    } else {
+        first_fit_idx_from(regions, start + 1, min, max, pages)
+    }
+}
+
+spec fn fit_update_ready(
+    regions: Seq<(u64, u64)>,
+    min: u64,
+    max: u64,
+    pages: u64,
+) -> bool {
+    forall|i: int|
+        #![auto]
+        0 <= i < regions.len() && region_fits(regions, i, min, max, pages)
+            ==> (
+                regions[i].1 <= MAX_PHYS_ADDR
+                && regions[i].0 <= alloc_candidate_start(regions[i].0, min)
+                && alloc_candidate_start(regions[i].0, min) < alloc_candidate_alloc_end(regions[i].0, min, pages)
+                && alloc_candidate_alloc_end(regions[i].0, min, pages) <= regions[i].1
+            )
+}
+
 proof fn lemma_in_regions_singleton(x: u64, start: u64, end: u64)
     ensures
         in_regions(x, seq![(start, end)]) <==> in_range(x, start, end),
@@ -137,6 +190,78 @@ proof fn lemma_in_regions_concat(x: u64, left: Seq<(u64, u64)>, right: Seq<(u64,
         assert((left + right)[0] == left[0]);
         assert((left + right).drop_first() == left.drop_first() + right);
         lemma_in_regions_concat(x, left.drop_first(), right);
+    }
+}
+
+proof fn lemma_first_fit_idx_from_some(
+    regions: Seq<(u64, u64)>,
+    start: int,
+    min: u64,
+    max: u64,
+    pages: u64,
+    idx: int,
+)
+    requires
+        0 <= start <= regions.len(),
+        first_fit_idx_from(regions, start, min, max, pages) == Option::Some(idx),
+    ensures
+        start <= idx < regions.len(),
+        region_fits(regions, idx, min, max, pages),
+        forall|j: int| start <= j < idx ==> !region_fits(regions, j, min, max, pages),
+    decreases regions.len() - start,
+{
+    if start >= regions.len() {
+        assert(first_fit_idx_from(regions, start, min, max, pages) == Option::<int>::None);
+    } else if region_fits(regions, start, min, max, pages) {
+        assert(first_fit_idx_from(regions, start, min, max, pages) == Option::Some(start));
+        assert(idx == start);
+        assert forall|j: int| start <= j < idx implies !region_fits(regions, j, min, max, pages) by {};
+    } else {
+        assert(first_fit_idx_from(regions, start, min, max, pages)
+            == first_fit_idx_from(regions, start + 1, min, max, pages));
+        lemma_first_fit_idx_from_some(regions, start + 1, min, max, pages, idx);
+        assert forall|j: int| start <= j < idx implies !region_fits(regions, j, min, max, pages) by {
+            if start <= j < idx {
+                if j == start {
+                    assert(!region_fits(regions, start, min, max, pages));
+                } else {
+                    assert(start + 1 <= j < idx);
+                }
+            }
+        };
+    }
+}
+
+proof fn lemma_first_fit_idx_from_none(
+    regions: Seq<(u64, u64)>,
+    start: int,
+    min: u64,
+    max: u64,
+    pages: u64,
+)
+    requires
+        0 <= start <= regions.len(),
+        first_fit_idx_from(regions, start, min, max, pages) == Option::<int>::None,
+    ensures
+        forall|j: int| start <= j < regions.len() ==> !region_fits(regions, j, min, max, pages),
+    decreases regions.len() - start,
+{
+    if start >= regions.len() {
+    } else if region_fits(regions, start, min, max, pages) {
+        assert(first_fit_idx_from(regions, start, min, max, pages) == Option::Some(start));
+    } else {
+        assert(first_fit_idx_from(regions, start, min, max, pages)
+            == first_fit_idx_from(regions, start + 1, min, max, pages));
+        lemma_first_fit_idx_from_none(regions, start + 1, min, max, pages);
+        assert forall|j: int| start <= j < regions.len() implies !region_fits(regions, j, min, max, pages) by {
+            if start <= j < regions.len() {
+                if j == start {
+                    assert(!region_fits(regions, start, min, max, pages));
+                } else {
+                    assert(start + 1 <= j < regions.len());
+                }
+            }
+        };
     }
 }
 
@@ -735,6 +860,114 @@ proof fn lemma_alloc_contiguous_range_idx_update_spec(
 
     lemma_alloc_idx_update_preserves_free_list_inv(regions, idx, alloc_start, alloc_end);
     lemma_alloc_idx_update_semantics_partition(regions, idx, alloc_start, alloc_end, x);
+}
+
+proof fn lemma_in_regions_split_at_idx(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    x: u64,
+)
+    requires
+        0 <= idx < regions.len(),
+    ensures
+        in_regions(x, regions)
+            <==> (
+                in_regions(x, regions.subrange(0, idx))
+                || in_range(x, regions[idx].0, regions[idx].1)
+                || in_regions(x, regions.subrange(idx + 1, regions.len() as int))
+            ),
+{
+    let prefix = regions.subrange(0, idx);
+    let mid = seq![(regions[idx].0, regions[idx].1)];
+    let suffix = regions.subrange(idx + 1, regions.len() as int);
+
+    lemma_in_regions_singleton(x, regions[idx].0, regions[idx].1);
+    lemma_in_regions_concat(x, mid, suffix);
+    lemma_in_regions_concat(x, prefix, mid + suffix);
+    assert(mid + suffix == regions.subrange(idx, regions.len() as int));
+    assert(prefix + (mid + suffix) == regions);
+}
+
+proof fn lemma_alloc_contiguous_range_first_fit_complete(
+    regions: Seq<(u64, u64)>,
+    min: u64,
+    max: u64,
+    pages: u64,
+    x: u64,
+)
+    requires
+        free_list_inv(regions),
+        regions_bounded(regions),
+        fit_update_ready(regions, min, max, pages),
+        min <= max,
+        max < MAX_PHYS_ADDR,
+        pages > 0,
+        pages <= u64::MAX / PAGE_SIZE,
+    ensures
+        match first_fit_idx_from(regions, 0, min, max, pages) {
+            Option::None => forall|j: int| 0 <= j < regions.len() ==> !region_fits(regions, j, min, max, pages),
+            Option::Some(idx) => (
+                0 <= idx < regions.len()
+                && region_fits(regions, idx, min, max, pages)
+                && forall|j: int| 0 <= j < idx ==> !region_fits(regions, j, min, max, pages)
+                && free_list_inv(
+                    alloc_idx_update_result(
+                        regions,
+                        idx,
+                        alloc_candidate_start(regions[idx].0, min),
+                        alloc_candidate_alloc_end(regions[idx].0, min, pages),
+                    ),
+                )
+                && (
+                    in_regions(
+                        x,
+                        alloc_idx_update_result(
+                            regions,
+                            idx,
+                            alloc_candidate_start(regions[idx].0, min),
+                            alloc_candidate_alloc_end(regions[idx].0, min, pages),
+                        ),
+                    ) <==> (
+                        in_regions(x, regions.subrange(0, idx))
+                        || in_regions(x, regions.subrange(idx + 1, regions.len() as int))
+                        || (
+                            in_range(x, regions[idx].0, regions[idx].1)
+                            && !in_range(
+                                x,
+                                alloc_candidate_start(regions[idx].0, min),
+                                alloc_candidate_alloc_end(regions[idx].0, min, pages),
+                            )
+                        )
+                    )
+                )
+            ),
+        },
+{
+    let ff = first_fit_idx_from(regions, 0, min, max, pages);
+    match ff {
+        Option::None => {
+            lemma_first_fit_idx_from_none(regions, 0, min, max, pages);
+        }
+        Option::Some(idx) => {
+            lemma_first_fit_idx_from_some(regions, 0, min, max, pages, idx);
+            assert(region_fits(regions, idx, min, max, pages));
+            assert(fit_update_ready(regions, min, max, pages));
+            assert(regions[idx].1 <= MAX_PHYS_ADDR);
+            assert(regions[idx].0 <= alloc_candidate_start(regions[idx].0, min));
+            assert(alloc_candidate_start(regions[idx].0, min)
+                < alloc_candidate_alloc_end(regions[idx].0, min, pages));
+            assert(alloc_candidate_alloc_end(regions[idx].0, min, pages) <= regions[idx].1);
+
+            lemma_alloc_contiguous_range_idx_update_spec(
+                regions,
+                idx,
+                min,
+                max,
+                pages,
+                x,
+            );
+        }
+    }
 }
 
 proof fn lemma_coalesce_step(

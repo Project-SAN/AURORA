@@ -43,6 +43,7 @@ From repository root:
   - abstract `split_result` semantics (`region - alloc`) with branch exhaustiveness
   - idx-update model (`alloc_idx_update_result`) preserves free-list sorted/disjoint invariants
   - function-level step spec for `alloc_contiguous_range` branch (`lemma_alloc_contiguous_range_idx_update_spec`)
+  - full first-fit search spec over the whole loop (`first_fit_idx_from`, `lemma_alloc_contiguous_range_first_fit_complete`)
   - abstract `coalesce_step_result` semantics preserving interval union
   - split-case exhaustiveness and per-branch safety invariants
   - saturating-add guard implies bounded plain-sum arithmetic
