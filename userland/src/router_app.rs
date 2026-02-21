@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use aurora::application::setup::RegistrySetupPipeline;
 use aurora::node::ReplayCache;
-use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
+use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
 use aurora::router::io::PacketListener;
 use aurora::router::storage::{RouterStorage, StoredState};
 use aurora::router::Router;
@@ -877,5 +877,4 @@ fn decode_policy_id_tlv(tlv: &[u8]) -> Option<PolicyId> {
     Some(policy_id)
 }
 
-const POLICY_ID_TLV: u8 = 0xFE;
 const ROUTER_CONFIG_CONTENT_PATH: &str = "/ROUTER_C.JSO";

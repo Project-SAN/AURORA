@@ -3,7 +3,7 @@ use aurora::application::setup::RegistrySetupPipeline;
 use aurora::control::{self, ControlMessage};
 use aurora::node::exit::TcpExitTransport;
 use aurora::node::NoReplay;
-use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
+use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
 use aurora::router::config::RouterConfig;
 use aurora::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
 use aurora::router::runtime::RouterRuntime;
@@ -248,8 +248,6 @@ fn decode_policy_id_tlv(tlv: &[u8]) -> Option<PolicyId> {
     policy_id.copy_from_slice(&tlv[1..33]);
     Some(policy_id)
 }
-
-const POLICY_ID_TLV: u8 = 0xFE;
 
 fn control_target() -> Result<String, String> {
     env::var("HORNET_CONTROL_ADDR").map_err(|_| "HORNET_CONTROL_ADDR not set".into())
