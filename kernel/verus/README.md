@@ -37,8 +37,11 @@ From repository root:
   - page-table index bounds (`< 512`) for all levels
   - 2MiB align-down invariants with bit masks
   - page/huge-page offset range checks
+- `kernel/src/memory.verus.rs`
+  - `align_up` page-alignment and upper-bound properties
+  - allocation window soundness used by `alloc_contiguous_range`
+  - split/coalesce step invariants for non-overlap and merge safety
 
 ## 4) Next files to migrate
 
-- `kernel/src/memory.rs`: region coalescing and allocator split invariants
 - `kernel/src/user/elf.rs`: parser bounds and segment range validity
