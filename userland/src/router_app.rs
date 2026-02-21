@@ -787,15 +787,56 @@ fn handle_setup_packet(
         return Err(types::Error::Length);
     }
     let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
-    let policy_id = select_policy_id(&setup_packet).or_else(|| {
+    // Attempt to extract a policy ID from the packet's TLVs. If the packet
+    // carries no policy ID TLV and exactly one route is configured, infer the
+    // policy from that sole route. This fallback accommodates single-route
+    // deployments where the sender omits the policy ID field, but it will
+    // silently accept packets that should be rejected when policy enforcement
+    // is expected. Log when the fallback is taken so operators can detect
+    // misconfigured senders.
+    let explicit_policy_id = select_policy_id(&setup_packet);
+    let policy_id = explicit_policy_id.or_else(|| {
         let routes = router.routes();
-        (routes.len() == 1).then_some(routes[0].policy_id)
+        if routes.len() == 1 {
+            let mut msg = String::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut msg,
+                format_args!(
+                    "setup: policy id absent; inferring policy {} from sole route (fallback)",
+                    aurora::utils::encode_hex(&routes[0].policy_id)
+                ),
+            );
+            log_line(&msg);
+            Some(routes[0].policy_id)
+        } else {
+            None
+        }
     });
     let policy_id = policy_id.ok_or(types::Error::PolicyViolation)?;
+    // Look up the route that matches the resolved policy. If no matching route
+    // is found (e.g. because the directory has not yet been loaded or the
+    // policy ID was inferred from the sole route above), fall back to the
+    // first available route. This prevents a hard failure for single-route
+    // nodes, but could mask a policy mismatch in multi-route configurations.
+    // Log when the fallback is taken so operators can detect routing anomalies.
     let route_segment = router
         .route_for_policy(&policy_id)
         .cloned()
-        .or_else(|| router.routes().into_iter().next())
+        .or_else(|| {
+            let first = router.routes().into_iter().next();
+            if first.is_some() {
+                let mut msg = String::new();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut msg,
+                    format_args!(
+                        "setup: no route for policy {}; using first available route (fallback)",
+                        aurora::utils::encode_hex(&policy_id)
+                    ),
+                );
+                log_line(&msg);
+            }
+            first
+        })
         .map(|route| route.segment)
         .ok_or(types::Error::NotImplemented)?;
     let mut pipeline = RegistrySetupPipeline::new(router.registry_mut());
