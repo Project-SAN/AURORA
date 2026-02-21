@@ -175,12 +175,8 @@ impl UserlandExitTransport {
             }
             StreamOp::Data => {
                 if !self.sessions.contains_key(&frame.session_id) {
-                    let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
-                    if connect_ipv4(&socket, ip, port).is_err() {
-                        debug_log("router-io: stream data auto-open connect failed");
-                        return Err(Error::Crypto);
-                    }
-                    self.sessions.insert(frame.session_id, socket);
+                    debug_log("router-io: stream data for unknown session");
+                    return Err(Error::PolicyViolation);
                 }
                 let socket = self.sessions.get(&frame.session_id).ok_or(Error::Crypto)?;
                 if !frame.data.is_empty() && send_all(socket, frame.data).is_err() {
