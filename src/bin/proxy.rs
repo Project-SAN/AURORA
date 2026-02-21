@@ -16,6 +16,7 @@ const STREAM_DATA_OFFSET: usize = 64;
 struct SenderConfig {
     policy_info: String,
     sender_bin: String,
+    route_only: String,
     rounds: String,
     payload_len: usize,
     host_offset: usize,
@@ -51,16 +52,19 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
 
     let req = read_http_request(stream)?;
     let (method, target_host, target_port) = parse_target(&req)?;
+    let route_only = env::var("HORNET_PROXY_ROUTE_ONLY").unwrap_or_else(|_| "1".to_string());
+    let default_payload_len = if route_only == "1" { 512 } else { 96 };
     let cfg = SenderConfig {
         policy_info: env::var("HORNET_POLICY_INFO")
             .unwrap_or_else(|_| "config/localnet/policy-info.json".to_string()),
         sender_bin: env::var("HORNET_DATA_SENDER_BIN")
             .unwrap_or_else(|_| "target/debug/aurora_data_sender".into()),
+        route_only,
         rounds: env::var("HORNET_PROXY_ZKBOO_ROUNDS").unwrap_or_else(|_| "8".to_string()),
         payload_len: env::var("HORNET_PROXY_PAYLOAD_LEN")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(96),
+            .unwrap_or(default_payload_len),
         host_offset: env::var("HORNET_PROXY_HOST_OFFSET")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -100,7 +104,7 @@ fn handle_connect_tunnel(
     let data_timeout_secs = env::var("HORNET_CONNECT_DATA_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or(20);
     let poll_timeout_secs = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -125,6 +129,12 @@ fn handle_connect_tunnel(
         .ok();
     let mut eof = false;
     let mut pending_response = false;
+    let mut poll_backoff_ms: u64 = 50;
+    let mut empty_polls: u32 = 0;
+    let max_empty_polls: u32 = env::var("HORNET_CONNECT_MAX_EMPTY_POLLS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
     let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
     let mut chunk = vec![0u8; max_chunk];
     loop {
@@ -143,13 +153,16 @@ fn handle_connect_tunnel(
                     session_id,
                     &chunk[..n],
                 )?;
-                let response = run_sender(cfg, target, &payload, true, Some(data_timeout_secs))?;
+                let response =
+                    run_sender_tunnel(cfg, target, &payload, Some(data_timeout_secs))?;
                 if !response.is_empty() {
                     stream
                         .write_all(&response)
                         .map_err(|e| format!("write tunnel response: {e}"))?;
                 }
                 pending_response = true;
+                poll_backoff_ms = 50;
+                empty_polls = 0;
             }
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
@@ -170,14 +183,27 @@ fn handle_connect_tunnel(
                 session_id,
                 &[],
             )?;
-            let response = run_sender(cfg, target, &payload, true, Some(poll_timeout_secs))?;
+            let response = run_sender_tunnel(cfg, target, &payload, Some(poll_timeout_secs))?;
             if !response.is_empty() {
                 stream
                     .write_all(&response)
                     .map_err(|err| format!("write tunnel poll response: {err}"))?;
                 pending_response = true;
+                poll_backoff_ms = 50;
+                empty_polls = 0;
             } else {
-                pending_response = false;
+                empty_polls = empty_polls.saturating_add(1);
+                if empty_polls >= max_empty_polls {
+                    // Give control back to client-side read path if peer is silent.
+                    pending_response = false;
+                    poll_backoff_ms = 50;
+                } else {
+                    // Keep polling while a tunnel exchange is in-flight.
+                    // TLS handshakes often have a silent gap before ServerHello arrives.
+                    pending_response = true;
+                    thread::sleep(Duration::from_millis(poll_backoff_ms));
+                    poll_backoff_ms = (poll_backoff_ms.saturating_mul(2)).min(1000);
+                }
             }
         } else if !sent_any {
             // Avoid hammering sender with empty DATA frames when no client traffic is pending.
@@ -193,8 +219,24 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender(cfg, target, &close_payload, true, Some(0))?;
+    let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0))?;
     Ok(())
+}
+
+fn run_sender_tunnel(
+    cfg: &SenderConfig,
+    target: &str,
+    request: &[u8],
+    response_timeout_secs: Option<u64>,
+) -> Result<Vec<u8>, String> {
+    match run_sender(cfg, target, request, true, response_timeout_secs) {
+        Ok(bytes) => Ok(bytes),
+        Err(err) if err.contains("Broken pipe") || err.contains("Connection reset") => {
+            eprintln!("[proxy] sender transient tunnel error tolerated: {}", err);
+            Ok(Vec::new())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn run_sender(
@@ -222,6 +264,9 @@ fn run_sender(
         if !entry_addr.is_empty() {
             cmd.env("HORNET_ENTRY_ADDR", entry_addr);
         }
+    }
+    if !cfg.route_only.is_empty() {
+        cmd.env("HORNET_ROUTE_ONLY", &cfg.route_only);
     }
     if let Some(secs) = response_timeout_secs {
         cmd.env("HORNET_RESPONSE_TIMEOUT_SECS", secs.to_string());
