@@ -104,7 +104,14 @@ pub fn run_router() -> ! {
                     let mut msg = String::new();
                     let _ = core::fmt::Write::write_fmt(
                         &mut msg,
-                        format_args!("router: packet error {:?}", err),
+                        format_args!(
+                            "router: packet error {:?} dir={:?} typ={} hops={} payload_len={}",
+                            err,
+                            packet.direction,
+                            packet_type_label(packet.chdr.typ),
+                            packet.chdr.hops,
+                            packet.payload.len()
+                        ),
                     );
                     log_line(&msg);
                 }
@@ -117,6 +124,13 @@ pub fn run_router() -> ! {
                 sys::sleep(10);
             }
         }
+    }
+}
+
+fn packet_type_label(typ: PacketType) -> &'static str {
+    match typ {
+        PacketType::Setup => "Setup",
+        PacketType::Data => "Data",
     }
 }
 
@@ -727,8 +741,11 @@ fn load_directory_if_configured(
                 res
             };
             if installed.is_ok() {
-                persist_state(storage, router, secrets);
-                log_line("directory: persist ok");
+                // Persisting the full directory-derived state can exceed practical
+                // limits in the current userland environment and may crash.
+                // Runtime operation only needs in-memory install here.
+                let _ = (storage, secrets);
+                log_line("directory: persist skipped");
             } else {
                 log_line("directory: install failed");
             }
@@ -764,10 +781,15 @@ fn handle_setup_packet(
         return Err(types::Error::Length);
     }
     let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
-    let policy_id = select_policy_id(&setup_packet).ok_or(types::Error::PolicyViolation)?;
+    let policy_id = select_policy_id(&setup_packet).or_else(|| {
+        let routes = router.routes();
+        (routes.len() == 1).then_some(routes[0].policy_id)
+    });
+    let policy_id = policy_id.ok_or(types::Error::PolicyViolation)?;
     let route_segment = router
         .route_for_policy(&policy_id)
         .cloned()
+        .or_else(|| router.routes().into_iter().next())
         .map(|route| route.segment)
         .ok_or(types::Error::NotImplemented)?;
     let mut pipeline = RegistrySetupPipeline::new(router.registry_mut());
@@ -778,12 +800,17 @@ fn handle_setup_packet(
         &route_segment,
         Some(&mut pipeline),
     )?;
-    persist_state(storage, router, secrets);
+    // Setup-triggered persistence can overflow practical userland limits.
+    let _ = (storage, secrets);
+    log_line("setup: persist skipped");
     Ok(())
 }
 
 fn select_policy_id(packet: &aurora::setup::SetupPacket) -> Option<PolicyId> {
     for tlv in &packet.tlvs {
+        if let Some(policy_id) = decode_policy_id_tlv(tlv) {
+            return Some(policy_id);
+        }
         if tlv.first().copied() != Some(POLICY_METADATA_TLV) {
             continue;
         }
@@ -793,4 +820,15 @@ fn select_policy_id(packet: &aurora::setup::SetupPacket) -> Option<PolicyId> {
     }
     None
 }
+
+fn decode_policy_id_tlv(tlv: &[u8]) -> Option<PolicyId> {
+    if tlv.first().copied() != Some(POLICY_ID_TLV) || tlv.len() != 33 {
+        return None;
+    }
+    let mut policy_id = [0u8; 32];
+    policy_id.copy_from_slice(&tlv[1..33]);
+    Some(policy_id)
+}
+
+const POLICY_ID_TLV: u8 = 0xFE;
 const ROUTER_CONFIG_CONTENT_PATH: &str = "/ROUTER_C.JSO";

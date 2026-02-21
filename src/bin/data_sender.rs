@@ -81,6 +81,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     };
     let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
     let sequence = current_sequence()?;
+    println!("sequence={sequence}");
     let seq_buf = sequence.to_be_bytes();
 
     let capsule = {
@@ -795,7 +796,8 @@ fn current_sequence() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "time went backwards".to_string())?
         .as_nanos();
-    Ok((nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+    let pid = std::process::id() as u128;
+    Ok(((nanos ^ (pid << 32)) & 0xFFFF_FFFF_FFFF_FFFF) as u64)
 }
 
 #[derive(Clone, Deserialize)]

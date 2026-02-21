@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STREAM_MAGIC: &[u8; 4] = b"HRS1";
@@ -78,7 +79,7 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
             req.len(),
             outbound.len()
         );
-        let response = run_sender(&cfg, &target, &outbound)?;
+        let response = run_sender(&cfg, &target, &outbound, false, None)?;
         eprintln!("[proxy] got response bytes={}", response.len());
         stream
             .write_all(&response)
@@ -92,6 +93,18 @@ fn handle_connect_tunnel(
     target: &str,
     host: &str,
 ) -> Result<(), String> {
+    let open_timeout_secs = env::var("HORNET_CONNECT_OPEN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+    let data_timeout_secs = env::var("HORNET_CONNECT_DATA_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let poll_timeout_secs = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
     let session_id = fresh_session_id()?;
 
     let open_payload = build_stream_payload(
@@ -102,20 +115,26 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender(cfg, target, &open_payload)?;
+    let _ = run_sender(cfg, target, &open_payload, false, Some(open_timeout_secs))?;
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .map_err(|e| format!("write connect ok: {e}"))?;
 
     stream
-        .set_read_timeout(Some(Duration::from_millis(200)))
+        .set_read_timeout(Some(Duration::from_millis(20)))
         .ok();
+    let mut eof = false;
+    let mut pending_response = false;
+    let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
+    let mut chunk = vec![0u8; max_chunk];
     loop {
-        let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET);
-        let mut chunk = vec![0u8; max_chunk.max(1)];
+        let mut sent_any = false;
         match stream.read(&mut chunk) {
-            Ok(0) => break,
+            Ok(0) => {
+                eof = true;
+            }
             Ok(n) => {
+                sent_any = true;
                 let payload = build_stream_payload(
                     cfg.payload_len,
                     cfg.host_offset,
@@ -124,33 +143,45 @@ fn handle_connect_tunnel(
                     session_id,
                     &chunk[..n],
                 )?;
-                let response = run_sender(cfg, target, &payload)?;
+                let response = run_sender(cfg, target, &payload, true, Some(data_timeout_secs))?;
                 if !response.is_empty() {
                     stream
                         .write_all(&response)
                         .map_err(|e| format!("write tunnel response: {e}"))?;
                 }
+                pending_response = true;
             }
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                let payload = build_stream_payload(
-                    cfg.payload_len,
-                    cfg.host_offset,
-                    host,
-                    STREAM_OP_DATA,
-                    session_id,
-                    &[],
-                )?;
-                let response = run_sender(cfg, target, &payload)?;
-                if !response.is_empty() {
-                    stream
-                        .write_all(&response)
-                        .map_err(|err| format!("write tunnel poll response: {err}"))?;
-                }
-            }
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => return Err(format!("read tunnel client: {e}")),
+        }
+
+        if eof {
+            break;
+        }
+
+        if pending_response && !sent_any {
+            let payload = build_stream_payload(
+                cfg.payload_len,
+                cfg.host_offset,
+                host,
+                STREAM_OP_DATA,
+                session_id,
+                &[],
+            )?;
+            let response = run_sender(cfg, target, &payload, true, Some(poll_timeout_secs))?;
+            if !response.is_empty() {
+                stream
+                    .write_all(&response)
+                    .map_err(|err| format!("write tunnel poll response: {err}"))?;
+                pending_response = true;
+            } else {
+                pending_response = false;
+            }
+        } else if !sent_any {
+            // Avoid hammering sender with empty DATA frames when no client traffic is pending.
+            thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -162,20 +193,40 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender(cfg, target, &close_payload)?;
+    let _ = run_sender(cfg, target, &close_payload, true, Some(0))?;
     Ok(())
 }
 
-fn run_sender(cfg: &SenderConfig, target: &str, request: &[u8]) -> Result<Vec<u8>, String> {
+fn run_sender(
+    cfg: &SenderConfig,
+    target: &str,
+    request: &[u8],
+    allow_response_timeout: bool,
+    response_timeout_secs: Option<u64>,
+) -> Result<Vec<u8>, String> {
     let req_path = write_temp_request(request)?;
     let rsp_path = temp_path("hornet-proxy-rsp")?;
-    let output = Command::new(&cfg.sender_bin)
-        .arg(&cfg.policy_info)
+    let mut cmd = Command::new(&cfg.sender_bin);
+    cmd.arg(&cfg.policy_info)
         .arg(target)
         .arg("00")
         .env("HORNET_REQUEST_PATH", &req_path)
         .env("HORNET_RESPONSE_OUTPUT_PATH", &rsp_path)
-        .env("HORNET_ZKBOO_ROUNDS", &cfg.rounds)
+        .env("HORNET_ZKBOO_ROUNDS", &cfg.rounds);
+    if let Ok(return_host) = env::var("HORNET_PROXY_RETURN_HOST") {
+        if !return_host.is_empty() {
+            cmd.env("HORNET_RETURN_HOST", return_host);
+        }
+    }
+    if let Ok(entry_addr) = env::var("HORNET_PROXY_ENTRY_ADDR") {
+        if !entry_addr.is_empty() {
+            cmd.env("HORNET_ENTRY_ADDR", entry_addr);
+        }
+    }
+    if let Some(secs) = response_timeout_secs {
+        cmd.env("HORNET_RESPONSE_TIMEOUT_SECS", secs.to_string());
+    }
+    let output = cmd
         .output()
         .map_err(|e| format!("spawn aurora_data_sender: {e}"))?;
     let _ = fs::remove_file(&req_path);
@@ -184,6 +235,19 @@ fn run_sender(cfg: &SenderConfig, target: &str, request: &[u8]) -> Result<Vec<u8
         let _ = fs::remove_file(&rsp_path);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        if allow_response_timeout
+            && (stderr.contains("response timeout after")
+                || stdout.contains("response timeout after"))
+        {
+            if !stdout.trim().is_empty() {
+                eprintln!(
+                    "[proxy] sender timeout stdout: {}",
+                    stdout.replace('\n', " | ")
+                );
+            }
+            eprintln!("[proxy] sender timeout tolerated target={}", target);
+            return Ok(Vec::new());
+        }
         return Err(format!(
             "aurora_data_sender failed (status={}): {} {}",
             output.status,
@@ -192,6 +256,10 @@ fn run_sender(cfg: &SenderConfig, target: &str, request: &[u8]) -> Result<Vec<u8
         ));
     }
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        eprintln!("[proxy] sender stdout: {}", stdout.replace('\n', " | "));
+    }
     let bytes = fs::read(&rsp_path).map_err(|e| format!("read sender response output: {e}"))?;
     eprintln!(
         "[proxy] sender ok target={} req_bytes={} rsp_bytes={}",
