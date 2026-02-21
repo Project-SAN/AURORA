@@ -2,7 +2,7 @@ use aurora::router::storage::StoredState;
 use aurora::setup::wire;
 use aurora::types::{Chdr, PacketType};
 use aurora::utils::decode_hex;
-use aurora::policy::PolicyId;
+use aurora::policy::{PolicyId, POLICY_ID_TLV};
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 use rand_core::SeedableRng;
@@ -132,8 +132,6 @@ fn decode_policy_id(hex: &str) -> Result<PolicyId, String> {
     policy_id.copy_from_slice(&bytes);
     Ok(policy_id)
 }
-
-const POLICY_ID_TLV: u8 = 0xFE;
 
 fn encode_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
     if header.len() > u32::MAX as usize || payload.len() > u32::MAX as usize {
