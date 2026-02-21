@@ -132,22 +132,6 @@ impl aurora::time::TimeProvider for StdTimeProvider {
     }
 }
 
-#[cfg(feature = "pcd-nova")]
-fn pcd_forward_pipeline() -> PcdForwardPipeline {
-    if env::var("HORNET_PCD_BACKEND").ok().as_deref() == Some("nova") {
-        match aurora::pcd::nova::NovaPcdBackend::new() {
-            Ok(backend) => PcdForwardPipeline::with_backend(Box::new(backend)),
-            Err(err) => {
-                eprintln!("pcd: failed to init nova backend ({err:?}), using hash backend");
-                PcdForwardPipeline::new()
-            }
-        }
-    } else {
-        PcdForwardPipeline::new()
-    }
-}
-
-#[cfg(not(feature = "pcd-nova"))]
 fn pcd_forward_pipeline() -> PcdForwardPipeline {
     PcdForwardPipeline::new()
 }

@@ -11,15 +11,15 @@ mod allocator;
 mod echo;
 mod fs;
 mod http;
-#[cfg(feature = "aurora-router")]
+#[cfg(feature = "router")]
 mod router_app;
-#[cfg(feature = "aurora-router")]
+#[cfg(feature = "router")]
 mod router_io;
-#[cfg(feature = "aurora-router")]
+#[cfg(feature = "router")]
 mod router_storage;
 mod socket;
 mod sys;
-#[cfg(feature = "aurora-time")]
+#[cfg(feature = "router")]
 mod time_provider;
 
 const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
@@ -30,7 +30,7 @@ const ECHO_PORT: u16 = 1234;
 const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 const RUN_HTTP_CLIENT: bool = true;
 const RUN_ECHO_SERVER: bool = false;
-#[cfg(feature = "aurora-router")]
+#[cfg(feature = "router")]
 const RUN_ROUTER: bool = true;
 
 #[no_mangle]
@@ -38,7 +38,7 @@ pub extern "C" fn _start() -> ! {
     allocator::init();
     let msg = b"Hello from userland\n";
     sys::write(1, msg);
-    #[cfg(feature = "aurora-router")]
+    #[cfg(feature = "router")]
     if RUN_ROUTER {
         let _ = sys::write(1, b"userland: entering run_router\n");
         router_app::run_router();
