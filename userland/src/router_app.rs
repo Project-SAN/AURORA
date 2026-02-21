@@ -21,7 +21,6 @@ use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketLis
 use crate::router_storage::UserlandRouterStorage;
 use crate::sys;
 
-#[cfg(feature = "aurora-time")]
 use crate::time_provider::SysTimeProvider;
 
 const ROUTER_CONFIG_PATH: &str = "/router_config.json";
@@ -664,20 +663,7 @@ fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> AuroraResu
 }
 
 fn time_provider() -> impl aurora::time::TimeProvider {
-    #[cfg(feature = "aurora-time")]
-    {
-        SysTimeProvider
-    }
-    #[cfg(not(feature = "aurora-time"))]
-    {
-        struct DummyTime;
-        impl aurora::time::TimeProvider for DummyTime {
-            fn now_coarse(&self) -> u32 {
-                0
-            }
-        }
-        DummyTime
-    }
+    SysTimeProvider
 }
 
 struct RouterSecrets {
