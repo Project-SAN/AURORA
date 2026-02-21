@@ -68,6 +68,17 @@ impl TcpExitTransport {
                 Ok(Vec::new())
             }
             StreamOp::Data => {
+                if !self.sessions.contains_key(&frame.session_id) {
+                    let addr_str = socket_addr_string(addr, port);
+                    let stream = TcpStream::connect(&addr_str).map_err(|_| Error::Crypto)?;
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(60)))
+                        .ok();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .ok();
+                    self.sessions.insert(frame.session_id, stream);
+                }
                 let stream = self.sessions.get_mut(&frame.session_id).ok_or(Error::Crypto)?;
                 stream.write_all(frame.data).map_err(|_| Error::Crypto)?;
                 stream.flush().map_err(|_| Error::Crypto)?;
@@ -127,9 +138,6 @@ fn read_available(stream: &mut TcpStream) -> Result<Vec<u8>> {
             Ok(0) => break,
             Ok(n) => {
                 out.extend_from_slice(&buf[..n]);
-                if n < buf.len() {
-                    break;
-                }
             }
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock

@@ -83,7 +83,7 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
             req.len(),
             outbound.len()
         );
-        let response = run_sender(&cfg, &target, &outbound, false, None)?;
+        let response = run_sender(&cfg, &target, &outbound, false, None, None)?;
         eprintln!("[proxy] got response bytes={}", response.len());
         stream
             .write_all(&response)
@@ -100,16 +100,19 @@ fn handle_connect_tunnel(
     let open_timeout_secs = env::var("HORNET_CONNECT_OPEN_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(15);
+        .unwrap_or(10);
     let data_timeout_secs = env::var("HORNET_CONNECT_DATA_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(20);
+        .unwrap_or(60);
     let poll_timeout_secs = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(15);
+        // Keep poll timeout short so CONNECT loop can keep reading client-side
+        // TLS flight packets without long stalls.
+        .unwrap_or(1);
     let session_id = fresh_session_id()?;
+    let response_bind = allocate_response_bind()?;
 
     let open_payload = build_stream_payload(
         cfg.payload_len,
@@ -119,7 +122,39 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender(cfg, target, &open_payload, false, Some(open_timeout_secs))?;
+    let mut open_last_err: Option<String> = None;
+    for attempt in 0..3 {
+        match run_sender_tunnel(
+            cfg,
+            target,
+            &open_payload,
+            Some(open_timeout_secs),
+            Some(&response_bind),
+        ) {
+            Ok(_) => {
+                open_last_err = None;
+                break;
+            }
+            Err(err) if err.contains("response timeout after") => {
+                eprintln!(
+                    "[proxy] CONNECT open timeout tolerated (attempt={}): {}",
+                    attempt + 1,
+                    err
+                );
+                open_last_err = None;
+                break;
+            }
+            Err(err) => {
+                open_last_err = Some(err);
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    if let Some(err) = open_last_err {
+        return Err(err);
+    }
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .map_err(|e| format!("write connect ok: {e}"))?;
@@ -134,7 +169,7 @@ fn handle_connect_tunnel(
     let max_empty_polls: u32 = env::var("HORNET_CONNECT_MAX_EMPTY_POLLS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(20);
+        .unwrap_or(200);
     let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
     let mut chunk = vec![0u8; max_chunk];
     loop {
@@ -145,6 +180,7 @@ fn handle_connect_tunnel(
             }
             Ok(n) => {
                 sent_any = true;
+                eprintln!("[proxy] CONNECT client->tunnel bytes={}", n);
                 let payload = build_stream_payload(
                     cfg.payload_len,
                     cfg.host_offset,
@@ -154,8 +190,15 @@ fn handle_connect_tunnel(
                     &chunk[..n],
                 )?;
                 let response =
-                    run_sender_tunnel(cfg, target, &payload, Some(data_timeout_secs))?;
+                    run_sender_tunnel(
+                        cfg,
+                        target,
+                        &payload,
+                        Some(data_timeout_secs),
+                        Some(&response_bind),
+                    )?;
                 if !response.is_empty() {
+                    eprintln!("[proxy] CONNECT tunnel->client bytes={}", response.len());
                     stream
                         .write_all(&response)
                         .map_err(|e| format!("write tunnel response: {e}"))?;
@@ -183,8 +226,18 @@ fn handle_connect_tunnel(
                 session_id,
                 &[],
             )?;
-            let response = run_sender_tunnel(cfg, target, &payload, Some(poll_timeout_secs))?;
+            let response = run_sender_tunnel(
+                cfg,
+                target,
+                &payload,
+                Some(poll_timeout_secs),
+                Some(&response_bind),
+            )?;
             if !response.is_empty() {
+                eprintln!(
+                    "[proxy] CONNECT poll tunnel->client bytes={}",
+                    response.len()
+                );
                 stream
                     .write_all(&response)
                     .map_err(|err| format!("write tunnel poll response: {err}"))?;
@@ -202,7 +255,7 @@ fn handle_connect_tunnel(
                     // TLS handshakes often have a silent gap before ServerHello arrives.
                     pending_response = true;
                     thread::sleep(Duration::from_millis(poll_backoff_ms));
-                    poll_backoff_ms = (poll_backoff_ms.saturating_mul(2)).min(1000);
+                    poll_backoff_ms = (poll_backoff_ms.saturating_mul(2)).min(250);
                 }
             }
         } else if !sent_any {
@@ -219,7 +272,7 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0))?;
+    let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), Some(&response_bind))?;
     Ok(())
 }
 
@@ -228,8 +281,16 @@ fn run_sender_tunnel(
     target: &str,
     request: &[u8],
     response_timeout_secs: Option<u64>,
+    response_bind: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    match run_sender(cfg, target, request, true, response_timeout_secs) {
+    match run_sender(
+        cfg,
+        target,
+        request,
+        true,
+        response_timeout_secs,
+        response_bind,
+    ) {
         Ok(bytes) => Ok(bytes),
         Err(err) if err.contains("Broken pipe") || err.contains("Connection reset") => {
             eprintln!("[proxy] sender transient tunnel error tolerated: {}", err);
@@ -245,6 +306,7 @@ fn run_sender(
     request: &[u8],
     allow_response_timeout: bool,
     response_timeout_secs: Option<u64>,
+    response_bind: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let req_path = write_temp_request(request)?;
     let rsp_path = temp_path("hornet-proxy-rsp")?;
@@ -259,6 +321,9 @@ fn run_sender(
         if !return_host.is_empty() {
             cmd.env("HORNET_RETURN_HOST", return_host);
         }
+    } else if cfg.policy_info.contains("config/qemu/") {
+        // QEMU hostfwd topology: guest routers reach host via 10.0.2.2.
+        cmd.env("HORNET_RETURN_HOST", "10.0.2.2");
     }
     if let Ok(entry_addr) = env::var("HORNET_PROXY_ENTRY_ADDR") {
         if !entry_addr.is_empty() {
@@ -270,6 +335,11 @@ fn run_sender(
     }
     if let Some(secs) = response_timeout_secs {
         cmd.env("HORNET_RESPONSE_TIMEOUT_SECS", secs.to_string());
+    }
+    if let Some(bind) = response_bind {
+        if !bind.is_empty() {
+            cmd.env("HORNET_RESPONSE_BIND", bind);
+        }
     }
     let output = cmd
         .output()
@@ -314,6 +384,15 @@ fn run_sender(
     );
     let _ = fs::remove_file(&rsp_path);
     Ok(bytes)
+}
+
+fn allocate_response_bind() -> Result<String, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("allocate response bind port: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("read response bind port: {e}"))?;
+    Ok(addr.to_string())
 }
 
 fn build_stream_payload(
