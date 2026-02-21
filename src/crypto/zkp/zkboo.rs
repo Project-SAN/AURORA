@@ -10,9 +10,9 @@ use crate::types::{Error, Result};
 use rand_core::{CryptoRng, RngCore};
 
 const SEED_LEN: usize = 32;
-const TAPE_DOMAIN: &[u8] = b"AURORA-ZKBOO-TAPE";
-const COMMIT_DOMAIN: &[u8] = b"AURORA-ZKBOO-VIEW";
-const CHAL_DOMAIN: &[u8] = b"AURORA-ZKBOO-CHAL";
+const TAPE_DOMAIN: &[u8] = b"TAPE";
+const COMMIT_DOMAIN: &[u8] = b"VIEW";
+const CHAL_DOMAIN: &[u8] = b"CHAL";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proof {
@@ -54,6 +54,7 @@ impl Proof {
             encode_view(&mut out, &opening.view_e)?;
             encode_view(&mut out, &opening.view_e1)?;
         }
+
         out.push(self.seed_reveals.len() as u8);
         for reveal in &self.seed_reveals {
             encode_u32(&mut out, reveal.leaf_count);
@@ -156,10 +157,10 @@ pub struct VerifierConfig {
     pub rounds: u16,
 }
 
-pub struct ZkBooEngine;
+pub struct Engine;
 
-impl ZkBooEngine {
-    pub fn prove_circuit_with_rng<R: RngCore + CryptoRng>(
+impl Engine {
+    pub fn prove<R: RngCore + CryptoRng>(
         &self,
         circuit: &Circuit,
         input_bits: &[u8],
@@ -237,7 +238,7 @@ impl ZkBooEngine {
         })
     }
 
-    pub fn verify_circuit(
+    pub fn verify(
         &self,
         circuit: &Circuit,
         public_output: &[u8],
@@ -642,7 +643,7 @@ impl Tape {
 
 #[cfg(test)]
 mod tests {
-    use super::{Proof, ProverConfig, VerifierConfig, ZkBooEngine};
+    use super::{Engine, Proof, ProverConfig, VerifierConfig};
     use crate::crypto::zkp::circuit::Circuit;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
@@ -656,12 +657,12 @@ mod tests {
         let output = [1u8];
         let cfg = ProverConfig { rounds: 8 };
         let mut rng = ChaCha20Rng::seed_from_u64(42);
-        let engine = ZkBooEngine;
+        let engine = Engine;
         let proof = engine
-            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         engine
-            .verify_circuit(&circuit, &output, &proof, VerifierConfig { rounds: 8 })
+            .verify(&circuit, &output, &proof, VerifierConfig { rounds: 8 })
             .expect("verify");
     }
 
@@ -674,13 +675,12 @@ mod tests {
         let output = [1u8];
         let cfg = ProverConfig { rounds: 6 };
         let mut rng = ChaCha20Rng::seed_from_u64(7);
-        let engine = ZkBooEngine;
+        let engine = Engine;
         let proof = engine
-            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let bad_output = [0u8];
-        let res =
-            engine.verify_circuit(&circuit, &bad_output, &proof, VerifierConfig { rounds: 6 });
+        let res = engine.verify(&circuit, &bad_output, &proof, VerifierConfig { rounds: 6 });
         assert!(res.is_err());
     }
 
@@ -694,15 +694,15 @@ mod tests {
         let output = [0u8];
         let cfg = ProverConfig { rounds: 4 };
         let mut rng = ChaCha20Rng::seed_from_u64(9);
-        let engine = ZkBooEngine;
+        let engine = Engine;
         let proof = engine
-            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let encoded = proof.encode().expect("encode");
         let (decoded, consumed) = Proof::decode(&encoded).expect("decode");
         assert_eq!(consumed, encoded.len());
         engine
-            .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 4 })
+            .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 4 })
             .expect("verify");
     }
 
@@ -715,16 +715,16 @@ mod tests {
         let output = [0u8];
         let cfg = ProverConfig { rounds: 5 };
         let mut rng = ChaCha20Rng::seed_from_u64(11);
-        let engine = ZkBooEngine;
+        let engine = Engine;
         let proof = engine
-            .prove_circuit_with_rng(&circuit, &input, &output, cfg, &mut rng)
+            .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let part = proof
             .to_part(crate::core::policy::ProofKind::Policy)
             .expect("to part");
         let decoded = Proof::from_part(&part).expect("from part");
         engine
-            .verify_circuit(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
+            .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
             .expect("verify");
     }
 }

@@ -11,9 +11,7 @@ pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_SLEEP: u64 = 4;
 pub const SYS_NET_SOCKET: u64 = 9;
-#[allow(dead_code)]
 pub const SYS_NET_LISTEN: u64 = 10;
-#[allow(dead_code)]
 pub const SYS_NET_ACCEPT: u64 = 11;
 pub const SYS_NET_RECV: u64 = 12;
 pub const SYS_NET_SEND: u64 = 13;
@@ -24,9 +22,6 @@ pub const SYS_FS_OPEN: u64 = 32;
 pub const SYS_FS_READ: u64 = 33;
 pub const SYS_FS_WRITE: u64 = 34;
 pub const SYS_FS_CLOSE: u64 = 35;
-pub const SYS_FS_MKDIR: u64 = 36;
-pub const SYS_FS_OPENDIR: u64 = 37;
-pub const SYS_FS_READDIR: u64 = 38;
 pub const SYS_FS_SYNC: u64 = 39;
 
 pub fn write(fd: u64, buf: &[u8]) -> u64 {

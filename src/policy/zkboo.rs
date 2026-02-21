@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::core::policy::metadata::POLICY_FLAG_ZKBOO;
 use crate::core::policy::{PolicyCapsule, PolicyId, PolicyMetadata, ProofKind, ProofPart};
-use crate::crypto::zkp::{Circuit, ProverConfig, ZkBooEngine};
+use crate::crypto::zkp::{Circuit, Engine, ProverConfig};
 use crate::types::{Error, Result};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -61,8 +61,8 @@ impl ZkBooPolicy {
         rng: &mut R,
     ) -> Result<PolicyCapsule> {
         let outputs = self.circuit.eval(input_bits)?;
-        let engine = ZkBooEngine;
-        let proof = engine.prove_circuit_with_rng(
+        let engine = Engine;
+        let proof = engine.prove(
             &self.circuit,
             input_bits,
             &outputs,

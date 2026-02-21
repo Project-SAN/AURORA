@@ -20,7 +20,13 @@ const RX_POOL_SIZE: usize = 64;
 const TX_POOL_SIZE: usize = 64;
 const EPHEMERAL_START: u16 = 49152;
 const EPHEMERAL_END: u16 = 65534;
-const MAX_SOCKETS: usize = 8;
+
+// Maximum number of simultaneously active sockets in the network stack.
+// This was raised from 8 to 64 to support more concurrent connections / workloads.
+// Note: increasing this value increases memory usage (per-socket buffers and state)
+// and the amount of work done when polling the socket set. On memory-constrained
+// systems or simple workloads, consider lowering this value to reduce overhead.
+const MAX_SOCKETS: usize = 64;
 
 pub fn now() -> Instant {
     let ms = interrupts::ticks().saturating_mul(10);

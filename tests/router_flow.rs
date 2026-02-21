@@ -1,12 +1,12 @@
-use hornet::core::policy::{PolicyMetadata, ProofKind, VerifierEntry};
-use hornet::core::policy::{encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH};
-use hornet::forward::Forward;
-use hornet::policy::zkboo::ZkBooPolicy;
-use hornet::policy::zkboo::ZkBooProofService;
-use hornet::router::Router;
-use hornet::routing::{self, IpAddr, RouteElem};
-use hornet::time::TimeProvider;
-use hornet::types::{
+use aurora::core::policy::{PolicyMetadata, ProofKind, VerifierEntry};
+use aurora::core::policy::{encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH};
+use aurora::forward::Forward;
+use aurora::policy::zkboo::ZkBooPolicy;
+use aurora::policy::zkboo::ZkBooProofService;
+use aurora::router::Router;
+use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::time::TimeProvider;
+use aurora::types::{
     Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment, Si, Sv, R_MAX,
 };
 use rand_chacha::ChaCha20Rng;
@@ -73,15 +73,15 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
     route_bytes.resize(12, 0);
     let route = RoutingSegment(route_bytes);
     let exp = Exp(now.saturating_add(600));
-    let fs = hornet::packet::core::create(&sv, &si, &route, exp).expect("fs create");
+    let fs = aurora::packet::core::create(&sv, &si, &route, exp).expect("fs create");
 
     let mut ahdr_rng = ChaCha20Rng::seed_from_u64(0xBEEF);
-    let ahdr = hornet::packet::ahdr::create_ahdr(&[si], &[fs], R_MAX, &mut ahdr_rng).expect("ahdr");
+    let ahdr = aurora::packet::ahdr::create_ahdr(&[si], &[fs], R_MAX, &mut ahdr_rng).expect("ahdr");
 
     let mut iv0 = [0u8; 16];
     rng.fill_bytes(&mut iv0);
     let nonce = Nonce(iv0);
-    let mut chdr = hornet::packet::chdr::data_header(1, nonce);
+    let mut chdr = aurora::packet::chdr::data_header(1, nonce);
 
     let capsule_len = capsule.len();
     let mut payload = capsule;
@@ -90,7 +90,7 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
 
     // Encrypt only the body so the capsule stays in the clear for policy checks.
     let mut iv = nonce.0;
-    hornet::packet::onion::add_layer(&si, &mut iv, &mut payload[capsule_len..])
+    aurora::packet::onion::add_layer(&si, &mut iv, &mut payload[capsule_len..])
         .expect("encrypt body");
     chdr.specific = iv;
 
@@ -109,7 +109,7 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
 fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) {
     router.set_node_id(Some(node_id.to_string()));
     let routes = vec![
-        hornet::setup::directory::RouteAnnouncement {
+        aurora::setup::directory::RouteAnnouncement {
             policy_id,
             interface: Some("router-entry".to_string()),
             segment: routing::segment_from_elems(&[RouteElem::NextHop {
@@ -117,7 +117,7 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
                 port: 7001,
             }]),
         },
-        hornet::setup::directory::RouteAnnouncement {
+        aurora::setup::directory::RouteAnnouncement {
             policy_id,
             interface: Some("router-middle".to_string()),
             segment: routing::segment_from_elems(&[RouteElem::NextHop {
@@ -125,7 +125,7 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
                 port: 7002,
             }]),
         },
-        hornet::setup::directory::RouteAnnouncement {
+        aurora::setup::directory::RouteAnnouncement {
             policy_id,
             interface: Some("router-exit".to_string()),
             segment: routing::segment_from_elems(&[RouteElem::ExitTcp {
@@ -137,18 +137,18 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
     router.install_routes(&routes).expect("install routes");
 }
 
-fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
+fn encode_capsule(capsule: &aurora::policy::PolicyCapsule) -> Vec<u8> {
     capsule.encode().expect("encode capsule")
 }
 
-fn demo_zkboo_policy() -> (hornet::crypto::zkp::Circuit, PolicyMetadata) {
+fn demo_zkboo_policy() -> (aurora::crypto::zkp::Circuit, PolicyMetadata) {
     // KeyBinding circuit: expose 32 bytes (256 bits) as public output.
-    let mut keybinding = hornet::crypto::zkp::Circuit::new(256);
+    let mut keybinding = aurora::crypto::zkp::Circuit::new(256);
     let outputs: Vec<usize> = (0..256).collect();
     keybinding.set_outputs(&outputs);
-    let mut consistency = hornet::crypto::zkp::Circuit::new(8);
+    let mut consistency = aurora::crypto::zkp::Circuit::new(8);
     consistency.set_outputs(&[1]);
-    let mut policy_circuit = hornet::crypto::zkp::Circuit::new(8);
+    let mut policy_circuit = aurora::crypto::zkp::Circuit::new(8);
     policy_circuit.set_outputs(&[2]);
     let policy = ZkBooPolicy::new(policy_circuit.clone());
     let mut metadata = policy.metadata(1_700_000_600, 0);
@@ -192,7 +192,7 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
 
     let time = FixedTime(now);
     let mut forward = RecordingForward::default();
-    let mut replay = hornet::node::NoReplay;
+    let mut replay = aurora::node::NoReplay;
 
     router
         .process_forward_packet(
@@ -239,7 +239,7 @@ fn router_rejects_capsule_with_unknown_policy_id() {
 
     let time = FixedTime(now);
     let mut forward = RecordingForward::default();
-    let mut replay = hornet::node::NoReplay;
+    let mut replay = aurora::node::NoReplay;
 
     let err = router
         .process_forward_packet(
@@ -253,7 +253,7 @@ fn router_rejects_capsule_with_unknown_policy_id() {
             &mut packet.payload,
         )
         .expect_err("policy violation expected");
-    assert!(matches!(err, hornet::types::Error::PolicyViolation));
+    assert!(matches!(err, aurora::types::Error::PolicyViolation));
     assert!(forward.take().is_none(), "forwarder should not run");
 }
 
@@ -278,7 +278,7 @@ fn router_entry_rejects_capsule_without_keybinding_part() {
 
     let time = FixedTime(now);
     let mut forward = RecordingForward::default();
-    let mut replay = hornet::node::NoReplay;
+    let mut replay = aurora::node::NoReplay;
 
     let err = router
         .process_forward_packet(
@@ -292,7 +292,7 @@ fn router_entry_rejects_capsule_without_keybinding_part() {
             &mut packet.payload,
         )
         .expect_err("policy violation expected");
-    assert!(matches!(err, hornet::types::Error::PolicyViolation));
+    assert!(matches!(err, aurora::types::Error::PolicyViolation));
     assert!(forward.take().is_none(), "forwarder should not run");
 }
 
@@ -302,20 +302,20 @@ fn router_entry_rejects_invalid_zkboo_proof() {
     let (_circuit, metadata) = demo_zkboo_policy();
 
     // Entry expects KeyBinding part; an invalid/empty proof should be rejected.
-    let bad_capsule = hornet::policy::PolicyCapsule {
+    let bad_capsule = aurora::policy::PolicyCapsule {
         policy_id: metadata.policy_id,
-        version: hornet::core::policy::POLICY_CAPSULE_VERSION,
+        version: aurora::core::policy::POLICY_CAPSULE_VERSION,
         part_count: 1,
         parts: [
-            hornet::policy::ProofPart {
-                kind: hornet::core::policy::ProofKind::KeyBinding,
+            aurora::policy::ProofPart {
+                kind: aurora::core::policy::ProofKind::KeyBinding,
                 proof: Vec::new(),
-                commitment: [0u8; hornet::core::policy::COMMIT_LEN],
+                commitment: [0u8; aurora::core::policy::COMMIT_LEN],
                 aux: Vec::new(),
             },
-            hornet::policy::ProofPart::default(),
-            hornet::policy::ProofPart::default(),
-            hornet::policy::ProofPart::default(),
+            aurora::policy::ProofPart::default(),
+            aurora::policy::ProofPart::default(),
+            aurora::policy::ProofPart::default(),
         ],
     };
 
@@ -330,7 +330,7 @@ fn router_entry_rejects_invalid_zkboo_proof() {
 
     let time = FixedTime(now);
     let mut forward = RecordingForward::default();
-    let mut replay = hornet::node::NoReplay;
+    let mut replay = aurora::node::NoReplay;
 
     let err = router
         .process_forward_packet(
@@ -344,7 +344,7 @@ fn router_entry_rejects_invalid_zkboo_proof() {
             &mut packet.payload,
         )
         .expect_err("policy violation expected");
-    assert!(matches!(err, hornet::types::Error::PolicyViolation));
+    assert!(matches!(err, aurora::types::Error::PolicyViolation));
     assert!(forward.take().is_none(), "forwarder should not run");
 }
 
@@ -366,7 +366,7 @@ fn router_entry_accepts_valid_keybinding_part() {
         buf[..len].to_vec()
     };
     let service = ZkBooProofService::new_with_policy_id(
-        hornet::crypto::zkp::Circuit::decode(
+        aurora::crypto::zkp::Circuit::decode(
             metadata
                 .verifiers
                 .iter()
@@ -385,11 +385,11 @@ fn router_entry_accepts_valid_keybinding_part() {
     let mut part = capsule_one.parts[0].clone();
     part.kind = ProofKind::KeyBinding;
     part.set_aux(&aux).expect("set aux");
-    let capsule = hornet::policy::PolicyCapsule {
+    let capsule = aurora::policy::PolicyCapsule {
         policy_id: metadata.policy_id,
-        version: hornet::core::policy::POLICY_CAPSULE_VERSION,
+        version: aurora::core::policy::POLICY_CAPSULE_VERSION,
         part_count: 1,
-        parts: [part, hornet::policy::ProofPart::default(), hornet::policy::ProofPart::default(), hornet::policy::ProofPart::default()],
+        parts: [part, aurora::policy::ProofPart::default(), aurora::policy::ProofPart::default(), aurora::policy::ProofPart::default()],
     };
 
     let body_plain = b"opaque-body".to_vec();
@@ -401,7 +401,7 @@ fn router_entry_accepts_valid_keybinding_part() {
 
     let time = FixedTime(now);
     let mut forward = RecordingForward::default();
-    let mut replay = hornet::node::NoReplay;
+    let mut replay = aurora::node::NoReplay;
 
     router
         .process_forward_packet(

@@ -36,7 +36,6 @@ pub unsafe fn syscall1(num: u64, a1: u64) -> u64 {
     ret
 }
 
-#[allow(dead_code)]
 pub unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
     let ret: u64;
     asm!(

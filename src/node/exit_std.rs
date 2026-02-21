@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::routing::IpAddr;
 use crate::types::{Error, Result};
 
-use super::ExitTransport;
+use super::{ExitMode, ExitTransport};
 
 const STREAM_DATA_OFFSET: usize = 64;
 
@@ -26,7 +26,8 @@ impl TcpExitTransport {
 }
 
 impl ExitTransport for TcpExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, request: &[u8]) -> Result<Vec<u8>> {
+    fn send(&mut self, addr: &IpAddr, port: u16, _mode: ExitMode, request: &[u8]) -> Result<Vec<u8>> {
+        // _mode is reserved for future TLS support; currently only plain TCP is implemented.
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
         }
@@ -65,9 +66,20 @@ impl TcpExitTransport {
                         .ok();
                     self.sessions.insert(key, stream);
                 }
-                Ok(b"OK".to_vec())
+                Ok(Vec::new())
             }
             StreamOp::Data => {
+                if !self.sessions.contains_key(&frame.session_id) {
+                    let addr_str = socket_addr_string(addr, port);
+                    let stream = TcpStream::connect(&addr_str).map_err(|_| Error::Crypto)?;
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(60)))
+                        .ok();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .ok();
+                    self.sessions.insert(frame.session_id, stream);
+                }
                 let stream = self.sessions.get_mut(&frame.session_id).ok_or(Error::Crypto)?;
                 stream.write_all(frame.data).map_err(|_| Error::Crypto)?;
                 stream.flush().map_err(|_| Error::Crypto)?;
@@ -119,6 +131,17 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
     })
 }
 
+/// Reads all currently available bytes from `stream` into a contiguous buffer.
+///
+/// The loop exits only when the OS signals that no more data is ready
+/// (`WouldBlock` / `TimedOut`) or the peer has closed the connection (`Ok(0)`).
+/// An earlier version broke out of the loop whenever a short read occurred
+/// (`n < buf.len()`), assuming that meant all data had been delivered.
+/// That heuristic is unreliable: the kernel may split a single logical message
+/// across several `read` calls regardless of how much data is waiting, so an
+/// early exit could cause the caller to silently discard the tail of a frame.
+/// Looping until `WouldBlock` is the correct termination condition for a
+/// non-blocking / timeout-configured socket.
 fn read_available(stream: &mut TcpStream) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
@@ -127,9 +150,6 @@ fn read_available(stream: &mut TcpStream) -> Result<Vec<u8>> {
             Ok(0) => break,
             Ok(n) => {
                 out.extend_from_slice(&buf[..n]);
-                if n < buf.len() {
-                    break;
-                }
             }
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
