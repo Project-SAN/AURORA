@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{crypto::prg, types::PacketType};
+use crate::{crypto::prg, node::exit::ExitMode, types::PacketType};
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
@@ -138,7 +138,11 @@ fn handle_exit(
     cursor += ahdr_len;
     let request = &tail[cursor..];
 
-    let mut response = exit.send(addr, port, request)?;
+    // Infer exit mode from the destination port: port 443 is the standard
+    // HTTPS/TLS port and is treated as TLS-enabled traffic.
+    let mode = if port == 443 { ExitMode::Tls } else { ExitMode::Tcp };
+
+    let mut response = exit.send(addr, port, mode, request)?;
     // Empty exit responses are normal in tunnel/poll operation.
     // Emitting an empty backward packet only produces useless return-path
     // traffic and can trigger crypto errors upstream.

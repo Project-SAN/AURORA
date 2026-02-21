@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::routing::IpAddr;
 use crate::types::{Error, Result};
 
-use super::ExitTransport;
+use super::{ExitMode, ExitTransport};
 
 const STREAM_DATA_OFFSET: usize = 64;
 
@@ -26,7 +26,8 @@ impl TcpExitTransport {
 }
 
 impl ExitTransport for TcpExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, request: &[u8]) -> Result<Vec<u8>> {
+    fn send(&mut self, addr: &IpAddr, port: u16, _mode: ExitMode, request: &[u8]) -> Result<Vec<u8>> {
+        // _mode is reserved for future TLS support; currently only plain TCP is implemented.
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
         }
