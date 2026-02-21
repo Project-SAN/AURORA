@@ -155,7 +155,10 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     let pci_count = pci::scan();
     serial::write(format_args!("PCI scan complete: {} devices\n", pci_count));
-    let _ = fs::init();
+    serial::write(format_args!("boot: before fs::init\n"));
+    let fs_ok = fs::init();
+    serial::write(format_args!("boot: after fs::init ok={}\n", fs_ok));
+    serial::write(format_args!("boot: before virtio-net probe\n"));
     if let Some(dev) = pci::find_virtio_net() {
         serial::write(format_args!(
             "virtio-net at {:02x}:{:02x}.{} io={:?} mmio={:?}\n",
@@ -166,6 +169,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     } else {
         serial::write(format_args!("virtio-net not found\n"));
     }
+    serial::write(format_args!("boot: after virtio-net init\n"));
 
     let mut net_device = net::VirtioDevice::new();
     let mut net_stack = match virtio::mac_address() {
@@ -181,6 +185,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     }
 
     if RUN_USERLAND {
+        serial::write(format_args!("boot: before userland load\n"));
         if let Some(image) = user::load_user_image(user::USER_ELF) {
             serial::write(format_args!(
                 "userland: entry={:#x} stack={:#x}\n",
@@ -213,6 +218,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
             serial::write(format_args!("userland: load failed\n"));
         }
     }
+    serial::write(format_args!("boot: entering main loop\n"));
 
     let mut next_poll_tick = None;
     if let Some(stack) = net_stack.as_mut() {
@@ -266,9 +272,14 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
     let user_cs = (arch::gdt::USER_CODE | 3) as u64;
     let user_ss = (arch::gdt::USER_DATA | 3) as u64;
     let rflags = read_rflags() | (1 << 9);
+    // Match C ABI function-entry stack alignment for `_start` (as if entered via `call`).
+    let user_rsp = stack_top.saturating_sub(8);
+    if user_rsp != 0 {
+        core::ptr::write_volatile(user_rsp as *mut u64, 0);
+    }
     serial::write(format_args!(
         "enter_user: rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
-        entry, user_cs, rflags, stack_top, user_ss
+        entry, user_cs, rflags, user_rsp, user_ss
     ));
     core::arch::asm!(
         "cli",
@@ -282,7 +293,7 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
         rip = in(reg) entry,
         cs = in(reg) user_cs,
         rflags = in(reg) rflags,
-        rsp_user = in(reg) stack_top,
+        rsp_user = in(reg) user_rsp,
         ss = in(reg) user_ss,
         options(noreturn)
     );

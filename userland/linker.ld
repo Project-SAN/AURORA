@@ -3,7 +3,7 @@ ENTRY(_start)
 SECTIONS
 {
   . = 0x400000;
-  HEAP_SIZE = 1M;
+  HEAP_SIZE = 16M;
 
   .text : ALIGN(4K)
   {

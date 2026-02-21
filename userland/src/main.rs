@@ -40,6 +40,7 @@ pub extern "C" fn _start() -> ! {
     sys::write(1, msg);
     #[cfg(feature = "aurora-router")]
     if RUN_ROUTER {
+        let _ = sys::write(1, b"userland: entering run_router\n");
         router_app::run_router();
     }
     fs_persist_test();
