@@ -41,6 +41,7 @@ From repository root:
   - `align_up` page-alignment and upper-bound properties
   - allocation window soundness used by `alloc_contiguous_range`
   - abstract `split_result` semantics (`region - alloc`) with branch exhaustiveness
+  - idx-update model (`alloc_idx_update_result`) preserves free-list sorted/disjoint invariants
   - abstract `coalesce_step_result` semantics preserving interval union
   - split-case exhaustiveness and per-branch safety invariants
   - saturating-add guard implies bounded plain-sum arithmetic

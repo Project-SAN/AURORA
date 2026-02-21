@@ -43,6 +43,17 @@ spec fn split_result(
     }
 }
 
+spec fn alloc_idx_update_result(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    alloc_start: u64,
+    alloc_end: u64,
+) -> Seq<(u64, u64)> {
+    regions.subrange(0, idx)
+        + split_result(regions[idx].0, regions[idx].1, alloc_start, alloc_end)
+        + regions.subrange(idx + 1, regions.len() as int)
+}
+
 spec fn coalesce_step_result(
     current_start: u64,
     current_end: u64,
@@ -319,6 +330,84 @@ proof fn lemma_split_result_wf(
     }
 }
 
+proof fn lemma_split_result_bounds(
+    region_start: u64,
+    region_end: u64,
+    alloc_start: u64,
+    alloc_end: u64,
+)
+    requires
+        region_start <= alloc_start,
+        alloc_start < alloc_end,
+        alloc_end <= region_end,
+    ensures
+        forall|k: int|
+            0 <= k < split_result(region_start, region_end, alloc_start, alloc_end).len()
+                ==> region_start <= split_result(region_start, region_end, alloc_start, alloc_end)[k].0
+                    && split_result(region_start, region_end, alloc_start, alloc_end)[k].1 <= region_end,
+{
+}
+
+proof fn lemma_sorted_disjoint_pair_from_invariant(regions: Seq<(u64, u64)>, i: int, j: int)
+    requires
+        regions_strictly_sorted_disjoint(regions),
+        0 <= i < j < regions.len(),
+    ensures
+        regions[i].1 < regions[j].0,
+{
+}
+
+proof fn lemma_subrange_preserves_sorted_disjoint(regions: Seq<(u64, u64)>, lo: int, hi: int)
+    requires
+        regions_strictly_sorted_disjoint(regions),
+        0 <= lo <= hi <= regions.len(),
+    ensures
+        regions_strictly_sorted_disjoint(regions.subrange(lo, hi)),
+{
+    assert forall|i: int, j: int|
+        0 <= i < j < regions.subrange(lo, hi).len()
+            implies regions.subrange(lo, hi)[i].1 < regions.subrange(lo, hi)[j].0
+    by {
+        assert(lo + i < lo + j);
+        assert(lo + j < hi);
+        assert(regions.subrange(lo, hi)[i] == regions[lo + i]);
+        assert(regions.subrange(lo, hi)[j] == regions[lo + j]);
+        lemma_sorted_disjoint_pair_from_invariant(regions, lo + i, lo + j);
+    };
+}
+
+proof fn lemma_concat_preserves_sorted_disjoint(left: Seq<(u64, u64)>, right: Seq<(u64, u64)>)
+    requires
+        regions_strictly_sorted_disjoint(left),
+        regions_strictly_sorted_disjoint(right),
+        forall|i: int, j: int| 0 <= i < left.len() && 0 <= j < right.len() ==> left[i].1 < right[j].0,
+    ensures
+        regions_strictly_sorted_disjoint(left + right),
+{
+    let both = left + right;
+    assert forall|i: int, j: int|
+        0 <= i < j < both.len()
+            implies both[i].1 < both[j].0
+    by {
+        if j < left.len() {
+            assert(i < left.len());
+            assert(both[i] == left[i]);
+            assert(both[j] == left[j]);
+        } else if i < left.len() {
+            let rj = j - left.len();
+            assert(0 <= rj < right.len());
+            assert(both[i] == left[i]);
+            assert(both[j] == right[rj]);
+        } else {
+            let ri = i - left.len();
+            let rj = j - left.len();
+            assert(0 <= ri < rj < right.len());
+            assert(both[i] == right[ri]);
+            assert(both[j] == right[rj]);
+        }
+    };
+}
+
 proof fn lemma_split_result_semantics(
     region_start: u64,
     region_end: u64,
@@ -351,6 +440,69 @@ proof fn lemma_split_result_semantics(
         lemma_in_regions_pair(x, region_start, alloc_start, alloc_end, region_end);
         lemma_split_middle_case_semantics(region_start, region_end, alloc_start, alloc_end, x);
     }
+}
+
+proof fn lemma_alloc_idx_update_preserves_sorted_disjoint(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    alloc_start: u64,
+    alloc_end: u64,
+)
+    requires
+        regions_strictly_sorted_disjoint(regions),
+        0 <= idx < regions.len(),
+        regions[idx].0 <= alloc_start,
+        alloc_start < alloc_end,
+        alloc_end <= regions[idx].1,
+    ensures
+        regions_strictly_sorted_disjoint(alloc_idx_update_result(regions, idx, alloc_start, alloc_end)),
+{
+    let prefix = regions.subrange(0, idx);
+    let middle = split_result(regions[idx].0, regions[idx].1, alloc_start, alloc_end);
+    let suffix = regions.subrange(idx + 1, regions.len() as int);
+
+    lemma_subrange_preserves_sorted_disjoint(regions, 0, idx);
+    lemma_split_result_wf(regions[idx].0, regions[idx].1, alloc_start, alloc_end);
+    lemma_subrange_preserves_sorted_disjoint(regions, idx + 1, regions.len() as int);
+    lemma_split_result_bounds(regions[idx].0, regions[idx].1, alloc_start, alloc_end);
+
+    assert forall|i: int, j: int|
+        0 <= i < prefix.len() && 0 <= j < middle.len()
+            implies prefix[i].1 < middle[j].0
+    by {
+        assert(prefix[i] == regions[i]);
+        lemma_sorted_disjoint_pair_from_invariant(regions, i, idx);
+        assert(regions[idx].0 <= middle[j].0) by {
+            assert(0 <= j < split_result(regions[idx].0, regions[idx].1, alloc_start, alloc_end).len());
+        };
+    };
+
+    lemma_concat_preserves_sorted_disjoint(prefix, middle);
+    let pm = prefix + middle;
+
+    assert forall|i: int, j: int|
+        0 <= i < pm.len() && 0 <= j < suffix.len()
+            implies pm[i].1 < suffix[j].0
+    by {
+        if i < prefix.len() {
+            assert(pm[i] == prefix[i]);
+            assert(prefix[i] == regions[i]);
+            assert(suffix[j] == regions[idx + 1 + j]);
+            lemma_sorted_disjoint_pair_from_invariant(regions, i, idx + 1 + j);
+        } else {
+            let k = i - prefix.len();
+            assert(0 <= k < middle.len());
+            assert(pm[i] == middle[k]);
+            assert(suffix[j] == regions[idx + 1 + j]);
+            assert(middle[k].1 <= regions[idx].1) by {
+                assert(0 <= k < split_result(regions[idx].0, regions[idx].1, alloc_start, alloc_end).len());
+            };
+            lemma_sorted_disjoint_pair_from_invariant(regions, idx, idx + 1 + j);
+        }
+    };
+
+    lemma_concat_preserves_sorted_disjoint(pm, suffix);
+    assert(pm + suffix == alloc_idx_update_result(regions, idx, alloc_start, alloc_end));
 }
 
 proof fn lemma_coalesce_step(
