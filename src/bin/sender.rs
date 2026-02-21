@@ -1,8 +1,8 @@
-use hornet::router::storage::StoredState;
-use hornet::setup::directory;
-use hornet::setup::wire;
-use hornet::types::{Chdr, PacketType};
-use hornet::utils::decode_hex;
+use aurora::router::storage::StoredState;
+use aurora::setup::wire;
+use aurora::types::{Chdr, PacketType};
+use aurora::utils::decode_hex;
+use aurora::policy::{PolicyId, POLICY_ID_TLV};
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 use rand_core::SeedableRng;
@@ -16,14 +16,14 @@ use x25519_dalek::x25519;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("hornet_sender error: {err}");
+        eprintln!("aurora_sender error: {err}");
         std::process::exit(1);
     }
 }
 
 fn run() -> Result<(), String> {
     let mut args = env::args();
-    let program = args.next().unwrap_or_else(|| "hornet_sender".into());
+    let program = args.next().unwrap_or_else(|| "aurora_sender".into());
     let info_path = args
         .next()
         .ok_or_else(|| format!("usage: {program} <policy-info.json>"))?;
@@ -47,8 +47,9 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     if public_key.len() != 32 {
         return Err("directory_public_key must be 32 bytes".into());
     }
-    let announcement = directory::from_signed_json(&directory_body, &public_key)
+    let _announcement = aurora::setup::directory::from_signed_json(&directory_body, &public_key)
         .map_err(|err| format!("failed to verify directory: {err:?}"))?;
+    let policy_id = decode_policy_id(&info.policy_id)?;
 
     let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
     let mut source_secret = [0u8; 32];
@@ -57,15 +58,25 @@ fn send_setup(info_path: &str) -> Result<(), String> {
 
     let exp = compute_expiry(600);
     let mut state =
-        hornet::setup::source_init(&source_secret, &node_pubs, node_pubs.len(), exp, &mut rng);
-    directory::apply_to_source_state(&mut state, &announcement);
+        aurora::setup::source_init(&source_secret, &node_pubs, node_pubs.len(), exp, &mut rng);
+    // Directory metadata can exceed setup TLV size limits for large verifier blobs.
+    // Routers already load directory metadata from local storage at boot.
+    state.packet.tlvs.clear();
+    let mut policy_tlv = Vec::with_capacity(1 + policy_id.len());
+    policy_tlv.push(POLICY_ID_TLV);
+    policy_tlv.extend_from_slice(&policy_id);
+    state.packet.tlvs.push(policy_tlv);
     let encoded = wire::encode(&state.packet)
         .map_err(|err| format!("failed to encode setup packet: {err:?}"))?;
     let frame = encode_frame(&state.packet.chdr, &encoded.header, &encoded.payload)?;
-    send_frame(&entry.bind, &frame)?;
+    let entry_addr = env::var("HORNET_ENTRY_ADDR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| entry.bind.clone());
+    send_frame(&entry_addr, &frame)?;
     println!(
         "送信完了: {} へ setup フレーム ({:?} hops)",
-        entry.bind, state.packet.chdr.hops
+        entry_addr, state.packet.chdr.hops
     );
     Ok(())
 }
@@ -94,13 +105,13 @@ fn clamp_scalar(bytes: &mut [u8; 32]) {
     bytes[31] |= 64;
 }
 
-fn compute_expiry(delta_secs: u64) -> hornet::types::Exp {
+fn compute_expiry(delta_secs: u64) -> aurora::types::Exp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let expiry = now.saturating_add(delta_secs);
-    hornet::types::Exp(expiry.min(u32::MAX as u64) as u32)
+    aurora::types::Exp(expiry.min(u32::MAX as u64) as u32)
 }
 
 fn derive_seed() -> u64 {
@@ -110,6 +121,16 @@ fn derive_seed() -> u64 {
         .as_nanos();
     let pid = std::process::id() as u128;
     (nanos ^ pid) as u64
+}
+
+fn decode_policy_id(hex: &str) -> Result<PolicyId, String> {
+    let bytes = decode_hex(hex).map_err(|err| format!("invalid policy_id hex: {err}"))?;
+    if bytes.len() != 32 {
+        return Err("policy_id must be 32 bytes".into());
+    }
+    let mut policy_id = [0u8; 32];
+    policy_id.copy_from_slice(&bytes);
+    Ok(policy_id)
 }
 
 fn encode_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -143,6 +164,7 @@ fn send_frame(bind: &str, frame: &[u8]) -> Result<(), String> {
 
 #[derive(Deserialize)]
 struct PolicyInfo {
+    policy_id: String,
     directory_public_key: String,
     routers: Vec<RouterInfo>,
 }

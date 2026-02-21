@@ -8,7 +8,7 @@ members = ["kernel", "userland"]
 resolver = "2"
 
 [lib]
-name = "hornet"
+name = "aurora"
 
 [features]
 default = []
@@ -17,9 +17,9 @@ http-client = ["std", "dep:ureq"]
 bench = []
 regex-policy = ["std", "dep:regex"]
 pcd-nova = ["std", "dep:nova-snark", "dep:bincode", "dep:num-bigint"]
+localnet-debug = []
 
 [dependencies]
-# no_std-friendly cryptography building blocks
 aes = { version = "0.8", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.12", default-features = false }
@@ -56,14 +56,9 @@ panic = "abort"
 
 
 [[bench]]
-name = "hornet"
+name = "aurora"
 harness = false
 required-features = ["std"]
-
-[[bench]]
-name = "ascon"
-
-harness = false
 
 [[bench]]
 name = "zkboo"
@@ -74,18 +69,18 @@ name = "routing"
 path = "example/routing.rs"
 
 [[bin]]
-name = "hornet_router"
-path = "src/bin/hornet_router.rs"
+name = "aurora_router"
+path = "src/bin/router.rs"
 required-features = ["std"]
 
 [[bin]]
-name = "hornet_data_sender"
-path = "src/bin/hornet_data_sender.rs"
+name = "aurora_data_sender"
+path = "src/bin/data_sender.rs"
 required-features = ["std"]
 
 [[bin]]
-name = "hornet_sender"
-path = "src/bin/hornet_sender.rs"
+name = "aurora_sender"
+path = "src/bin/sender.rs"
 required-features = ["std"]
 
 [[bin]]
@@ -94,6 +89,6 @@ path = "src/bin/localnet_prep.rs"
 required-features = ["std"]
 
 [[bin]]
-name = "hornet_proxy"
-path = "src/bin/hornet_proxy.rs"
+name = "aurora_proxy"
+path = "src/bin/proxy.rs"
 required-features = ["std"]

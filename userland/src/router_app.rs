@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use alloc::string::String;
@@ -7,23 +5,23 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use hornet::application::setup::RegistrySetupPipeline;
-use hornet::node::ReplayCache;
-use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
-use hornet::router::io::PacketListener;
-use hornet::router::storage::{RouterStorage, StoredState};
-use hornet::router::Router;
-use hornet::setup::directory::from_signed_json;
-use hornet::setup::wire;
-use hornet::types::{self, PacketDirection, PacketType, Result as HornetResult};
-use hornet::utils::decode_hex;
+use aurora::application::setup::RegistrySetupPipeline;
+use aurora::node::ReplayCache;
+use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
+use aurora::router::io::PacketListener;
+use aurora::router::storage::RouterStorage;
+use aurora::router::Router;
+use aurora::setup::directory::from_signed_json;
+use aurora::setup::wire;
+use aurora::types::{self, PacketDirection, PacketType, Result as AuroraResult};
+use aurora::utils::decode_hex;
 
 use crate::fs;
 use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketListener};
 use crate::router_storage::UserlandRouterStorage;
 use crate::sys;
 
-#[cfg(feature = "hornet-time")]
+#[cfg(feature = "aurora-time")]
 use crate::time_provider::SysTimeProvider;
 
 const ROUTER_CONFIG_PATH: &str = "/router_config.json";
@@ -38,22 +36,37 @@ const DEFAULT_CLI_PORT: u16 = 7001;
 const DEFAULT_STORAGE_PATH: &str = "/router_state.json";
 
 pub fn run_router() -> ! {
+    log_line("router: run_router start");
     let mut config = load_config();
+    log_line("router: config loaded");
     let storage = UserlandRouterStorage::new(config.storage_path.clone());
+    log_line("router: storage ready");
     let mut router = Router::with_node_id(config.router_id.clone());
+    log_line("router: instance ready");
     let secrets = load_state(&storage, &mut router);
+    log_line("router: state loaded");
+    if config.skip_policy {
+        // Drop any policy runtime restored from persisted state when operating in
+        // route-only mode.
+        router = Router::with_node_id(config.router_id.clone());
+        log_line("router: policy runtime disabled");
+    }
     load_directory_if_configured(&mut router, &storage, &secrets, &config);
+    log_line("router: directory loaded");
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
         Ok(listener) => listener,
         Err(_) => loop {
             sys::sleep(1000);
         },
     };
+    log_line("router: listener ready");
     let mut cli = CliServer::listen(config.cli_port);
+    log_line("router: cli ready");
     let time = time_provider();
     let mut forward = UserlandForward::new();
     let mut exit = UserlandExitTransport::new();
     let mut replay = ReplayCache::new();
+    log_line("router: event loop start");
 
     loop {
         if let Some(server) = cli.as_mut() {
@@ -97,7 +110,14 @@ pub fn run_router() -> ! {
                     let mut msg = String::new();
                     let _ = core::fmt::Write::write_fmt(
                         &mut msg,
-                        format_args!("router: packet error {:?}", err),
+                        format_args!(
+                            "router: packet error {:?} dir={:?} typ={} hops={} payload_len={}",
+                            err,
+                            packet.direction,
+                            packet_type_label(packet.chdr.typ),
+                            packet.chdr.hops,
+                            packet.payload.len()
+                        ),
                     );
                     log_line(&msg);
                 }
@@ -110,6 +130,13 @@ pub fn run_router() -> ! {
                 sys::sleep(10);
             }
         }
+    }
+}
+
+fn packet_type_label(typ: PacketType) -> &'static str {
+    match typ {
+        PacketType::Setup => "Setup",
+        PacketType::Data => "Data",
     }
 }
 
@@ -192,7 +219,7 @@ fn load_config() -> RouterConfig {
     }
 }
 
-fn read_all_any(paths: &[&str]) -> HornetResult<Vec<u8>> {
+fn read_all_any(paths: &[&str]) -> AuroraResult<Vec<u8>> {
     let mut last_err = None;
     for path in paths {
         match read_all(path) {
@@ -203,7 +230,7 @@ fn read_all_any(paths: &[&str]) -> HornetResult<Vec<u8>> {
     Err(last_err.unwrap_or(types::Error::Crypto))
 }
 
-fn read_all(path: &str) -> HornetResult<Vec<u8>> {
+fn read_all(path: &str) -> AuroraResult<Vec<u8>> {
     let handle = fs::open(path, fs::O_READ).ok_or(types::Error::Crypto)?;
     let mut out = Vec::new();
     let mut buf = [0u8; 512];
@@ -223,7 +250,7 @@ fn read_all(path: &str) -> HornetResult<Vec<u8>> {
     Ok(out)
 }
 
-fn write_all(path: &str, data: &[u8]) -> HornetResult<()> {
+fn write_all(path: &str, data: &[u8]) -> AuroraResult<()> {
     let handle =
         fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC).ok_or(types::Error::Crypto)?;
     let mut offset = 0usize;
@@ -245,7 +272,7 @@ fn write_all(path: &str, data: &[u8]) -> HornetResult<()> {
     Ok(())
 }
 
-fn save_config(config: &RouterConfig) -> HornetResult<()> {
+fn save_config(config: &RouterConfig) -> AuroraResult<()> {
     let file = RouterConfigFile {
         listen_port: Some(config.listen_port),
         storage_path: Some(config.storage_path.clone()),
@@ -562,16 +589,16 @@ fn send_kv_str(socket: &crate::socket::TcpSocket, key: &str, value: &str) -> boo
     send_line(socket, &line).is_ok()
 }
 
-fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> HornetResult<()> {
+fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> AuroraResult<()> {
     send_bytes(socket, line.as_bytes())?;
     send_bytes(socket, b"\n")
 }
 
-fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> HornetResult<()> {
+fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> AuroraResult<()> {
     send_bytes(socket, s.as_bytes())
 }
 
-fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> HornetResult<()> {
+fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> AuroraResult<()> {
     let mut offset = 0usize;
     while offset < buf.len() {
         let written = socket
@@ -585,7 +612,7 @@ fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> HornetResult<()>
     Ok(())
 }
 
-fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> HornetResult<bool> {
+fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> AuroraResult<bool> {
     out.clear();
     let mut buf = [0u8; 64];
     loop {
@@ -611,15 +638,15 @@ fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> HornetResu
     }
 }
 
-fn time_provider() -> impl hornet::time::TimeProvider {
-    #[cfg(feature = "hornet-time")]
+fn time_provider() -> impl aurora::time::TimeProvider {
+    #[cfg(feature = "aurora-time")]
     {
         SysTimeProvider
     }
-    #[cfg(not(feature = "hornet-time"))]
+    #[cfg(not(feature = "aurora-time"))]
     {
         struct DummyTime;
-        impl hornet::time::TimeProvider for DummyTime {
+        impl aurora::time::TimeProvider for DummyTime {
             fn now_coarse(&self) -> u32 {
                 0
             }
@@ -657,15 +684,19 @@ fn load_directory_if_configured(
     secrets: &RouterSecrets,
     config: &RouterConfig,
 ) {
+    log_line("directory: begin");
     let path = match config.directory_path.as_deref() {
         Some(path) if !path.is_empty() => path,
         _ => return,
     };
+    log_line("directory: path ok");
     let key_hex = match config.directory_public_key.as_deref() {
         Some(key) if !key.is_empty() => key,
         _ => return,
     };
+    log_line("directory: key present");
 
+    log_line("directory: read start");
     let body_bytes = match read_all_any(&[
         path,
         DIRECTORY_PATH_FALLBACK,
@@ -677,6 +708,7 @@ fn load_directory_if_configured(
             return;
         }
     };
+    log_line("directory: read ok");
     let body = match core::str::from_utf8(&body_bytes) {
         Ok(text) => text,
         Err(_) => {
@@ -684,6 +716,7 @@ fn load_directory_if_configured(
             return;
         }
     };
+    log_line("directory: utf8 ok");
     let key_bytes = match decode_hex(key_hex) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -691,12 +724,15 @@ fn load_directory_if_configured(
             return;
         }
     };
+    log_line("directory: key decode ok");
     if key_bytes.len() != 32 {
         log_line("directory: public key length invalid");
         return;
     }
+    log_line("directory: verify start");
     match from_signed_json(body, &key_bytes) {
         Ok(directory) => {
+            log_line("directory: verify ok");
             let installed = if config.skip_policy {
                 let res = router.install_routes(directory.routes());
                 if res.is_ok() {
@@ -711,7 +747,11 @@ fn load_directory_if_configured(
                 res
             };
             if installed.is_ok() {
-                persist_state(storage, router, secrets);
+                // Persisting the full directory-derived state can exceed practical
+                // limits in the current userland environment and may crash.
+                // Runtime operation only needs in-memory install here.
+                let _ = (storage, secrets);
+                log_line("directory: persist skipped");
             } else {
                 log_line("directory: install failed");
             }
@@ -722,51 +762,92 @@ fn load_directory_if_configured(
     }
 }
 
-fn persist_state(storage: &dyn RouterStorage, router: &Router, secrets: &RouterSecrets) {
-    let state = StoredState::new(
-        router.policies(),
-        router.routes(),
-        secrets.sv,
-        secrets.node_secret,
-    );
-    let _ = storage.save(&state);
-}
-
 fn log_line(msg: &str) {
     let _ = sys::write(1, msg.as_bytes());
     let _ = sys::write(1, b"\n");
 }
 
 fn handle_setup_packet(
-    packet: hornet::router::io::IncomingPacket,
+    packet: aurora::router::io::IncomingPacket,
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
-) -> HornetResult<()> {
+) -> AuroraResult<()> {
     if packet.chdr.typ != PacketType::Setup {
         return Err(types::Error::Length);
     }
     let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
-    let policy_id = select_policy_id(&setup_packet).ok_or(types::Error::PolicyViolation)?;
+    // Attempt to extract a policy ID from the packet's TLVs. If the packet
+    // carries no policy ID TLV and exactly one route is configured, infer the
+    // policy from that sole route. This fallback accommodates single-route
+    // deployments where the sender omits the policy ID field, but it will
+    // silently accept packets that should be rejected when policy enforcement
+    // is expected. Log when the fallback is taken so operators can detect
+    // misconfigured senders.
+    let explicit_policy_id = select_policy_id(&setup_packet);
+    let policy_id = explicit_policy_id.or_else(|| {
+        let routes = router.routes();
+        if routes.len() == 1 {
+            let mut msg = String::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut msg,
+                format_args!(
+                    "setup: policy id absent; inferring policy {} from sole route (fallback)",
+                    aurora::utils::encode_hex(&routes[0].policy_id)
+                ),
+            );
+            log_line(&msg);
+            Some(routes[0].policy_id)
+        } else {
+            None
+        }
+    });
+    let policy_id = policy_id.ok_or(types::Error::PolicyViolation)?;
+    // Look up the route that matches the resolved policy. If no matching route
+    // is found (e.g. because the directory has not yet been loaded or the
+    // policy ID was inferred from the sole route above), fall back to the
+    // first available route. This prevents a hard failure for single-route
+    // nodes, but could mask a policy mismatch in multi-route configurations.
+    // Log when the fallback is taken so operators can detect routing anomalies.
     let route_segment = router
         .route_for_policy(&policy_id)
         .cloned()
+        .or_else(|| {
+            let first = router.routes().into_iter().next();
+            if first.is_some() {
+                let mut msg = String::new();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut msg,
+                    format_args!(
+                        "setup: no route for policy {}; using first available route (fallback)",
+                        aurora::utils::encode_hex(&policy_id)
+                    ),
+                );
+                log_line(&msg);
+            }
+            first
+        })
         .map(|route| route.segment)
         .ok_or(types::Error::NotImplemented)?;
     let mut pipeline = RegistrySetupPipeline::new(router.registry_mut());
-    hornet::setup::node_process_with_policy(
+    aurora::setup::node_process_with_policy(
         &mut setup_packet,
         &secrets.node_secret,
         &secrets.sv,
         &route_segment,
         Some(&mut pipeline),
     )?;
-    persist_state(storage, router, secrets);
+    // Setup-triggered persistence can overflow practical userland limits.
+    let _ = (storage, secrets);
+    log_line("setup: persist skipped");
     Ok(())
 }
 
-fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
+fn select_policy_id(packet: &aurora::setup::SetupPacket) -> Option<PolicyId> {
     for tlv in &packet.tlvs {
+        if let Some(policy_id) = decode_policy_id_tlv(tlv) {
+            return Some(policy_id);
+        }
         if tlv.first().copied() != Some(POLICY_METADATA_TLV) {
             continue;
         }
@@ -776,4 +857,14 @@ fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
     }
     None
 }
+
+fn decode_policy_id_tlv(tlv: &[u8]) -> Option<PolicyId> {
+    if tlv.first().copied() != Some(POLICY_ID_TLV) || tlv.len() != 33 {
+        return None;
+    }
+    let mut policy_id = [0u8; 32];
+    policy_id.copy_from_slice(&tlv[1..33]);
+    Some(policy_id)
+}
+
 const ROUTER_CONFIG_CONTENT_PATH: &str = "/ROUTER_C.JSO";

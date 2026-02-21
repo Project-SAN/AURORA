@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec::Vec;
 
-use hornet::core::policy::PolicyRole;
-use hornet::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
-use hornet::node::pipeline::ForwardPipeline;
-use hornet::policy::CapsuleValidator;
-use hornet::setup::pipeline::SetupPipeline;
-use hornet::types::Result;
+use aurora::core::policy::PolicyRole;
+use aurora::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
+use aurora::node::pipeline::ForwardPipeline;
+use aurora::policy::CapsuleValidator;
+use aurora::setup::pipeline::SetupPipeline;
+use aurora::types::Result;
 
 #[allow(dead_code)]
 pub struct NoopSetup;

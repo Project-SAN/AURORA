@@ -1,7 +1,7 @@
 # Router Setup Integration Plan
 
 ## Current gaps
-- `bin/hornet_router` treats incoming setup frames as plain `{Sv, Si?}` blobs (`handle_setup_packet`) and never invokes `setup::node_process_with_policy`, so policy TLVs carried in AHDR are ignored.
+- `bin/aurora_router` treats incoming setup frames as plain `{Sv, Si?}` blobs (`handle_setup_packet`) and never invokes `setup::node_process_with_policy`, so policy TLVs carried in AHDR are ignored.
 - `router::storage::StoredState` only persists policies + `Sv` (+ optional `Si`), leaving `Fs`, CHDR metadata (EXP), and per-hop symmetric context undefined after restart.
 - There is no on-wire representation for `setup::SetupPacket` (Sphinx header + FS payload + policy TLVs), which prevents routers from decoding real setup packets built by sources.
 

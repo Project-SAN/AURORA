@@ -11,4 +11,4 @@ pub use circuit::{Circuit, Gate, WireId};
 pub use commitment::{AsconCommitment, CommitmentScheme, COMMIT_LEN};
 pub use merkle::MerkleTree;
 pub use seed_tree::{SeedDeriver, SeedReveal, SeedRevealSet, SeedTree};
-pub use zkboo::{Proof, ProverConfig, VerifierConfig, ZkBooEngine};
+pub use zkboo::{Engine, Proof, ProverConfig, VerifierConfig};

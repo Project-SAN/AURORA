@@ -1,27 +1,27 @@
 mod suppert;
 
-use hornet::application::forward::RegistryForwardPipeline;
-use hornet::application::setup::RegistrySetupPipeline;
-use hornet::core::policy::PolicyRegistry;
-use hornet::core::policy::PolicyRole;
-use hornet::node::pipeline::ForwardPipeline;
-use hornet::policy::PolicyMetadata;
-use hornet::setup::pipeline::SetupPipeline;
-use hornet::types::Error;
+use aurora::application::forward::RegistryForwardPipeline;
+use aurora::application::setup::RegistrySetupPipeline;
+use aurora::core::policy::PolicyRegistry;
+use aurora::core::policy::PolicyRole;
+use aurora::node::pipeline::ForwardPipeline;
+use aurora::policy::PolicyMetadata;
+use aurora::setup::pipeline::SetupPipeline;
+use aurora::types::Error;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use suppert::RecordingForward;
 
-fn encode_capsule(capsule: &hornet::policy::PolicyCapsule) -> Vec<u8> {
+fn encode_capsule(capsule: &aurora::policy::PolicyCapsule) -> Vec<u8> {
     capsule.encode().expect("encode capsule")
 }
 
-fn demo_zkboo_policy() -> (hornet::policy::zkboo::ZkBooPolicy, PolicyMetadata) {
+fn demo_zkboo_policy() -> (aurora::policy::zkboo::ZkBooPolicy, PolicyMetadata) {
     // n_inputs=1, output = NOT(input0). Provide input0=0 to satisfy output==1.
-    let mut circuit = hornet::crypto::zkp::Circuit::new(1);
+    let mut circuit = aurora::crypto::zkp::Circuit::new(1);
     let one = circuit.add_not(0);
     circuit.set_outputs(&[one]);
-    let policy = hornet::policy::zkboo::ZkBooPolicy::new(circuit);
+    let policy = aurora::policy::zkboo::ZkBooPolicy::new(circuit);
     let metadata = policy.metadata(900, 0);
     (policy, metadata)
 }
@@ -44,7 +44,7 @@ fn forward_pipeline_enforces_capsules() {
     registry
         .register(metadata.clone())
         .expect("register metadata");
-    let validator = hornet::adapters::zkboo::validator::ZkBooCapsuleValidator::new();
+    let validator = aurora::adapters::zkboo::validator::ZkBooCapsuleValidator::new();
 
     let mut rng = ChaCha20Rng::seed_from_u64(0x5151_5151);
     let capsule = policy.prove_with_rng(&[0u8], 16, &mut rng).expect("prove");
@@ -69,7 +69,7 @@ fn forward_pipeline_enforces_capsules() {
             &registry,
             &mut tampered,
             &validator,
-            hornet::core::policy::PolicyRole::All,
+            aurora::core::policy::PolicyRole::All,
         )
         .unwrap_err();
     assert!(matches!(err, Error::PolicyViolation));
@@ -82,7 +82,7 @@ fn recording_forward_captures_capsule() {
     registry
         .register(metadata.clone())
         .expect("register metadata");
-    let validator = hornet::adapters::zkboo::validator::ZkBooCapsuleValidator::new();
+    let validator = aurora::adapters::zkboo::validator::ZkBooCapsuleValidator::new();
 
     let mut rng = ChaCha20Rng::seed_from_u64(0xA5A5_A5A5);
     let capsule = policy.prove_with_rng(&[0u8], 16, &mut rng).expect("prove");

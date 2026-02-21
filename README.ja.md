@@ -11,9 +11,6 @@ cargo build --release
 
 This project is experimental and not audit
 
-
-## Benchmark
-
 ## Contributing
 
 

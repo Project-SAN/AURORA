@@ -21,6 +21,7 @@ use crate::types::{Error, Result};
 use alloc::vec::Vec;
 
 pub const POLICY_METADATA_TLV: u8 = 0xA1;
+pub const POLICY_ID_TLV: u8 = 0xFE;
 
 pub fn encode_metadata_tlv(meta: &PolicyMetadata) -> Vec<u8> {
     let payload = meta.encode();

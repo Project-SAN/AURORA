@@ -152,21 +152,35 @@ fn mount_ramdisk() -> Option<FsState> {
 }
 
 fn mount_virtio_blk() -> Option<FsState> {
+    serial::write(format_args!("fs: mount_virtio_blk start\n"));
     let dev = pci::find_virtio_blk()?;
+    serial::write(format_args!(
+        "fs: virtio-blk dev {:02x}:{:02x}.{}\n",
+        dev.bus, dev.device, dev.function
+    ));
     pci::enable_bus_master(&dev);
+    serial::write(format_args!("fs: virtio-blk bus master enabled\n"));
     if !virtio::init_blk(&dev) {
+        serial::write(format_args!("fs: virtio::init_blk failed\n"));
         return None;
     }
+    serial::write(format_args!("fs: virtio::init_blk ok\n"));
     let sectors = virtio::blk_capacity_sectors()?;
+    serial::write(format_args!("fs: blk sectors={}\n", sectors));
     if sectors == 0 {
+        serial::write(format_args!("fs: blk sectors=0\n"));
         return None;
     }
     let total = sectors as usize * BLOCK_SIZE;
+    serial::write(format_args!("fs: blk total bytes={}\n", total));
     let mut storage = Vec::with_capacity(total);
     storage.resize(total, 0);
+    serial::write(format_args!("fs: blk read start\n"));
     if !virtio::blk_read(0, &mut storage) {
+        serial::write(format_args!("fs: blk read failed\n"));
         return None;
     }
+    serial::write(format_args!("fs: blk read ok\n"));
     mount_from_storage(storage, FsDevice::VirtioBlk { sectors })
 }
 

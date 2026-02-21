@@ -25,5 +25,6 @@ pub use regex::RegexPolicy;
 pub use registry::PolicyRegistry;
 
 pub use crate::core::policy::{
-    decode_metadata_tlv, encode_metadata_tlv, CapsuleValidator, PolicyRole, POLICY_METADATA_TLV,
+    decode_metadata_tlv, encode_metadata_tlv, CapsuleValidator, PolicyRole, POLICY_ID_TLV,
+    POLICY_METADATA_TLV,
 };
