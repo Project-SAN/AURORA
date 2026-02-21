@@ -1,8 +1,8 @@
 use aurora::router::storage::StoredState;
-use aurora::setup::directory;
 use aurora::setup::wire;
 use aurora::types::{Chdr, PacketType};
 use aurora::utils::decode_hex;
+use aurora::policy::PolicyId;
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 use rand_core::SeedableRng;
@@ -47,8 +47,9 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     if public_key.len() != 32 {
         return Err("directory_public_key must be 32 bytes".into());
     }
-    let announcement = directory::from_signed_json(&directory_body, &public_key)
+    let _announcement = aurora::setup::directory::from_signed_json(&directory_body, &public_key)
         .map_err(|err| format!("failed to verify directory: {err:?}"))?;
+    let policy_id = decode_policy_id(&info.policy_id)?;
 
     let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
     let mut source_secret = [0u8; 32];
@@ -58,14 +59,24 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     let exp = compute_expiry(600);
     let mut state =
         aurora::setup::source_init(&source_secret, &node_pubs, node_pubs.len(), exp, &mut rng);
-    directory::apply_to_source_state(&mut state, &announcement);
+    // Directory metadata can exceed setup TLV size limits for large verifier blobs.
+    // Routers already load directory metadata from local storage at boot.
+    state.packet.tlvs.clear();
+    let mut policy_tlv = Vec::with_capacity(1 + policy_id.len());
+    policy_tlv.push(POLICY_ID_TLV);
+    policy_tlv.extend_from_slice(&policy_id);
+    state.packet.tlvs.push(policy_tlv);
     let encoded = wire::encode(&state.packet)
         .map_err(|err| format!("failed to encode setup packet: {err:?}"))?;
     let frame = encode_frame(&state.packet.chdr, &encoded.header, &encoded.payload)?;
-    send_frame(&entry.bind, &frame)?;
+    let entry_addr = env::var("HORNET_ENTRY_ADDR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| entry.bind.clone());
+    send_frame(&entry_addr, &frame)?;
     println!(
         "送信完了: {} へ setup フレーム ({:?} hops)",
-        entry.bind, state.packet.chdr.hops
+        entry_addr, state.packet.chdr.hops
     );
     Ok(())
 }
@@ -112,6 +123,18 @@ fn derive_seed() -> u64 {
     (nanos ^ pid) as u64
 }
 
+fn decode_policy_id(hex: &str) -> Result<PolicyId, String> {
+    let bytes = decode_hex(hex).map_err(|err| format!("invalid policy_id hex: {err}"))?;
+    if bytes.len() != 32 {
+        return Err("policy_id must be 32 bytes".into());
+    }
+    let mut policy_id = [0u8; 32];
+    policy_id.copy_from_slice(&bytes);
+    Ok(policy_id)
+}
+
+const POLICY_ID_TLV: u8 = 0xFE;
+
 fn encode_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
     if header.len() > u32::MAX as usize || payload.len() > u32::MAX as usize {
         return Err("setup frame too large".into());
@@ -143,6 +166,7 @@ fn send_frame(bind: &str, frame: &[u8]) -> Result<(), String> {
 
 #[derive(Deserialize)]
 struct PolicyInfo {
+    policy_id: String,
     directory_public_key: String,
     routers: Vec<RouterInfo>,
 }

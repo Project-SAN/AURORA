@@ -65,7 +65,7 @@ impl TcpExitTransport {
                         .ok();
                     self.sessions.insert(key, stream);
                 }
-                Ok(b"OK".to_vec())
+                Ok(Vec::new())
             }
             StreamOp::Data => {
                 let stream = self.sessions.get_mut(&frame.session_id).ok_or(Error::Crypto)?;
