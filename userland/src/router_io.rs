@@ -174,6 +174,14 @@ impl UserlandExitTransport {
                 Ok(Vec::new())
             }
             StreamOp::Data => {
+                if !self.sessions.contains_key(&frame.session_id) {
+                    let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
+                    if connect_ipv4(&socket, ip, port).is_err() {
+                        debug_log("router-io: stream data auto-open connect failed");
+                        return Err(Error::Crypto);
+                    }
+                    self.sessions.insert(frame.session_id, socket);
+                }
                 let socket = self.sessions.get(&frame.session_id).ok_or(Error::Crypto)?;
                 if !frame.data.is_empty() && send_all(socket, frame.data).is_err() {
                     debug_log("router-io: stream data send failed");
@@ -306,11 +314,10 @@ fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
     let mut response = Vec::new();
     let mut buf = [0u8; 2048];
     let mut idle_spins = 0u32;
-    // In tunnel mode, remote peers (especially HTTPS servers) may take
-    // noticeably longer than a single scheduler slice to produce bytes.
-    // Wait longer before reporting "no data", but keep tail latency short
-    // once at least one chunk has arrived.
-    let idle_limit_empty = 10_000u32;
+    // Tunnel mode is polled repeatedly by the proxy; return quickly when
+    // no bytes are currently available so source-side response listeners
+    // do not timeout before this call returns.
+    let idle_limit_empty = 300u32;
     let idle_limit_after_data = 80u32;
     loop {
         match socket.recv(&mut buf) {
@@ -329,9 +336,6 @@ fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
             Ok(n) => {
                 idle_spins = 0;
                 response.extend_from_slice(&buf[..n]);
-                if n < buf.len() {
-                    break;
-                }
             }
             Err(_) => return Err(Error::Crypto),
         }
