@@ -6,7 +6,9 @@ use crate::node::PolicyRuntime;
 use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::setup::pipeline::SetupPipeline;
-use crate::types::{Ahdr, Chdr, Error, Result};
+use crate::types::{Ahdr, Chdr, Result};
+#[cfg(feature = "localnet-debug")]
+use crate::types::Error;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -219,12 +221,15 @@ impl Router {
     ) -> Result<()> {
         use crate::node;
         let policy = self.policy_runtime();
+        #[cfg(feature = "localnet-debug")]
         let orig_chdr = Chdr {
             typ: chdr.typ,
             hops: chdr.hops,
             specific: chdr.specific,
         };
+        #[cfg(feature = "localnet-debug")]
         let orig_ahdr_bytes = ahdr.bytes.clone();
+        #[cfg(feature = "localnet-debug")]
         let orig_payload = payload.clone();
         let mut ctx = node::NodeCtx {
             sv,
@@ -236,9 +241,11 @@ impl Router {
         };
         match node::forward::process_data(&mut ctx, chdr, ahdr, payload) {
             Ok(()) => Ok(()),
+            #[cfg(feature = "localnet-debug")]
             Err(Error::PolicyViolation) if policy.is_some() => {
-                // Fallback path for localnet debugging: forward without policy runtime
+                // Fallback path for localnet debugging only: forward without policy runtime
                 // when capsule validation fails but packet framing is otherwise valid.
+                // Compiled in only when the `localnet-debug` feature is explicitly enabled.
                 *chdr = orig_chdr;
                 ahdr.bytes = orig_ahdr_bytes;
                 *payload = orig_payload;
