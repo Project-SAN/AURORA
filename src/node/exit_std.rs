@@ -131,6 +131,17 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
     })
 }
 
+/// Reads all currently available bytes from `stream` into a contiguous buffer.
+///
+/// The loop exits only when the OS signals that no more data is ready
+/// (`WouldBlock` / `TimedOut`) or the peer has closed the connection (`Ok(0)`).
+/// An earlier version broke out of the loop whenever a short read occurred
+/// (`n < buf.len()`), assuming that meant all data had been delivered.
+/// That heuristic is unreliable: the kernel may split a single logical message
+/// across several `read` calls regardless of how much data is waiting, so an
+/// early exit could cause the caller to silently discard the tail of a frame.
+/// Looping until `WouldBlock` is the correct termination condition for a
+/// non-blocking / timeout-configured socket.
 fn read_available(stream: &mut TcpStream) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
