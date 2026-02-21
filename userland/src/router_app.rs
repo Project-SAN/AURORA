@@ -170,7 +170,7 @@ fn load_config() -> RouterConfig {
         directory_path: None,
         directory_public_key: None,
         router_id: None,
-        skip_policy: true,
+        skip_policy: false,
     };
     let data = match read_all_any(&[
         ROUTER_CONFIG_PATH_SHORT,
@@ -199,7 +199,7 @@ fn load_config() -> RouterConfig {
                         directory_path: cfg.directory_path,
                         directory_public_key: cfg.directory_public_key,
                         router_id: cfg.router_id,
-                        skip_policy: cfg.skip_policy.unwrap_or(true),
+                        skip_policy: cfg.skip_policy.unwrap_or(false),
                     };
                 }
             }
@@ -215,7 +215,7 @@ fn load_config() -> RouterConfig {
         directory_path: parsed.directory_path,
         directory_public_key: parsed.directory_public_key,
         router_id: parsed.router_id,
-        skip_policy: parsed.skip_policy.unwrap_or(true),
+        skip_policy: parsed.skip_policy.unwrap_or(false),
     }
 }
 
