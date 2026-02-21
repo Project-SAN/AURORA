@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use crate::socket::{ConnectState, TcpListener, TcpSocket};
 use crate::sys;
 use aurora::forward::Forward;
-use aurora::node::ExitTransport;
+use aurora::node::{ExitMode, ExitTransport};
 use aurora::router::io::{
     encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
 };
@@ -126,7 +126,8 @@ impl UserlandExitTransport {
 }
 
 impl ExitTransport for UserlandExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, _tls: bool, request: &[u8]) -> Result<Vec<u8>> {
+    fn send(&mut self, addr: &IpAddr, port: u16, _mode: ExitMode, request: &[u8]) -> Result<Vec<u8>> {
+        // _mode is reserved for future TLS support; currently only plain TCP is implemented.
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
         }
