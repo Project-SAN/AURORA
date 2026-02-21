@@ -1,4 +1,4 @@
-use crate::socket::{ConnectState, Error as SocketError, TcpSocket};
+use crate::socket::{ConnectState, Error, TcpSocket};
 use crate::sys;
 use core::arch::asm;
 
@@ -565,7 +565,7 @@ fn send_all(socket: &TcpSocket, data: &[u8]) -> Result<(), HttpError> {
             Ok(n) => {
                 offset += n;
             }
-            Err(SocketError::SysError) => return Err(HttpError::Send),
+            Err(Error::SysError) => return Err(HttpError::Send),
         }
         unsafe {
             asm!("pause");

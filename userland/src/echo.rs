@@ -1,4 +1,4 @@
-use crate::socket::{Error as SocketError, TcpListener, TcpSocket};
+use crate::socket::{Error, TcpListener, TcpSocket};
 use crate::sys;
 use core::arch::asm;
 
@@ -38,7 +38,7 @@ pub struct EchoServer {
 }
 
 impl EchoServer {
-    pub fn new(port: u16) -> Result<Self, SocketError> {
+    pub fn new(port: u16) -> Result<Self, Error> {
         let listener = TcpListener::listen(port)?;
         Ok(Self {
             listener,
@@ -49,7 +49,7 @@ impl EchoServer {
     pub unsafe fn init_in_place(
         slot: *mut core::mem::MaybeUninit<Self>,
         port: u16,
-    ) -> Result<(), SocketError> {
+    ) -> Result<(), Error> {
         let ptr = (*slot).as_mut_ptr();
         core::ptr::write_bytes(ptr as *mut u8, 0, core::mem::size_of::<Self>());
         let listener = TcpListener::listen(port)?;
@@ -86,7 +86,7 @@ impl EchoServer {
                             slot.pending_off = 0;
                         }
                     }
-                    Err(SocketError::SysError) => {
+                    Err(Error::SysError) => {
                         let _ = socket.close();
                         slot.clear();
                     }
@@ -100,7 +100,7 @@ impl EchoServer {
                     slot.pending_len = n;
                     slot.pending_off = 0;
                 }
-                Err(SocketError::SysError) => {
+                Err(Error::SysError) => {
                     let _ = socket.close();
                     slot.clear();
                 }
