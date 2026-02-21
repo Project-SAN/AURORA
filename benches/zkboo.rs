@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use hornet::crypto::zkp::ascon_circuit;
-use hornet::crypto::zkp::{Proof, ProverConfig, VerifierConfig, Engine};
+use aurora::crypto::zkp::ascon_circuit;
+use aurora::crypto::zkp::{Proof, ProverConfig, VerifierConfig, Engine};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
@@ -16,7 +16,7 @@ fn bits_lsb(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-fn payload_hash_fixture_32b() -> (hornet::crypto::zkp::Circuit, Vec<u8>, Vec<u8>) {
+fn payload_hash_fixture_32b() -> (aurora::crypto::zkp::Circuit, Vec<u8>, Vec<u8>) {
     let payload = vec![0xA5u8; 32];
     let payload_bits = bits_lsb(&payload);
     let hash_circuit = ascon_circuit::build_payload_hash_circuit(32);

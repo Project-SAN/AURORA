@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use hornet::types::PacketDirection;
+use aurora::types::PacketDirection;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use std::cell::RefCell;
@@ -19,12 +19,12 @@ fn bench_create_ahdr(c: &mut Criterion) {
         let fixture = HornetFixture::new(hops, 1024);
         let keys = fixture.keys.clone();
         let fses = fixture.fses.clone();
-        let rmax = hornet::types::R_MAX;
+        let rmax = aurora::types::R_MAX;
         let seed = 0xA11C_E5EED_u64 ^ (hops as u64);
         group.bench_function(BenchmarkId::from_parameter(format!("hops{hops}")), |b| {
             b.iter(|| {
                 let mut rng = ChaCha20Rng::seed_from_u64(seed);
-                let ahdr = hornet::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut rng)
+                let ahdr = aurora::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut rng)
                     .expect("ahdr create");
                 black_box(ahdr);
             });
@@ -47,12 +47,12 @@ fn bench_build_data_packet(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let payload = payload_template.clone();
-                        let chdr = hornet::packet::chdr::data_header(hops as u8, iv0);
+                        let chdr = aurora::packet::chdr::data_header(hops as u8, iv0);
                         let iv = iv0;
                         (chdr, iv, payload)
                     },
                     |(mut chdr, mut iv, mut payload)| {
-                        hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut payload)
+                        aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut payload)
                             .expect("build data packet");
                         black_box((chdr, payload));
                     },
@@ -82,13 +82,13 @@ fn bench_process_data_forward(c: &mut Criterion) {
                         let chdr = clone_chdr(&base_chdr);
                         let ahdr = clone_ahdr(&base_ahdr);
                         let payload = base_payload.clone();
-                        let forward = hornet::forward::NoopForward;
-                        let replay = hornet::node::NoReplay;
+                        let forward = aurora::forward::NoopForward;
+                        let replay = aurora::node::NoReplay;
                         (chdr, ahdr, payload, forward, replay)
                     },
                     |(mut chdr, mut ahdr, mut payload, mut forward, mut replay)| {
                         let time = FixedTimeProvider { now };
-                        let mut ctx = hornet::node::NodeCtx {
+                        let mut ctx = aurora::node::NodeCtx {
                             sv,
                             now: &time,
                             forward: &mut forward,
@@ -96,7 +96,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                             policy: None,
                             exit: None,
                         };
-                        hornet::node::forward::process_data(
+                        aurora::node::forward::process_data(
                             &mut ctx,
                             &mut chdr,
                             &mut ahdr,
@@ -118,20 +118,20 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
     for &hops in HOP_CASES {
         for &payload_len in PAYLOAD_CASES {
             let fixture = HornetFixture::new(hops, payload_len);
-            let mut router = hornet::router::Router::new();
+            let mut router = aurora::router::Router::new();
             let time = FixedTimeProvider { now: fixture.now };
             let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
             group.bench_function(id, move |b| {
                 b.iter_batched(
                     || {
                         let chdr =
-                            hornet::packet::chdr::data_header(fixture.hops as u8, fixture.iv0);
+                            aurora::packet::chdr::data_header(fixture.hops as u8, fixture.iv0);
                         let ahdr = clone_ahdr(&fixture.ahdr);
                         let payload = fixture.payload_template.clone();
                         (chdr, ahdr, payload, fixture.iv0)
                     },
                     |(mut chdr, mut ahdr, mut payload, mut iv)| {
-                        hornet::source::build(
+                        aurora::source::build(
                             &mut chdr,
                             &ahdr,
                             &fixture.keys,
@@ -139,20 +139,20 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
                             &mut payload,
                         )
                         .expect("build data packet");
-                        let capture_slot: Rc<RefCell<Option<hornet::types::Ahdr>>> =
+                        let capture_slot: Rc<RefCell<Option<aurora::types::Ahdr>>> =
                             Rc::new(RefCell::new(None));
                         let factory_slot = capture_slot.clone();
-                        let mut runtime = hornet::router::runtime::RouterRuntime::new(
+                        let mut runtime = aurora::router::runtime::RouterRuntime::new(
                             &mut router,
                             &time,
                             move || Box::new(CaptureForward::new(factory_slot.clone())),
-                            || Box::new(hornet::node::NoReplay),
+                            || Box::new(aurora::node::NoReplay),
                         );
                         for &sv in &fixture.svs {
                             capture_slot.borrow_mut().take();
                             runtime
                                 .process(
-                                    hornet::types::PacketDirection::Forward,
+                                    aurora::types::PacketDirection::Forward,
                                     sv,
                                     &mut chdr,
                                     &mut ahdr,
@@ -213,10 +213,10 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let mut iv_fwd = fixture.forward.iv0;
-                    let mut chdr_fwd = hornet::packet::chdr::data_header(hops as u8, iv_fwd);
+                    let mut chdr_fwd = aurora::packet::chdr::data_header(hops as u8, iv_fwd);
                     let ahdr_fwd = clone_ahdr(&fixture.forward.ahdr);
                     let mut request = fixture.http_request.clone();
-                    hornet::source::build(
+                    aurora::source::build(
                         &mut chdr_fwd,
                         &ahdr_fwd,
                         &fixture.forward.keys,
@@ -224,7 +224,7 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
                         &mut request,
                     )
                     .expect("build forward payload");
-                    let chdr_bwd = hornet::packet::chdr::data_header(hops as u8, fixture.iv_resp);
+                    let chdr_bwd = aurora::packet::chdr::data_header(hops as u8, fixture.iv_resp);
                     let ahdr_bwd = clone_ahdr(&fixture.backward_ahdr);
                     (chdr_fwd, ahdr_fwd, request, chdr_bwd, ahdr_bwd)
                 },
@@ -255,7 +255,7 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
                     let mut iv = chdr_bwd.specific;
                     let mut keys = fixture.backward_keys.clone();
                     keys.reverse();
-                    hornet::source::decrypt_backward_payload(&keys, &mut iv, &mut response)
+                    aurora::source::decrypt_backward_payload(&keys, &mut iv, &mut response)
                         .expect("decrypt backward response");
                     assert!(
                         response.ends_with(fixture.example_body.as_bytes()),
@@ -285,7 +285,7 @@ struct FixedTimeProvider {
     now: u32,
 }
 
-impl hornet::time::TimeProvider for FixedTimeProvider {
+impl aurora::time::TimeProvider for FixedTimeProvider {
     fn now_coarse(&self) -> u32 {
         self.now
     }
@@ -294,12 +294,12 @@ impl hornet::time::TimeProvider for FixedTimeProvider {
 struct HornetFixture {
     hops: usize,
     now: u32,
-    svs: Vec<hornet::types::Sv>,
-    keys: Vec<hornet::types::Si>,
-    fses: Vec<hornet::types::Fs>,
-    ahdr: hornet::types::Ahdr,
+    svs: Vec<aurora::types::Sv>,
+    keys: Vec<aurora::types::Si>,
+    fses: Vec<aurora::types::Fs>,
+    ahdr: aurora::types::Ahdr,
     payload_template: Vec<u8>,
-    iv0: hornet::types::Nonce,
+    iv0: aurora::types::Nonce,
 }
 
 impl HornetFixture {
@@ -316,12 +316,12 @@ impl HornetFixture {
 
     fn with_routing<F>(hops: usize, payload_len: usize, mut route_fn: F) -> Self
     where
-        F: FnMut(usize, usize) -> hornet::types::RoutingSegment,
+        F: FnMut(usize, usize) -> aurora::types::RoutingSegment,
     {
-        assert!(hops > 0 && hops <= hornet::types::R_MAX);
+        assert!(hops > 0 && hops <= aurora::types::R_MAX);
         let mut rng = ChaCha20Rng::seed_from_u64(0x5EED_F00Du64 ^ hops as u64 ^ payload_len as u64);
         let now = 1_690_000_000u32;
-        let exp = hornet::types::Exp(now.saturating_add(600));
+        let exp = aurora::types::Exp(now.saturating_add(600));
 
         let mut svs = Vec::with_capacity(hops);
         let mut keys = Vec::with_capacity(hops);
@@ -329,30 +329,30 @@ impl HornetFixture {
         for hop in 0..hops {
             let mut sv_bytes = [0u8; 16];
             rng.fill_bytes(&mut sv_bytes);
-            svs.push(hornet::types::Sv(sv_bytes));
+            svs.push(aurora::types::Sv(sv_bytes));
 
             let mut si_bytes = [0u8; 16];
             rng.fill_bytes(&mut si_bytes);
-            keys.push(hornet::types::Si(si_bytes));
+            keys.push(aurora::types::Si(si_bytes));
 
             routing.push(route_fn(hop, hops));
         }
 
         let fses = (0..hops)
             .map(|i| {
-                hornet::packet::core::create(&svs[i], &keys[i], &routing[i], exp)
+                aurora::packet::core::create(&svs[i], &keys[i], &routing[i], exp)
                     .expect("fs create")
             })
             .collect::<Vec<_>>();
 
         let mut rng_ahdr = ChaCha20Rng::seed_from_u64(0xA11C_E5EEDu64 ^ hops as u64);
         let ahdr =
-            hornet::packet::ahdr::create_ahdr(&keys, &fses, hornet::types::R_MAX, &mut rng_ahdr)
+            aurora::packet::ahdr::create_ahdr(&keys, &fses, aurora::types::R_MAX, &mut rng_ahdr)
                 .expect("fixture ahdr");
 
         let mut iv0_bytes = [0u8; 16];
         rng.fill_bytes(&mut iv0_bytes);
-        let iv0 = hornet::types::Nonce(iv0_bytes);
+        let iv0 = aurora::types::Nonce(iv0_bytes);
 
         let mut payload_template = vec![0u8; payload_len];
         rng.fill_bytes(&mut payload_template);
@@ -370,10 +370,10 @@ impl HornetFixture {
     }
 
     fn forward_packet(&self) -> ForwardPacket {
-        let mut chdr = hornet::packet::chdr::data_header(self.hops as u8, self.iv0);
+        let mut chdr = aurora::packet::chdr::data_header(self.hops as u8, self.iv0);
         let mut payload = self.payload_template.clone();
         let mut iv = self.iv0;
-        hornet::source::build(&mut chdr, &self.ahdr, &self.keys, &mut iv, &mut payload)
+        aurora::source::build(&mut chdr, &self.ahdr, &self.keys, &mut iv, &mut payload)
             .expect("fixture build data packet");
         ForwardPacket {
             chdr,
@@ -400,9 +400,9 @@ impl Clone for HornetFixture {
 
 struct RoundTripFixture {
     forward: HornetFixture,
-    backward_keys: Vec<hornet::types::Si>,
-    backward_ahdr: hornet::types::Ahdr,
-    iv_resp: hornet::types::Nonce,
+    backward_keys: Vec<aurora::types::Si>,
+    backward_ahdr: aurora::types::Ahdr,
+    iv_resp: aurora::types::Nonce,
     http_request: Vec<u8>,
     http_response: Vec<u8>,
     example_body: &'static str,
@@ -415,33 +415,33 @@ impl RoundTripFixture {
         let http_response = example_response_bytes(example_body);
         let forward = HornetFixture::new(hops, http_request.len());
         let mut rng = ChaCha20Rng::seed_from_u64(0xBEEF_5EEDu64 ^ hops as u64);
-        let exp = hornet::types::Exp(forward.now.saturating_add(600));
+        let exp = aurora::types::Exp(forward.now.saturating_add(600));
 
         let mut backward_keys = Vec::with_capacity(hops);
         let mut backward_fses = Vec::with_capacity(hops);
         for idx in 0..hops {
             let mut si_bytes = [0u8; 16];
             rng.fill_bytes(&mut si_bytes);
-            let key = hornet::types::Si(si_bytes);
+            let key = aurora::types::Si(si_bytes);
             backward_keys.push(key);
             let sv = forward.svs[hops - 1 - idx];
-            let fs = hornet::packet::core::create(&sv, &key, &deliver_route(), exp)
+            let fs = aurora::packet::core::create(&sv, &key, &deliver_route(), exp)
                 .expect("backward fs create");
             backward_fses.push(fs);
         }
 
         let mut ahdr_rng = ChaCha20Rng::seed_from_u64(0xACCE_55EDu64 ^ hops as u64);
-        let backward_ahdr = hornet::packet::ahdr::create_ahdr(
+        let backward_ahdr = aurora::packet::ahdr::create_ahdr(
             &backward_keys,
             &backward_fses,
-            hornet::types::R_MAX,
+            aurora::types::R_MAX,
             &mut ahdr_rng,
         )
         .expect("backward ahdr");
 
         let mut iv_bytes = [0u8; 16];
         rng.fill_bytes(&mut iv_bytes);
-        let iv_resp = hornet::types::Nonce(iv_bytes);
+        let iv_resp = aurora::types::Nonce(iv_bytes);
 
         Self {
             forward,
@@ -487,16 +487,16 @@ fn example_response_bytes(body: &str) -> Vec<u8> {
 fn run_forward_chain(
     fixture: &HornetFixture,
     time: &FixedTimeProvider,
-    chdr: &mut hornet::types::Chdr,
-    ahdr: &mut hornet::types::Ahdr,
+    chdr: &mut aurora::types::Chdr,
+    ahdr: &mut aurora::types::Ahdr,
     payload: &mut Vec<u8>,
 ) {
-    let slot: Rc<RefCell<Option<hornet::types::Ahdr>>> = Rc::new(RefCell::new(None));
+    let slot: Rc<RefCell<Option<aurora::types::Ahdr>>> = Rc::new(RefCell::new(None));
     for &sv in &fixture.svs {
         slot.borrow_mut().take();
         let mut forward = CaptureForward::new(slot.clone());
-        let mut replay = hornet::node::NoReplay;
-        let mut ctx = hornet::node::NodeCtx {
+        let mut replay = aurora::node::NoReplay;
+        let mut ctx = aurora::node::NodeCtx {
             sv,
             now: time,
             forward: &mut forward,
@@ -504,7 +504,7 @@ fn run_forward_chain(
             policy: None,
             exit: None,
         };
-        hornet::node::forward::process_data(&mut ctx, chdr, ahdr, payload)
+        aurora::node::forward::process_data(&mut ctx, chdr, ahdr, payload)
             .expect("process forward hop");
         if let Some(next) = slot.borrow_mut().take() {
             *ahdr = next;
@@ -513,20 +513,20 @@ fn run_forward_chain(
 }
 
 fn run_backward_chain(
-    backward_keys: &[hornet::types::Si],
-    svs_forward_order: &[hornet::types::Sv],
+    backward_keys: &[aurora::types::Si],
+    svs_forward_order: &[aurora::types::Sv],
     time: &FixedTimeProvider,
-    chdr: &mut hornet::types::Chdr,
-    ahdr: &mut hornet::types::Ahdr,
+    chdr: &mut aurora::types::Chdr,
+    ahdr: &mut aurora::types::Ahdr,
     payload: &mut Vec<u8>,
 ) {
-    let slot: Rc<RefCell<Option<hornet::types::Ahdr>>> = Rc::new(RefCell::new(None));
+    let slot: Rc<RefCell<Option<aurora::types::Ahdr>>> = Rc::new(RefCell::new(None));
     // Nodes add onion layers in exit -> entry order; keys are used later for decryption.
     for (sv, _key) in svs_forward_order.iter().rev().zip(backward_keys.iter()) {
         slot.borrow_mut().take();
         let mut forward = CaptureForward::new(slot.clone());
-        let mut replay = hornet::node::NoReplay;
-        let mut ctx = hornet::node::NodeCtx {
+        let mut replay = aurora::node::NoReplay;
+        let mut ctx = aurora::node::NodeCtx {
             sv: *sv,
             now: time,
             forward: &mut forward,
@@ -542,20 +542,20 @@ fn run_backward_chain(
 }
 
 fn process_backward_silent(
-    ctx: &mut hornet::node::NodeCtx<'_, '_, '_>,
-    chdr: &mut hornet::types::Chdr,
-    ahdr: &mut hornet::types::Ahdr,
+    ctx: &mut aurora::node::NodeCtx<'_, '_, '_>,
+    chdr: &mut aurora::types::Chdr,
+    ahdr: &mut aurora::types::Ahdr,
     payload: &mut Vec<u8>,
-) -> hornet::types::Result<()> {
-    use hornet::types::{Error, Exp, PacketDirection};
+) -> aurora::types::Result<()> {
+    use aurora::types::{Error, Exp, PacketDirection};
     let now = Exp(ctx.now.now_coarse());
-    let res = hornet::packet::ahdr::proc_ahdr(&ctx.sv, ahdr, now)?;
-    let tau = hornet::sphinx::derive_tau_tag(&res.s);
+    let res = aurora::packet::ahdr::proc_ahdr(&ctx.sv, ahdr, now)?;
+    let tau = aurora::sphinx::derive_tau_tag(&res.s);
     if !ctx.replay.insert(tau) {
         return Err(Error::Replay);
     }
     let mut iv = chdr.specific;
-    hornet::packet::onion::add_layer(&res.s, &mut iv, payload)?;
+    aurora::packet::onion::add_layer(&res.s, &mut iv, payload)?;
     chdr.specific = iv;
     ctx.forward.send(
         &res.r,
@@ -567,76 +567,75 @@ fn process_backward_silent(
 }
 
 struct ForwardPacket {
-    chdr: hornet::types::Chdr,
-    ahdr: hornet::types::Ahdr,
+    chdr: aurora::types::Chdr,
+    ahdr: aurora::types::Ahdr,
     payload: Vec<u8>,
 }
 
-fn clone_chdr(chdr: &hornet::types::Chdr) -> hornet::types::Chdr {
-    hornet::types::Chdr {
+fn clone_chdr(chdr: &aurora::types::Chdr) -> aurora::types::Chdr {
+    aurora::types::Chdr {
         typ: chdr.typ,
         hops: chdr.hops,
         specific: chdr.specific,
     }
 }
 
-fn clone_ahdr(ahdr: &hornet::types::Ahdr) -> hornet::types::Ahdr {
-    hornet::types::Ahdr {
+fn clone_ahdr(ahdr: &aurora::types::Ahdr) -> aurora::types::Ahdr {
+    aurora::types::Ahdr {
         bytes: ahdr.bytes.clone(),
     }
 }
 
 struct CaptureForward {
-    slot: Rc<RefCell<Option<hornet::types::Ahdr>>>,
+    slot: Rc<RefCell<Option<aurora::types::Ahdr>>>,
 }
 
 impl CaptureForward {
-    fn new(slot: Rc<RefCell<Option<hornet::types::Ahdr>>>) -> Self {
+    fn new(slot: Rc<RefCell<Option<aurora::types::Ahdr>>>) -> Self {
         Self { slot }
     }
 }
 
-impl hornet::forward::Forward for CaptureForward {
+impl aurora::forward::Forward for CaptureForward {
     fn send(
         &mut self,
-        _rseg: &hornet::types::RoutingSegment,
-        _chdr: &hornet::types::Chdr,
-        ahdr: &hornet::types::Ahdr,
+        _rseg: &aurora::types::RoutingSegment,
+        _chdr: &aurora::types::Chdr,
+        ahdr: &aurora::types::Ahdr,
         _payload: &mut Vec<u8>,
-        _direction: hornet::types::PacketDirection,
-    ) -> hornet::types::Result<()> {
+        _direction: aurora::types::PacketDirection,
+    ) -> aurora::types::Result<()> {
         *self.slot.borrow_mut() = Some(clone_ahdr(ahdr));
         Ok(())
     }
 }
 
-fn udp_route(port: u16) -> hornet::types::RoutingSegment {
+fn udp_route(port: u16) -> aurora::types::RoutingSegment {
     let mut bytes = Vec::with_capacity(8);
     bytes.push(0x01);
     bytes.push(6);
     bytes.extend_from_slice(&[127, 0, 0, 1]);
     bytes.extend_from_slice(&port.to_be_bytes());
-    hornet::types::RoutingSegment(bytes)
+    aurora::types::RoutingSegment(bytes)
 }
 
-fn deliver_route() -> hornet::types::RoutingSegment {
-    hornet::types::RoutingSegment(vec![0xFF, 0x00])
+fn deliver_route() -> aurora::types::RoutingSegment {
+    aurora::types::RoutingSegment(vec![0xFF, 0x00])
 }
 
-fn tcp_next_hop_route(port: u16) -> hornet::types::RoutingSegment {
-    use hornet::routing::{IpAddr, RouteElem};
-    hornet::routing::segment_from_elems(&[RouteElem::NextHop {
+fn tcp_next_hop_route(port: u16) -> aurora::types::RoutingSegment {
+    use aurora::routing::{IpAddr, RouteElem};
+    aurora::routing::segment_from_elems(&[RouteElem::NextHop {
         addr: IpAddr::V4([127, 0, 0, 1]),
         port,
     }])
 }
 
-fn tcp_exit_route(port: u16) -> hornet::types::RoutingSegment {
-    use hornet::routing::{IpAddr, RouteElem};
-    hornet::routing::segment_from_elems(&[RouteElem::ExitTcp {
+fn tcp_exit_route(port: u16) -> aurora::types::RoutingSegment {
+    use aurora::routing::{IpAddr, RouteElem};
+    aurora::routing::segment_from_elems(&[RouteElem::ExitTcp {
         addr: IpAddr::V4([127, 0, 0, 1]),
         port,
-        tls: false,
     }])
 }
 
@@ -695,7 +694,7 @@ impl NetworkHarness {
     }
 
     fn run_once(&mut self) {
-        let chdr = hornet::packet::chdr::data_header(self.fixture.hops as u8, self.fixture.iv0);
+        let chdr = aurora::packet::chdr::data_header(self.fixture.hops as u8, self.fixture.iv0);
         let ahdr = clone_ahdr(&self.fixture.ahdr);
         let payload = self.fixture.payload_template.clone();
         self.send_over_network(chdr, ahdr, payload, self.fixture.iv0);
@@ -703,12 +702,12 @@ impl NetworkHarness {
 
     fn send_over_network(
         &mut self,
-        mut chdr: hornet::types::Chdr,
-        ahdr: hornet::types::Ahdr,
+        mut chdr: aurora::types::Chdr,
+        ahdr: aurora::types::Ahdr,
         mut payload: Vec<u8>,
-        mut iv: hornet::types::Nonce,
+        mut iv: aurora::types::Nonce,
     ) {
-        hornet::source::build(&mut chdr, &ahdr, &self.fixture.keys, &mut iv, &mut payload)
+        aurora::source::build(&mut chdr, &ahdr, &self.fixture.keys, &mut iv, &mut payload)
             .expect("network build data packet");
 
         let frame = encode_frame_bytes(PacketDirection::Forward, &chdr, &ahdr, &payload);
@@ -725,18 +724,18 @@ struct RouterWorker {
 }
 
 impl RouterWorker {
-    fn new(listener: TcpListener, sv: hornet::types::Sv, now: u32) -> io::Result<Self> {
+    fn new(listener: TcpListener, sv: aurora::types::Sv, now: u32) -> io::Result<Self> {
         let addr = listener.local_addr()?.to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_signal = stop.clone();
         let handle = thread::spawn(move || {
-            let mut router = hornet::router::Router::new();
+            let mut router = aurora::router::Router::new();
             let time = FixedTimeProvider { now };
-            let mut runtime = hornet::router::runtime::RouterRuntime::new(
+            let mut runtime = aurora::router::runtime::RouterRuntime::new(
                 &mut router,
                 &time,
-                || Box::new(hornet::router::io::TcpForward::new()),
-                || Box::new(hornet::node::NoReplay),
+                || Box::new(aurora::router::io::TcpForward::new()),
+                || Box::new(aurora::node::NoReplay),
             );
 
             let listener = listener;
@@ -819,15 +818,15 @@ impl Drop for SinkServer {
 
 struct RawPacket {
     direction: PacketDirection,
-    chdr: hornet::types::Chdr,
-    ahdr: hornet::types::Ahdr,
+    chdr: aurora::types::Chdr,
+    ahdr: aurora::types::Ahdr,
     payload: Vec<u8>,
 }
 
 fn encode_frame_bytes(
     direction: PacketDirection,
-    chdr: &hornet::types::Chdr,
-    ahdr: &hornet::types::Ahdr,
+    chdr: &aurora::types::Chdr,
+    ahdr: &aurora::types::Ahdr,
     payload: &[u8],
 ) -> Vec<u8> {
     let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.bytes.len() + payload.len());
@@ -869,27 +868,27 @@ fn read_bench_packet(stream: &mut TcpStream) -> io::Result<RawPacket> {
 
     Ok(RawPacket {
         direction,
-        chdr: hornet::types::Chdr {
+        chdr: aurora::types::Chdr {
             typ: pkt_type,
             hops,
             specific,
         },
-        ahdr: hornet::types::Ahdr { bytes: ahdr_bytes },
+        ahdr: aurora::types::Ahdr { bytes: ahdr_bytes },
         payload,
     })
 }
 
-fn packet_type_to_u8(pt: hornet::types::PacketType) -> u8 {
+fn packet_type_to_u8(pt: aurora::types::PacketType) -> u8 {
     match pt {
-        hornet::types::PacketType::Setup => 0,
-        hornet::types::PacketType::Data => 1,
+        aurora::types::PacketType::Setup => 0,
+        aurora::types::PacketType::Data => 1,
     }
 }
 
-fn packet_type_from_u8(value: u8) -> io::Result<hornet::types::PacketType> {
+fn packet_type_from_u8(value: u8) -> io::Result<aurora::types::PacketType> {
     match value {
-        0 => Ok(hornet::types::PacketType::Setup),
-        1 => Ok(hornet::types::PacketType::Data),
+        0 => Ok(aurora::types::PacketType::Setup),
+        1 => Ok(aurora::types::PacketType::Data),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unknown packet type",

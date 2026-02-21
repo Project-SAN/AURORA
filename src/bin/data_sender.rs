@@ -1,20 +1,20 @@
-use hornet::core::policy::ProofKind;
-use hornet::core::policy::{
+use aurora::core::policy::ProofKind;
+use aurora::core::policy::{
     encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_SEQUENCE,
     EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH,
 };
-use hornet::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
-use hornet::crypto::zkp::Circuit;
-use hornet::crypto::zkp::{Engine, Proof, VerifierConfig};
-use hornet::policy::PolicyMetadata;
-use hornet::policy::blocklist;
-use hornet::policy::zkboo::ZkBooProofService;
-use hornet::policy::TargetValue;
-use hornet::router::storage::StoredState;
-use hornet::routing::{self, IpAddr, RouteElem};
-use hornet::setup::directory::RouteAnnouncement;
-use hornet::types::{Nonce, PacketType, Si};
-use hornet::utils::decode_hex;
+use aurora::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
+use aurora::crypto::zkp::Circuit;
+use aurora::crypto::zkp::{Engine, Proof, VerifierConfig};
+use aurora::policy::PolicyMetadata;
+use aurora::policy::blocklist;
+use aurora::policy::zkboo::ZkBooProofService;
+use aurora::policy::TargetValue;
+use aurora::router::storage::StoredState;
+use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::setup::directory::RouteAnnouncement;
+use aurora::types::{Nonce, PacketType, Si};
+use aurora::utils::decode_hex;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use serde::Deserialize;
@@ -28,14 +28,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("hornet_data_sender error: {err}");
+        eprintln!("aurora_data_sender error: {err}");
         std::process::exit(1);
     }
 }
 
 fn run() -> Result<(), String> {
     let mut args = env::args();
-    let program = args.next().unwrap_or_else(|| "hornet_data_sender".into());
+    let program = args.next().unwrap_or_else(|| "aurora_data_sender".into());
     let info_path = args
         .next()
         .ok_or_else(|| format!("usage: {program} <policy-info.json> <host> [message]"))?;
@@ -44,7 +44,7 @@ fn run() -> Result<(), String> {
         .ok_or_else(|| format!("usage: {program} <policy-info.json> <host> [message]"))?;
     let message = args
         .next()
-        .unwrap_or_else(|| "hello from hornet_data_sender".into());
+        .unwrap_or_else(|| "hello from aurora_data_sender".into());
     let _control = spawn_control_listener(
         info_path.to_string(),
         host.to_string(),
@@ -259,11 +259,11 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
 
         println!("Proofs generated in {:.2?}", proof_start.elapsed());
 
-        hornet::policy::PolicyCapsule {
+        aurora::policy::PolicyCapsule {
             policy_id,
-            version: hornet::core::policy::POLICY_CAPSULE_VERSION,
+            version: aurora::core::policy::POLICY_CAPSULE_VERSION,
             part_count: 3,
-            parts: [kb, cons, pol, hornet::policy::ProofPart::default()],
+            parts: [kb, cons, pol, aurora::policy::ProofPart::default()],
         }
     };
 
@@ -298,12 +298,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             route.segment
         };
 
-        let fs = hornet::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
+        let fs = aurora::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
             .map_err(|err| format!("failed to build FS for hop {}: {err:?}", hop))?;
         fses.push(fs);
     }
     let mut ahdr_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xA55AA55A);
-    let ahdr = hornet::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut ahdr_rng)
+    let ahdr = aurora::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut ahdr_rng)
         .map_err(|err| format!("failed to build AHDR: {err:?}"))?;
 
     let mut iv = {
@@ -311,7 +311,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         rng.fill_bytes(&mut buf);
         Nonce(buf)
     };
-    let mut chdr = hornet::packet::chdr::data_header(hops as u8, iv);
+    let mut chdr = aurora::packet::chdr::data_header(hops as u8, iv);
 
     // Setup listener for response
     let bind_addr = env::var("HORNET_RESPONSE_BIND").unwrap_or_else(|_| "127.0.0.1:0".into());
@@ -374,13 +374,13 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         // routers[hop_idx].0 is the state for the node we are processing (Exit, Middle, Entry)
         let state = &routers[hop_idx].0;
 
-        let fs = hornet::packet::core::create(&state.sv(), &keys_b[i], &segment, exp)
+        let fs = aurora::packet::core::create(&state.sv(), &keys_b[i], &segment, exp)
             .map_err(|err| format!("failed to build FS for backward hop {}: {err:?}", i))?;
         fses_b.push(fs);
     }
 
     let mut ahdr_b_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xBEEFBEEF);
-    let ahdr_b = hornet::packet::ahdr::create_ahdr(&keys_b, &fses_b, rmax, &mut ahdr_b_rng)
+    let ahdr_b = aurora::packet::ahdr::create_ahdr(&keys_b, &fses_b, rmax, &mut ahdr_b_rng)
         .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
 
     // Prepend Backward AHDR to payload
@@ -394,7 +394,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut encrypted_tail = Vec::new();
     encrypted_tail.extend_from_slice(canonical_bytes.as_slice());
     encrypted_tail.extend_from_slice(&full_payload); // Use full_payload
-    hornet::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
+    aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
     let mut payload = Vec::with_capacity(capsule_len + encrypted_tail.len());
     payload.extend_from_slice(&capsule_buf);
@@ -492,7 +492,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     let mut iv_resp = specific;
     let mut keys_b_reversed = keys_b.clone();
     keys_b_reversed.reverse();
-    hornet::source::decrypt_backward_payload(
+    aurora::source::decrypt_backward_payload(
         &keys_b_reversed,
         &mut iv_resp,
         &mut encrypted_response,
@@ -519,7 +519,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
 fn local_verify_part(
     label: &str,
     circuit: &Circuit,
-    part: &hornet::policy::ProofPart,
+    part: &aurora::policy::ProofPart,
     expected_outputs: &[u8],
 ) -> Result<(), String> {
     if expected_outputs.len() != circuit.outputs.len() {
@@ -569,10 +569,10 @@ fn spawn_control_listener(
             let mut buf = [0u8; 128];
             if let Ok(n) = stream.read(&mut buf) {
                 if n > 0 {
-                    if let Ok(msg) = hornet::control::decode(&buf[..n]) {
+                    if let Ok(msg) = aurora::control::decode(&buf[..n]) {
                         println!("control message: {:?}", msg);
                         match msg {
-                            hornet::control::ControlMessage::ResendRequest { .. } => {
+                            aurora::control::ControlMessage::ResendRequest { .. } => {
                                 let _ = send_data(&info_path, &host, &payload);
                             }
                         }
@@ -727,7 +727,7 @@ fn select_route(state: &StoredState, policy_id: &[u8; 32]) -> Result<RouteAnnoun
 }
 
 fn encode_frame(
-    chdr: &hornet::types::Chdr,
+    chdr: &aurora::types::Chdr,
     ahdr: &[u8],
     payload: &[u8],
 ) -> Result<Vec<u8>, String> {
@@ -773,13 +773,13 @@ fn decode_policy_id(hex: &str) -> Result<[u8; 32], String> {
     Ok(id)
 }
 
-fn compute_expiry(delta_secs: u64) -> hornet::types::Exp {
+fn compute_expiry(delta_secs: u64) -> aurora::types::Exp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let expiry = now.saturating_add(delta_secs);
-    hornet::types::Exp(expiry.min(u32::MAX as u64) as u32)
+    aurora::types::Exp(expiry.min(u32::MAX as u64) as u32)
 }
 
 fn derive_seed() -> u64 {
@@ -854,7 +854,7 @@ fn make_part(
     payload: &[u8],
     aux: &[u8],
     kind: ProofKind,
-) -> Result<hornet::policy::ProofPart, String> {
+) -> Result<aurora::policy::ProofPart, String> {
     let service = ZkBooProofService::new_with_policy_id(circuit, *policy_id, rounds);
     let capsule = service
         .prove_payload_lsb_first(payload, aux)

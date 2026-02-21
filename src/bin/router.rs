@@ -1,17 +1,17 @@
-use hornet::application::forward_pcd::PcdForwardPipeline;
-use hornet::application::setup::RegistrySetupPipeline;
-use hornet::control::{self, ControlMessage};
-use hornet::node::exit::TcpExitTransport;
-use hornet::node::NoReplay;
-use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
-use hornet::router::config::RouterConfig;
-use hornet::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
-use hornet::router::runtime::RouterRuntime;
-use hornet::router::storage::{FileRouterStorage, RouterStorage, StoredState};
-use hornet::router::sync::client::{sync_once, DirectoryClient};
-use hornet::router::Router;
-use hornet::setup::wire;
-use hornet::types::{self, PacketType, Result as HornetResult};
+use aurora::application::forward_pcd::PcdForwardPipeline;
+use aurora::application::setup::RegistrySetupPipeline;
+use aurora::control::{self, ControlMessage};
+use aurora::node::exit::TcpExitTransport;
+use aurora::node::NoReplay;
+use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
+use aurora::router::config::RouterConfig;
+use aurora::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
+use aurora::router::runtime::RouterRuntime;
+use aurora::router::storage::{FileRouterStorage, RouterStorage, StoredState};
+use aurora::router::sync::client::{sync_once, DirectoryClient};
+use aurora::router::Router;
+use aurora::setup::wire;
+use aurora::types::{self, PacketType, Result as AuroraResult};
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
@@ -122,7 +122,7 @@ fn main() {
 
 struct StdTimeProvider;
 
-impl hornet::time::TimeProvider for StdTimeProvider {
+impl aurora::time::TimeProvider for StdTimeProvider {
     fn now_coarse(&self) -> u32 {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
         let now = SystemTime::now()
@@ -135,7 +135,7 @@ impl hornet::time::TimeProvider for StdTimeProvider {
 #[cfg(feature = "pcd-nova")]
 fn pcd_forward_pipeline() -> PcdForwardPipeline {
     if env::var("HORNET_PCD_BACKEND").ok().as_deref() == Some("nova") {
-        match hornet::pcd::nova::NovaPcdBackend::new() {
+        match aurora::pcd::nova::NovaPcdBackend::new() {
             Ok(backend) => PcdForwardPipeline::with_backend(Box::new(backend)),
             Err(err) => {
                 eprintln!("pcd: failed to init nova backend ({err:?}), using hash backend");
@@ -196,7 +196,7 @@ fn handle_setup_packet(
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
-) -> HornetResult<()> {
+) -> AuroraResult<()> {
     if packet.chdr.typ != PacketType::Setup {
         return Err(types::Error::Length);
     }
@@ -208,7 +208,7 @@ fn handle_setup_packet(
         .map(|route| route.segment)
         .ok_or(types::Error::NotImplemented)?;
     let mut pipeline = RegistrySetupPipeline::new(router.registry_mut());
-    hornet::setup::node_process_with_policy(
+    aurora::setup::node_process_with_policy(
         &mut setup_packet,
         &secrets.node_secret,
         &secrets.sv,
@@ -219,7 +219,7 @@ fn handle_setup_packet(
     Ok(())
 }
 
-fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
+fn select_policy_id(packet: &aurora::setup::SetupPacket) -> Option<PolicyId> {
     for tlv in &packet.tlvs {
         if tlv.first().copied() != Some(POLICY_METADATA_TLV) {
             continue;
@@ -246,17 +246,17 @@ impl LocalFileClient {
 }
 
 impl DirectoryClient for LocalFileClient {
-    fn fetch_signed(&self) -> hornet::types::Result<String> {
-        std::fs::read_to_string(&self.path).map_err(|_| hornet::types::Error::Crypto)
+    fn fetch_signed(&self) -> aurora::types::Result<String> {
+        std::fs::read_to_string(&self.path).map_err(|_| aurora::types::Error::Crypto)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hornet::policy::PolicyMetadata;
-    use hornet::setup::directory::RouteAnnouncement;
-    use hornet::types::{self, PacketDirection, RoutingSegment};
+    use aurora::policy::PolicyMetadata;
+    use aurora::setup::directory::RouteAnnouncement;
+    use aurora::types::{self, PacketDirection, RoutingSegment};
     use rand_chacha::ChaCha20Rng;
     use rand_core::RngCore;
     use rand_core::SeedableRng;
@@ -270,7 +270,7 @@ mod tests {
     }
 
     impl RouterStorage for MemoryStorage {
-        fn load(&self) -> HornetResult<StoredState> {
+        fn load(&self) -> AuroraResult<StoredState> {
             let guard = self.blob.lock().unwrap();
             match guard.as_ref() {
                 Some(bytes) => serde_json::from_slice(bytes).map_err(|_| types::Error::Crypto),
@@ -278,7 +278,7 @@ mod tests {
             }
         }
 
-        fn save(&self, state: &StoredState) -> HornetResult<()> {
+        fn save(&self, state: &StoredState) -> AuroraResult<()> {
             let data = serde_json::to_vec(state).map_err(|_| types::Error::Crypto)?;
             let mut guard = self.blob.lock().unwrap();
             *guard = Some(data);
@@ -294,8 +294,8 @@ mod tests {
             version: 1,
             expiry: 1_700_000_000,
             flags: 0,
-            verifiers: vec![hornet::policy::VerifierEntry {
-                kind: hornet::core::policy::ProofKind::Policy as u8,
+            verifiers: vec![aurora::policy::VerifierEntry {
+                kind: aurora::core::policy::ProofKind::Policy as u8,
                 verifier_blob: vec![0xAA, 0xBB],
             }],
         };
@@ -319,7 +319,7 @@ mod tests {
         x_s[31] &= 127;
         x_s[31] |= 64;
         let mut state =
-            hornet::setup::source_init(&x_s, &[node_pub], 1, types::Exp(1234), &mut rng);
+            aurora::setup::source_init(&x_s, &[node_pub], 1, types::Exp(1234), &mut rng);
         state.attach_policy_metadata(&policy);
         let encoded = wire::encode(&state.packet).expect("encode setup");
         let chdr = types::Chdr {

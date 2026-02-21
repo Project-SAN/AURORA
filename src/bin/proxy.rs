@@ -22,7 +22,7 @@ struct SenderConfig {
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("hornet_proxy error: {err}");
+        eprintln!("aurora_proxy error: {err}");
         std::process::exit(1);
     }
 }
@@ -30,7 +30,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let bind = env::var("HORNET_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1:18080".to_string());
     let listener = TcpListener::bind(&bind).map_err(|e| format!("bind {bind}: {e}"))?;
-    println!("hornet_proxy listening on {bind}");
+    println!("aurora_proxy listening on {bind}");
     loop {
         let (mut stream, peer) = listener.accept().map_err(|e| format!("accept: {e}"))?;
         if let Err(err) = handle_client(&mut stream) {
@@ -54,7 +54,7 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
         policy_info: env::var("HORNET_POLICY_INFO")
             .unwrap_or_else(|_| "config/localnet/policy-info.json".to_string()),
         sender_bin: env::var("HORNET_DATA_SENDER_BIN")
-            .unwrap_or_else(|_| "target/debug/hornet_data_sender".into()),
+            .unwrap_or_else(|_| "target/debug/aurora_data_sender".into()),
         rounds: env::var("HORNET_PROXY_ZKBOO_ROUNDS").unwrap_or_else(|_| "8".to_string()),
         payload_len: env::var("HORNET_PROXY_PAYLOAD_LEN")
             .ok()
@@ -177,7 +177,7 @@ fn run_sender(cfg: &SenderConfig, target: &str, request: &[u8]) -> Result<Vec<u8
         .env("HORNET_RESPONSE_OUTPUT_PATH", &rsp_path)
         .env("HORNET_ZKBOO_ROUNDS", &cfg.rounds)
         .output()
-        .map_err(|e| format!("spawn hornet_data_sender: {e}"))?;
+        .map_err(|e| format!("spawn aurora_data_sender: {e}"))?;
     let _ = fs::remove_file(&req_path);
 
     if !output.status.success() {
@@ -185,7 +185,7 @@ fn run_sender(cfg: &SenderConfig, target: &str, request: &[u8]) -> Result<Vec<u8
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(format!(
-            "hornet_data_sender failed (status={}): {} {}",
+            "aurora_data_sender failed (status={}): {} {}",
             output.status,
             stderr.trim(),
             stdout.trim()

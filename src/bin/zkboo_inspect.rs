@@ -1,5 +1,5 @@
-use hornet::crypto::zkp::Circuit;
-use hornet::policy::zkboo::ZkBooPolicy;
+use aurora::crypto::zkp::Circuit;
+use aurora::policy::zkboo::ZkBooPolicy;
 use std::env;
 use std::fs;
 
