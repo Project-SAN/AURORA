@@ -81,6 +81,3 @@ impl PcdBackend for HashPcdBackend {
 pub fn default_backend() -> Box<dyn PcdBackend> {
     Box::new(HashPcdBackend)
 }
-
-#[cfg(feature = "pcd-nova")]
-pub mod nova;
