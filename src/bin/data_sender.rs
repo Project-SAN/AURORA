@@ -55,6 +55,7 @@ fn run() -> Result<(), String> {
 
 fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), String> {
     let start_total = Instant::now();
+    let route_only = env::var("HORNET_ROUTE_ONLY").ok().as_deref() == Some("1");
     let info: PolicyInfo = {
         let json = fs::read_to_string(info_path)
             .map_err(|err| format!("failed to read {info_path}: {err}"))?;
@@ -65,7 +66,11 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     }
     let policy_id = decode_policy_id(&info.policy_id)?;
     let routers = load_router_states(&info.routers, &policy_id)?;
-    let policy_meta = load_policy_metadata(&info.routers, &policy_id)?;
+    let policy_meta = if route_only {
+        None
+    } else {
+        Some(load_policy_metadata(&info.routers, &policy_id)?)
+    };
 
     // Resolve target host
     let (target_hostname, target_port) = parse_host_port(host, 80)?;
@@ -84,7 +89,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     println!("sequence={sequence}");
     let seq_buf = sequence.to_be_bytes();
 
-    let capsule = {
+    let capsule_buf = if route_only {
+        Vec::new()
+    } else {
+        let policy_meta = policy_meta
+            .as_ref()
+            .ok_or_else(|| "missing policy metadata in proof mode".to_string())?;
         let rounds: u16 = env::var("HORNET_ZKBOO_ROUNDS")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -260,18 +270,19 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
 
         println!("Proofs generated in {:.2?}", proof_start.elapsed());
 
-        aurora::policy::PolicyCapsule {
+        let capsule = aurora::policy::PolicyCapsule {
             policy_id,
             version: aurora::core::policy::POLICY_CAPSULE_VERSION,
             part_count: 3,
             parts: [kb, cons, pol, aurora::policy::ProofPart::default()],
-        }
+        };
+        capsule
+            .encode()
+            .map_err(|_| "failed to encode capsule".to_string())?
     };
 
     if env::var("HORNET_DRY_RUN").ok().as_deref() == Some("1") {
-        let capsule_len = capsule
-            .encoded_len()
-            .map_err(|_| "failed to compute capsule length".to_string())?;
+        let capsule_len = capsule_buf.len();
         println!("[dry-run] capsule_len={capsule_len} bytes");
         return Ok(());
     }
@@ -390,7 +401,6 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     full_payload.extend_from_slice(&ahdr_b.bytes);
     full_payload.extend_from_slice(&request_payload);
 
-    let capsule_buf = capsule.encode().map_err(|_| "failed to encode capsule")?;
     let capsule_len = capsule_buf.len();
     let mut encrypted_tail = Vec::new();
     encrypted_tail.extend_from_slice(canonical_bytes.as_slice());
@@ -398,7 +408,9 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
         .map_err(|err| format!("failed to build payload: {err:?}"))?;
     let mut payload = Vec::with_capacity(capsule_len + encrypted_tail.len());
-    payload.extend_from_slice(&capsule_buf);
+    if !capsule_buf.is_empty() {
+        payload.extend_from_slice(&capsule_buf);
+    }
     payload.extend_from_slice(&encrypted_tail);
     let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
     let entry = &routers[0].1;

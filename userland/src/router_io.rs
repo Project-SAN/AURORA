@@ -276,11 +276,18 @@ fn recv_to_idle(socket: &TcpSocket) -> Result<Vec<u8>> {
     let mut response = Vec::new();
     let mut buf = [0u8; 512];
     let mut idle_spins = 0u32;
+    let idle_limit_empty = 10_000u32;
+    let idle_limit_after_data = 200u32;
     loop {
         match socket.recv(&mut buf) {
             Ok(0) => {
                 idle_spins = idle_spins.saturating_add(1);
-                if idle_spins > 200 {
+                let limit = if response.is_empty() {
+                    idle_limit_empty
+                } else {
+                    idle_limit_after_data
+                };
+                if idle_spins > limit {
                     break;
                 }
                 sys::sleep(1);
@@ -299,11 +306,22 @@ fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
     let mut response = Vec::new();
     let mut buf = [0u8; 2048];
     let mut idle_spins = 0u32;
+    // In tunnel mode, remote peers (especially HTTPS servers) may take
+    // noticeably longer than a single scheduler slice to produce bytes.
+    // Wait longer before reporting "no data", but keep tail latency short
+    // once at least one chunk has arrived.
+    let idle_limit_empty = 10_000u32;
+    let idle_limit_after_data = 80u32;
     loop {
         match socket.recv(&mut buf) {
             Ok(0) => {
                 idle_spins = idle_spins.saturating_add(1);
-                if idle_spins > 60 {
+                let limit = if response.is_empty() {
+                    idle_limit_empty
+                } else {
+                    idle_limit_after_data
+                };
+                if idle_spins > limit {
                     break;
                 }
                 sys::sleep(1);
