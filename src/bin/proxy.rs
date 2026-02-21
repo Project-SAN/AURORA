@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STREAM_MAGIC: &[u8; 4] = b"HRS1";
 const STREAM_OP_OPEN: u8 = 1;
@@ -108,11 +108,10 @@ fn handle_connect_tunnel(
     let poll_timeout_secs = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        // Keep poll timeout short so CONNECT loop can keep reading client-side
-        // TLS flight packets without long stalls.
-        .unwrap_or(1);
+        // Poll should be long enough to catch delayed TLS records after
+        // client Finished, while still bounded.
+        .unwrap_or(20);
     let session_id = fresh_session_id()?;
-    let response_bind = allocate_response_bind()?;
 
     let open_payload = build_stream_payload(
         cfg.payload_len,
@@ -129,7 +128,7 @@ fn handle_connect_tunnel(
             target,
             &open_payload,
             Some(open_timeout_secs),
-            Some(&response_bind),
+            None,
         ) {
             Ok(_) => {
                 open_last_err = None;
@@ -166,10 +165,15 @@ fn handle_connect_tunnel(
     let mut pending_response = false;
     let mut poll_backoff_ms: u64 = 50;
     let mut empty_polls: u32 = 0;
+    let mut last_client_activity = Instant::now();
+    let poll_window_secs: u64 = env::var("HORNET_CONNECT_POLL_WINDOW_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
     let max_empty_polls: u32 = env::var("HORNET_CONNECT_MAX_EMPTY_POLLS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(200);
+        .unwrap_or(6);
     let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
     let mut chunk = vec![0u8; max_chunk];
     loop {
@@ -195,7 +199,7 @@ fn handle_connect_tunnel(
                         target,
                         &payload,
                         Some(data_timeout_secs),
-                        Some(&response_bind),
+                        None,
                     )?;
                 if !response.is_empty() {
                     eprintln!("[proxy] CONNECT tunnel->client bytes={}", response.len());
@@ -203,6 +207,7 @@ fn handle_connect_tunnel(
                         .write_all(&response)
                         .map_err(|e| format!("write tunnel response: {e}"))?;
                 }
+                last_client_activity = Instant::now();
                 pending_response = true;
                 poll_backoff_ms = 50;
                 empty_polls = 0;
@@ -218,6 +223,13 @@ fn handle_connect_tunnel(
         }
 
         if pending_response && !sent_any {
+            if last_client_activity.elapsed() > Duration::from_secs(poll_window_secs) {
+                pending_response = false;
+                empty_polls = 0;
+                poll_backoff_ms = 50;
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             let payload = build_stream_payload(
                 cfg.payload_len,
                 cfg.host_offset,
@@ -231,7 +243,7 @@ fn handle_connect_tunnel(
                 target,
                 &payload,
                 Some(poll_timeout_secs),
-                Some(&response_bind),
+                None,
             )?;
             if !response.is_empty() {
                 eprintln!(
@@ -272,7 +284,7 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), Some(&response_bind))?;
+    let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), None)?;
     Ok(())
 }
 
