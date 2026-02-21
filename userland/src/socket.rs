@@ -111,13 +111,4 @@ impl TcpListener {
             Ok(Some(TcpSocket { handle: ret }))
         }
     }
-
-    pub fn close(&self) -> Result<(), Error> {
-        let ret = unsafe { sys::syscall1(sys::SYS_NET_CLOSE, self.handle) };
-        if ret == u64::MAX {
-            Err(Error::SysError)
-        } else {
-            Ok(())
-        }
-    }
 }
