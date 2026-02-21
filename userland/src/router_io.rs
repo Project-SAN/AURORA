@@ -216,7 +216,10 @@ struct StreamFrame<'a> {
 }
 
 fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
-    if req.len() < STREAM_DATA_OFFSET || &req[..4] != b"HRS1" {
+    if req.len() < STREAM_DATA_OFFSET {
+        return None;
+    }
+    if req.get(..4) != Some(b"HRS1") {
         return None;
     }
     let op = match req[4] {
@@ -229,13 +232,14 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
     let mut sid = [0u8; 8];
     sid.copy_from_slice(&req[8..16]);
     let session_id = u64::from_be_bytes(sid);
-    if STREAM_DATA_OFFSET + data_len > req.len() {
+    let data_end = STREAM_DATA_OFFSET.checked_add(data_len)?;
+    if data_end > req.len() {
         return None;
     }
     Some(StreamFrame {
         op,
         session_id,
-        data: &req[STREAM_DATA_OFFSET..STREAM_DATA_OFFSET + data_len],
+        data: &req[STREAM_DATA_OFFSET..data_end],
     })
 }
 
