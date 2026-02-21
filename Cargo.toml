@@ -17,6 +17,7 @@ http-client = ["std", "dep:ureq"]
 bench = []
 regex-policy = ["std", "dep:regex"]
 pcd-nova = ["std", "dep:nova-snark", "dep:bincode", "dep:num-bigint"]
+localnet-debug = []
 
 [dependencies]
 aes = { version = "0.8", default-features = false }
