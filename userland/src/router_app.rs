@@ -36,22 +36,31 @@ const DEFAULT_CLI_PORT: u16 = 7001;
 const DEFAULT_STORAGE_PATH: &str = "/router_state.json";
 
 pub fn run_router() -> ! {
+    log_line("router: run_router start");
     let mut config = load_config();
+    log_line("router: config loaded");
     let storage = UserlandRouterStorage::new(config.storage_path.clone());
+    log_line("router: storage ready");
     let mut router = Router::with_node_id(config.router_id.clone());
+    log_line("router: instance ready");
     let secrets = load_state(&storage, &mut router);
+    log_line("router: state loaded");
     load_directory_if_configured(&mut router, &storage, &secrets, &config);
+    log_line("router: directory loaded");
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
         Ok(listener) => listener,
         Err(_) => loop {
             sys::sleep(1000);
         },
     };
+    log_line("router: listener ready");
     let mut cli = CliServer::listen(config.cli_port);
+    log_line("router: cli ready");
     let time = time_provider();
     let mut forward = UserlandForward::new();
     let mut exit = UserlandExitTransport::new();
     let mut replay = ReplayCache::new();
+    log_line("router: event loop start");
 
     loop {
         if let Some(server) = cli.as_mut() {
@@ -655,15 +664,19 @@ fn load_directory_if_configured(
     secrets: &RouterSecrets,
     config: &RouterConfig,
 ) {
+    log_line("directory: begin");
     let path = match config.directory_path.as_deref() {
         Some(path) if !path.is_empty() => path,
         _ => return,
     };
+    log_line("directory: path ok");
     let key_hex = match config.directory_public_key.as_deref() {
         Some(key) if !key.is_empty() => key,
         _ => return,
     };
+    log_line("directory: key present");
 
+    log_line("directory: read start");
     let body_bytes = match read_all_any(&[
         path,
         DIRECTORY_PATH_FALLBACK,
@@ -675,6 +688,7 @@ fn load_directory_if_configured(
             return;
         }
     };
+    log_line("directory: read ok");
     let body = match core::str::from_utf8(&body_bytes) {
         Ok(text) => text,
         Err(_) => {
@@ -682,6 +696,7 @@ fn load_directory_if_configured(
             return;
         }
     };
+    log_line("directory: utf8 ok");
     let key_bytes = match decode_hex(key_hex) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -689,12 +704,15 @@ fn load_directory_if_configured(
             return;
         }
     };
+    log_line("directory: key decode ok");
     if key_bytes.len() != 32 {
         log_line("directory: public key length invalid");
         return;
     }
+    log_line("directory: verify start");
     match from_signed_json(body, &key_bytes) {
         Ok(directory) => {
+            log_line("directory: verify ok");
             let installed = if config.skip_policy {
                 let res = router.install_routes(directory.routes());
                 if res.is_ok() {
@@ -710,6 +728,7 @@ fn load_directory_if_configured(
             };
             if installed.is_ok() {
                 persist_state(storage, router, secrets);
+                log_line("directory: persist ok");
             } else {
                 log_line("directory: install failed");
             }

@@ -36,7 +36,7 @@ impl PacketListener for UserlandPacketListener {
             Some(mut socket) => {
                 let packet = match read_incoming_packet(&mut socket, self.sv) {
                     Ok(packet) => packet,
-                    Err(err) => {
+                    Err(_) => {
                         let _ = socket.close();
                         return Err(Error::Crypto);
                     }
@@ -98,8 +98,7 @@ impl Forward for UserlandForward {
         };
 
         let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
-        let addr = format_ipv4(ip, port);
-        if connect_ipv4(&socket, ip, port, "forward").is_err() {
+        if connect_ipv4(&socket, ip, port).is_err() {
             return Err(Error::Crypto);
         }
         let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
@@ -120,19 +119,14 @@ impl UserlandExitTransport {
 }
 
 impl ExitTransport for UserlandExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, tls: bool, request: &[u8]) -> Result<Vec<u8>> {
-        if tls {
-            return Err(Error::NotImplemented);
-        }
-
+    fn send(&mut self, addr: &IpAddr, port: u16, request: &[u8]) -> Result<Vec<u8>> {
         let ip = match addr {
             IpAddr::V4(octets) => *octets,
             IpAddr::V6(_) => return Err(Error::NotImplemented),
         };
 
         let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
-        let addr = format_ipv4(ip, port);
-        if connect_ipv4(&socket, ip, port, "exit").is_err() {
+        if connect_ipv4(&socket, ip, port).is_err() {
             return Err(Error::Crypto);
         }
         if send_all(&socket, request).is_err() {
@@ -144,7 +138,7 @@ impl ExitTransport for UserlandExitTransport {
     }
 }
 
-fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16, label: &str) -> Result<()> {
+fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16) -> Result<()> {
     let mut state = socket.connect(ip, port).map_err(|_| Error::Crypto)?;
     let mut spins = 0u32;
     while state == ConnectState::InProgress {
@@ -160,11 +154,18 @@ fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16, label: &str) -> Resu
 
 fn send_all(socket: &TcpSocket, buf: &[u8]) -> Result<()> {
     let mut offset = 0usize;
+    let mut spins = 0u32;
     while offset < buf.len() {
         let written = socket.send(&buf[offset..]).map_err(|_| Error::Crypto)?;
         if written == 0 {
-            return Err(Error::Crypto);
+            spins = spins.saturating_add(1);
+            if spins > 4096 {
+                return Err(Error::Crypto);
+            }
+            sys::sleep(1);
+            continue;
         }
+        spins = 0;
         offset += written;
     }
     Ok(())
