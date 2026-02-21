@@ -138,7 +138,11 @@ fn handle_exit(
     cursor += ahdr_len;
     let request = &tail[cursor..];
 
-    let mut response = exit.send(addr, port, false, request)?;
+    // Infer TLS usage based on the destination port. Port 443 is the standard
+    // HTTPS/TLS port and is treated as TLS-enabled traffic.
+    let tls = port == 443;
+
+    let mut response = exit.send(addr, port, tls, request)?;
     // Empty exit responses are normal in tunnel/poll operation.
     // Emitting an empty backward packet only produces useless return-path
     // traffic and can trigger crypto errors upstream.
