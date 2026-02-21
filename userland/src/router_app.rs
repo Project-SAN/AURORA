@@ -34,6 +34,13 @@ const DIRECTORY_PATH_FALLBACK_NO_SLASH: &str = "DIRECT~1.JSO";
 const DEFAULT_LISTEN_PORT: u16 = 7000;
 const DEFAULT_CLI_PORT: u16 = 7001;
 const DEFAULT_STORAGE_PATH: &str = "/router_state.json";
+const CLI_BANNER: &[&str] = &[
+    "    _   _   _ ____   ___  ____      _",
+    "   / \\ | | | |  _ \\ / _ \\|  _ \\    / \\",
+    "  / _ \\| | | | |_) | | | | |_) |  / _ \\",
+    " / ___ \\ |_| |  _ <| |_| |  _ <  / ___ \\",
+    "/_/   \\_\\___/|_| \\_\\\\___/|_| \\_\\/_/   \\_\\",
+];
 
 pub fn run_router() -> ! {
     log_line("router: run_router start");
@@ -319,6 +326,9 @@ fn handle_cli_session(
     router: &mut Router,
     config: &mut RouterConfig,
 ) {
+    for line in CLI_BANNER {
+        let _ = send_line(&socket, line);
+    }
     let _ = send_line(&socket, "AURORA router CLI");
     let mut mode = CliMode::Exec;
     let mut line = Vec::with_capacity(256);
@@ -600,14 +610,29 @@ fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> AuroraResult<()> {
 
 fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> AuroraResult<()> {
     let mut offset = 0usize;
+    let mut retries = 0u16;
+    const MAX_SEND_RETRIES: u16 = 200;
     while offset < buf.len() {
-        let written = socket
-            .send(&buf[offset..])
-            .map_err(|_| types::Error::Crypto)?;
-        if written == 0 {
-            return Err(types::Error::Crypto);
+        match socket.send(&buf[offset..]) {
+            Ok(0) => {
+                retries = retries.saturating_add(1);
+                if retries >= MAX_SEND_RETRIES {
+                    return Err(types::Error::Crypto);
+                }
+                sys::sleep(1);
+            }
+            Ok(written) => {
+                offset += written;
+                retries = 0;
+            }
+            Err(_) => {
+                retries = retries.saturating_add(1);
+                if retries >= MAX_SEND_RETRIES {
+                    return Err(types::Error::Crypto);
+                }
+                sys::sleep(1);
+            }
         }
-        offset += written;
     }
     Ok(())
 }
