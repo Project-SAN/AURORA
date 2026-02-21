@@ -138,7 +138,7 @@ fn handle_exit(
     cursor += ahdr_len;
     let request = &tail[cursor..];
 
-    let mut response = exit.send(addr, port, request)?;
+    let mut response = exit.send(addr, port, false, request)?;
     // Empty exit responses are normal in tunnel/poll operation.
     // Emitting an empty backward packet only produces useless return-path
     // traffic and can trigger crypto errors upstream.
