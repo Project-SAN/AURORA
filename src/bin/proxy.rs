@@ -135,68 +135,22 @@ fn handle_connect_tunnel(
     // each sender process has an ephemeral listener; too-short timeouts
     // lose responses irrecoverably.
     let data_timeout_secs = data_timeout_override.unwrap_or(if route_only_session.is_some() {
-        2
+        10
     } else {
         20
     });
     let poll_timeout_secs = poll_timeout_override.unwrap_or(if route_only_session.is_some() {
-        3
+        6
     } else {
         12
     });
     let max_poll_timeout_secs =
         max_poll_timeout_override.unwrap_or(if route_only_session.is_some() { 20 } else { 30 });
 
-    // External sender mode relies on ExitTransport auto-open on first DATA.
-    // Sending explicit OPEN here only adds latency and can create duplicate
-    // state when retries happen.
-    if route_only_session.is_some() {
-        let open_payload = build_stream_payload(
-            cfg.payload_len,
-            cfg.host_offset,
-            host,
-            STREAM_OP_OPEN,
-            session_id,
-            &[],
-        )?;
-        let mut open_last_err: Option<String> = None;
-        for attempt in 0..3 {
-            let open_res = send_connect_payload(
-                cfg,
-                target,
-                &mut route_only_session,
-                &open_payload,
-                open_timeout_secs,
-                false,
-            );
-            match open_res {
-                Ok(_) => {
-                    open_last_err = None;
-                    break;
-                }
-                Err(err) if err.contains("response timeout after") => {
-                    eprintln!(
-                        "[proxy] CONNECT open timeout tolerated (attempt={}): {}",
-                        attempt + 1,
-                        err
-                    );
-                    open_last_err = None;
-                    break;
-                }
-                Err(err) => {
-                    open_last_err = Some(err);
-                    if attempt < 2 {
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                }
-            }
-        }
-        if let Some(err) = open_last_err {
-            return Err(err);
-        }
-    } else {
-        eprintln!("[proxy] CONNECT open skipped (sender mode uses DATA auto-open)");
-    }
+    // Exit transport auto-opens on first DATA. Skipping explicit OPEN avoids
+    // startup delay and duplicate stream state when retries occur.
+    let _ = open_timeout_secs;
+    eprintln!("[proxy] CONNECT open skipped (DATA auto-open)");
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .map_err(|e| format!("write connect ok: {e}"))?;
@@ -209,7 +163,12 @@ fn handle_connect_tunnel(
     let mut poll_backoff_ms: u64 = 50;
     let mut empty_polls: u32 = 0;
     let mut last_client_activity = Instant::now();
+    let mut last_tunnel_to_client = Instant::now();
     let mut dumped_first_client_chunk = false;
+    let client_priority_ms: u64 = env::var("HORNET_CONNECT_CLIENT_PRIORITY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
     let poll_window_secs: u64 = env::var("HORNET_CONNECT_POLL_WINDOW_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -228,14 +187,39 @@ fn handle_connect_tunnel(
             }
             Ok(n) => {
                 sent_any = true;
-                eprintln!("[proxy] CONNECT client->tunnel bytes={}", n);
+                let mut total = n;
+                let mut extra_reads = 0u32;
+                while total < chunk.len() && extra_reads < 8 {
+                    match stream.read(&mut chunk[total..]) {
+                        Ok(0) => {
+                            eof = true;
+                            break;
+                        }
+                        Ok(m) => {
+                            total += m;
+                            extra_reads = extra_reads.saturating_add(1);
+                        }
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                || e.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            break;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                            eof = true;
+                            break;
+                        }
+                        Err(e) => return Err(format!("read tunnel client (coalesce): {e}")),
+                    }
+                }
+                eprintln!("[proxy] CONNECT client->tunnel bytes={}", total);
                 if !dumped_first_client_chunk {
                     if let Ok(path) = env::var("HORNET_PROXY_DUMP_FIRST_CHUNK_PATH") {
                         if !path.trim().is_empty() {
-                            let _ = fs::write(&path, &chunk[..n]);
+                            let _ = fs::write(&path, &chunk[..total]);
                             eprintln!(
                                 "[proxy] dumped first CONNECT chunk bytes={} path={}",
-                                n, path
+                                total, path
                             );
                         }
                     }
@@ -247,7 +231,7 @@ fn handle_connect_tunnel(
                     host,
                     STREAM_OP_DATA,
                     session_id,
-                    &chunk[..n],
+                    &chunk[..total],
                 )?;
                 let response = send_connect_payload(
                     cfg,
@@ -262,6 +246,7 @@ fn handle_connect_tunnel(
                     stream
                         .write_all(&response)
                         .map_err(|e| format!("write tunnel response: {e}"))?;
+                    last_tunnel_to_client = Instant::now();
                 }
                 last_client_activity = Instant::now();
                 pending_response = true;
@@ -271,6 +256,9 @@ fn handle_connect_tunnel(
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                eof = true;
+            }
             Err(e) => return Err(format!("read tunnel client: {e}")),
         }
 
@@ -279,6 +267,13 @@ fn handle_connect_tunnel(
         }
 
         if pending_response && !sent_any {
+            if last_tunnel_to_client.elapsed() < Duration::from_millis(client_priority_ms) {
+                // Immediately after receiving server TLS records, prioritize
+                // reading the client's next handshake records before issuing
+                // long poll requests.
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             if last_client_activity.elapsed() > Duration::from_secs(poll_window_secs) {
                 pending_response = false;
                 empty_polls = 0;
@@ -314,6 +309,7 @@ fn handle_connect_tunnel(
                 stream
                     .write_all(&response)
                     .map_err(|err| format!("write tunnel poll response: {err}"))?;
+                last_tunnel_to_client = Instant::now();
                 pending_response = true;
                 poll_backoff_ms = 50;
                 empty_polls = 0;
@@ -363,7 +359,22 @@ fn send_connect_payload(
 ) -> Result<Vec<u8>, String> {
     if let Some(session) = route_only_session.as_mut() {
         let response = session.send(payload, timeout_secs)?;
-        if fallback_on_empty && response.is_empty() {
+        let degrade_on_empty = env::var("HORNET_PROXY_INTERNAL_DEGRADE_ON_EMPTY")
+            .ok()
+            .as_deref()
+            == Some("1");
+        let allow_internal_fallback = env::var("HORNET_PROXY_INTERNAL_FALLBACK")
+            .ok()
+            .as_deref()
+            == Some("1");
+        if fallback_on_empty && response.is_empty() && degrade_on_empty {
+            eprintln!(
+                "[proxy] route-only internal empty response, switching to sender mode for remaining tunnel"
+            );
+            *route_only_session = None;
+            return Ok(response);
+        }
+        if fallback_on_empty && response.is_empty() && allow_internal_fallback {
             eprintln!("[proxy] route-only internal empty response, fallback to sender process");
             return run_sender_tunnel(cfg, target, payload, Some(timeout_secs), None);
         }
@@ -552,6 +563,12 @@ impl RouteOnlyTunnelSession {
         send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][route-only] frame sent bytes={}", frame.len());
 
+        let mut keys_b_reversed = keys_b;
+        keys_b_reversed.reverse();
+        if timeout_secs == 0 {
+            eprintln!("[proxy][route-only] response wait skipped");
+            return Ok(Vec::new());
+        }
         let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
         loop {
             if Instant::now() >= deadline {
@@ -561,7 +578,12 @@ impl RouteOnlyTunnelSession {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .set_nonblocking(false)
+                        .map_err(|e| format!("set blocking response stream: {e}"))?;
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
+                    stream
+                        .set_read_timeout(Some(read_timeout))
                         .map_err(|e| format!("set read timeout response stream: {e}"))?;
                     let frame = match read_backward_frame(&mut stream) {
                         Ok(v) => v,
@@ -569,8 +591,6 @@ impl RouteOnlyTunnelSession {
                     };
                     let mut payload = frame.payload;
                     let mut iv_resp = frame.specific;
-                    let mut keys_b_reversed = keys_b.clone();
-                    keys_b_reversed.reverse();
                     if aurora::source::decrypt_backward_payload(
                         &keys_b_reversed,
                         &mut iv_resp,
@@ -593,6 +613,7 @@ impl RouteOnlyTunnelSession {
             }
         }
     }
+
 }
 
 struct BackwardFrame {

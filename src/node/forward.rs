@@ -15,8 +15,6 @@ const TAG_EXACT: u8 = 0x01;
 const TAG_PREFIX: u8 = 0x02;
 const TAG_CIDR: u8 = 0x03;
 const TAG_RANGE: u8 = 0x04;
-const STREAM_MAGIC: &[u8; 4] = b"HRS1";
-const STREAM_OP_DATA: u8 = 2;
 
 pub fn process_data(
     ctx: &mut NodeCtx<'_, '_, '_>,
@@ -141,9 +139,10 @@ fn handle_exit(
     let request = &tail[cursor..];
 
     let mut response = exit.send(addr, port, request)?;
-    // Tunnel control/poll frames legitimately produce no payload.
-    // Avoid emitting empty backward packets that only cause return-path noise.
-    if response.is_empty() && is_empty_stream_control_or_poll(request) {
+    // Empty exit responses are normal in tunnel/poll operation.
+    // Emitting an empty backward packet only produces useless return-path
+    // traffic and can trigger crypto errors upstream.
+    if response.is_empty() {
         return Ok(());
     }
 
@@ -155,19 +154,6 @@ fn handle_exit(
     };
 
     crate::node::backward::process_data(ctx, &mut chdr_b, &mut ahdr_b, &mut response)
-}
-
-fn is_empty_stream_control_or_poll(request: &[u8]) -> bool {
-    if request.len() < 64 || &request[..4] != STREAM_MAGIC {
-        return false;
-    }
-    let op = request[4];
-    let data_len = u16::from_be_bytes([request[6], request[7]]) as usize;
-    if op == STREAM_OP_DATA {
-        data_len == 0
-    } else {
-        true
-    }
 }
 
 fn derive_exit_iv(ctx: &NodeCtx<'_, '_, '_>, ahdr: &Ahdr) -> [u8; 16] {
