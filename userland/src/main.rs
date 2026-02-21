@@ -11,15 +11,15 @@ mod allocator;
 mod echo;
 mod fs;
 mod http;
-#[cfg(feature = "hornet-router")]
+#[cfg(feature = "aurora-router")]
 mod router_app;
-#[cfg(feature = "hornet-router")]
+#[cfg(feature = "aurora-router")]
 mod router_io;
-#[cfg(feature = "hornet-router")]
+#[cfg(feature = "aurora-router")]
 mod router_storage;
 mod socket;
 mod sys;
-#[cfg(feature = "hornet-time")]
+#[cfg(feature = "aurora-time")]
 mod time_provider;
 
 const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
@@ -30,7 +30,7 @@ const ECHO_PORT: u16 = 1234;
 const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 const RUN_HTTP_CLIENT: bool = true;
 const RUN_ECHO_SERVER: bool = false;
-#[cfg(feature = "hornet-router")]
+#[cfg(feature = "aurora-router")]
 const RUN_ROUTER: bool = true;
 
 #[no_mangle]
@@ -38,7 +38,7 @@ pub extern "C" fn _start() -> ! {
     allocator::init();
     let msg = b"Hello from userland\n";
     sys::write(1, msg);
-    #[cfg(feature = "hornet-router")]
+    #[cfg(feature = "aurora-router")]
     if RUN_ROUTER {
         router_app::run_router();
     }

@@ -16,7 +16,6 @@ pub struct TcpSocket {
     pub(crate) handle: u64,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TcpListener {
     handle: u64,
@@ -87,7 +86,6 @@ impl TcpSocket {
     }
 }
 
-#[allow(dead_code)]
 impl TcpListener {
     pub fn listen(port: u16) -> Result<Self, Error> {
         let handle = unsafe { sys::syscall0(sys::SYS_NET_SOCKET) };

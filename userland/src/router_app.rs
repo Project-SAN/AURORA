@@ -5,23 +5,23 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use hornet::application::setup::RegistrySetupPipeline;
-use hornet::node::ReplayCache;
-use hornet::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
-use hornet::router::io::PacketListener;
-use hornet::router::storage::{RouterStorage, StoredState};
-use hornet::router::Router;
-use hornet::setup::directory::from_signed_json;
-use hornet::setup::wire;
-use hornet::types::{self, PacketDirection, PacketType, Result as HornetResult};
-use hornet::utils::decode_hex;
+use aurora::application::setup::RegistrySetupPipeline;
+use aurora::node::ReplayCache;
+use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_METADATA_TLV};
+use aurora::router::io::PacketListener;
+use aurora::router::storage::{RouterStorage, StoredState};
+use aurora::router::Router;
+use aurora::setup::directory::from_signed_json;
+use aurora::setup::wire;
+use aurora::types::{self, PacketDirection, PacketType, Result as AuroraResult};
+use aurora::utils::decode_hex;
 
 use crate::fs;
 use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketListener};
 use crate::router_storage::UserlandRouterStorage;
 use crate::sys;
 
-#[cfg(feature = "hornet-time")]
+#[cfg(feature = "aurora-time")]
 use crate::time_provider::SysTimeProvider;
 
 const ROUTER_CONFIG_PATH: &str = "/router_config.json";
@@ -190,7 +190,7 @@ fn load_config() -> RouterConfig {
     }
 }
 
-fn read_all_any(paths: &[&str]) -> HornetResult<Vec<u8>> {
+fn read_all_any(paths: &[&str]) -> AuroraResult<Vec<u8>> {
     let mut last_err = None;
     for path in paths {
         match read_all(path) {
@@ -201,7 +201,7 @@ fn read_all_any(paths: &[&str]) -> HornetResult<Vec<u8>> {
     Err(last_err.unwrap_or(types::Error::Crypto))
 }
 
-fn read_all(path: &str) -> HornetResult<Vec<u8>> {
+fn read_all(path: &str) -> AuroraResult<Vec<u8>> {
     let handle = fs::open(path, fs::O_READ).ok_or(types::Error::Crypto)?;
     let mut out = Vec::new();
     let mut buf = [0u8; 512];
@@ -221,7 +221,7 @@ fn read_all(path: &str) -> HornetResult<Vec<u8>> {
     Ok(out)
 }
 
-fn write_all(path: &str, data: &[u8]) -> HornetResult<()> {
+fn write_all(path: &str, data: &[u8]) -> AuroraResult<()> {
     let handle =
         fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC).ok_or(types::Error::Crypto)?;
     let mut offset = 0usize;
@@ -243,7 +243,7 @@ fn write_all(path: &str, data: &[u8]) -> HornetResult<()> {
     Ok(())
 }
 
-fn save_config(config: &RouterConfig) -> HornetResult<()> {
+fn save_config(config: &RouterConfig) -> AuroraResult<()> {
     let file = RouterConfigFile {
         listen_port: Some(config.listen_port),
         storage_path: Some(config.storage_path.clone()),
@@ -560,16 +560,16 @@ fn send_kv_str(socket: &crate::socket::TcpSocket, key: &str, value: &str) -> boo
     send_line(socket, &line).is_ok()
 }
 
-fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> HornetResult<()> {
+fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> AuroraResult<()> {
     send_bytes(socket, line.as_bytes())?;
     send_bytes(socket, b"\n")
 }
 
-fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> HornetResult<()> {
+fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> AuroraResult<()> {
     send_bytes(socket, s.as_bytes())
 }
 
-fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> HornetResult<()> {
+fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> AuroraResult<()> {
     let mut offset = 0usize;
     while offset < buf.len() {
         let written = socket
@@ -583,7 +583,7 @@ fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> HornetResult<()>
     Ok(())
 }
 
-fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> HornetResult<bool> {
+fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> AuroraResult<bool> {
     out.clear();
     let mut buf = [0u8; 64];
     loop {
@@ -609,15 +609,15 @@ fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> HornetResu
     }
 }
 
-fn time_provider() -> impl hornet::time::TimeProvider {
-    #[cfg(feature = "hornet-time")]
+fn time_provider() -> impl aurora::time::TimeProvider {
+    #[cfg(feature = "aurora-time")]
     {
         SysTimeProvider
     }
-    #[cfg(not(feature = "hornet-time"))]
+    #[cfg(not(feature = "aurora-time"))]
     {
         struct DummyTime;
-        impl hornet::time::TimeProvider for DummyTime {
+        impl aurora::time::TimeProvider for DummyTime {
             fn now_coarse(&self) -> u32 {
                 0
             }
@@ -736,11 +736,11 @@ fn log_line(msg: &str) {
 }
 
 fn handle_setup_packet(
-    packet: hornet::router::io::IncomingPacket,
+    packet: aurora::router::io::IncomingPacket,
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
-) -> HornetResult<()> {
+) -> AuroraResult<()> {
     if packet.chdr.typ != PacketType::Setup {
         return Err(types::Error::Length);
     }
@@ -752,7 +752,7 @@ fn handle_setup_packet(
         .map(|route| route.segment)
         .ok_or(types::Error::NotImplemented)?;
     let mut pipeline = RegistrySetupPipeline::new(router.registry_mut());
-    hornet::setup::node_process_with_policy(
+    aurora::setup::node_process_with_policy(
         &mut setup_packet,
         &secrets.node_secret,
         &secrets.sv,
@@ -763,7 +763,7 @@ fn handle_setup_packet(
     Ok(())
 }
 
-fn select_policy_id(packet: &hornet::setup::SetupPacket) -> Option<PolicyId> {
+fn select_policy_id(packet: &aurora::setup::SetupPacket) -> Option<PolicyId> {
     for tlv in &packet.tlvs {
         if tlv.first().copied() != Some(POLICY_METADATA_TLV) {
             continue;

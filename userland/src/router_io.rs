@@ -5,13 +5,13 @@ use alloc::vec::Vec;
 
 use crate::socket::{ConnectState, TcpListener, TcpSocket};
 use crate::sys;
-use hornet::forward::Forward;
-use hornet::node::ExitTransport;
-use hornet::router::io::{
+use aurora::forward::Forward;
+use aurora::node::ExitTransport;
+use aurora::router::io::{
     encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
 };
-use hornet::routing::{self, IpAddr, RouteElem};
-use hornet::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
+use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
 
 pub struct UserlandPacketListener {
     listener: TcpListener,
