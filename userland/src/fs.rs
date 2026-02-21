@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::sys;
 
 pub const O_READ: u32 = 1;
