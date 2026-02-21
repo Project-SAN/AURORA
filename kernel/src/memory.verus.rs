@@ -22,6 +22,22 @@ spec fn in_range(x: u64, start: u64, end: u64) -> bool {
     start <= x && x < end
 }
 
+spec fn alloc_size(pages: u64) -> u64 {
+    (pages * PAGE_SIZE) as u64
+}
+
+spec fn alloc_candidate_start(region_start: u64, min: u64) -> u64 {
+    (((((if region_start >= min { region_start } else { min }) + PAGE_SIZE - 1) as u64) & !PAGE_OFFSET_MASK) as u64)
+}
+
+spec fn alloc_candidate_alloc_end(region_start: u64, min: u64, pages: u64) -> u64 {
+    (alloc_candidate_start(region_start, min) + alloc_size(pages)) as u64
+}
+
+spec fn alloc_candidate_end(region_end: u64, max: u64) -> u64 {
+    if region_end <= max + 1 { region_end } else { (max + 1) as u64 }
+}
+
 spec fn step_merge_end(current_end: u64, next_end: u64) -> u64 {
     if current_end >= next_end { current_end } else { next_end }
 }
@@ -89,6 +105,10 @@ spec fn regions_non_empty(regions: Seq<(u64, u64)>) -> bool {
         0 <= i < regions.len() ==> regions[i].0 < regions[i].1
 }
 
+spec fn free_list_inv(regions: Seq<(u64, u64)>) -> bool {
+    regions_non_empty(regions) && regions_strictly_sorted_disjoint(regions)
+}
+
 proof fn lemma_in_regions_singleton(x: u64, start: u64, end: u64)
     ensures
         in_regions(x, seq![(start, end)]) <==> in_range(x, start, end),
@@ -102,6 +122,22 @@ proof fn lemma_in_regions_pair(x: u64, start1: u64, end1: u64, start2: u64, end2
             <==> (in_range(x, start1, end1) || in_range(x, start2, end2)),
 {
     reveal_with_fuel(in_regions, 3);
+}
+
+proof fn lemma_in_regions_concat(x: u64, left: Seq<(u64, u64)>, right: Seq<(u64, u64)>)
+    ensures
+        in_regions(x, left + right) <==> (in_regions(x, left) || in_regions(x, right)),
+    decreases left.len(),
+{
+    if left.len() == 0 {
+        reveal_with_fuel(in_regions, 1);
+        assert(left + right == right);
+    } else {
+        reveal_with_fuel(in_regions, 1);
+        assert((left + right)[0] == left[0]);
+        assert((left + right).drop_first() == left.drop_first() + right);
+        lemma_in_regions_concat(x, left.drop_first(), right);
+    }
 }
 
 #[verifier::bit_vector]
@@ -123,6 +159,16 @@ proof fn lemma_saturating_guard_implies_bounded_sum(start: u64, size: u64, bound
     ensures
         start + size <= bound,
         start <= start + size,
+{
+}
+
+#[verifier::bit_vector]
+proof fn lemma_positive_pages_implies_positive_size(pages: u64)
+    requires
+        pages > 0,
+        pages <= u64::MAX / PAGE_SIZE,
+    ensures
+        alloc_size(pages) > 0,
 {
 }
 
@@ -376,6 +422,21 @@ proof fn lemma_subrange_preserves_sorted_disjoint(regions: Seq<(u64, u64)>, lo: 
     };
 }
 
+proof fn lemma_subrange_preserves_non_empty(regions: Seq<(u64, u64)>, lo: int, hi: int)
+    requires
+        regions_non_empty(regions),
+        0 <= lo <= hi <= regions.len(),
+    ensures
+        regions_non_empty(regions.subrange(lo, hi)),
+{
+    assert forall|i: int|
+        0 <= i < regions.subrange(lo, hi).len()
+            implies regions.subrange(lo, hi)[i].0 < regions.subrange(lo, hi)[i].1
+    by {
+        assert(regions.subrange(lo, hi)[i] == regions[lo + i]);
+    };
+}
+
 proof fn lemma_concat_preserves_sorted_disjoint(left: Seq<(u64, u64)>, right: Seq<(u64, u64)>)
     requires
         regions_strictly_sorted_disjoint(left),
@@ -404,6 +465,28 @@ proof fn lemma_concat_preserves_sorted_disjoint(left: Seq<(u64, u64)>, right: Se
             assert(0 <= ri < rj < right.len());
             assert(both[i] == right[ri]);
             assert(both[j] == right[rj]);
+        }
+    };
+}
+
+proof fn lemma_concat_preserves_non_empty(left: Seq<(u64, u64)>, right: Seq<(u64, u64)>)
+    requires
+        regions_non_empty(left),
+        regions_non_empty(right),
+    ensures
+        regions_non_empty(left + right),
+{
+    let both = left + right;
+    assert forall|i: int|
+        0 <= i < both.len()
+            implies both[i].0 < both[i].1
+    by {
+        if i < left.len() {
+            assert(both[i] == left[i]);
+        } else {
+            let ri = i - left.len();
+            assert(0 <= ri < right.len());
+            assert(both[i] == right[ri]);
         }
     };
 }
@@ -503,6 +586,155 @@ proof fn lemma_alloc_idx_update_preserves_sorted_disjoint(
 
     lemma_concat_preserves_sorted_disjoint(pm, suffix);
     assert(pm + suffix == alloc_idx_update_result(regions, idx, alloc_start, alloc_end));
+}
+
+proof fn lemma_alloc_idx_update_preserves_non_empty(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    alloc_start: u64,
+    alloc_end: u64,
+)
+    requires
+        regions_non_empty(regions),
+        0 <= idx < regions.len(),
+        regions[idx].0 <= alloc_start,
+        alloc_start < alloc_end,
+        alloc_end <= regions[idx].1,
+    ensures
+        regions_non_empty(alloc_idx_update_result(regions, idx, alloc_start, alloc_end)),
+{
+    let prefix = regions.subrange(0, idx);
+    let middle = split_result(regions[idx].0, regions[idx].1, alloc_start, alloc_end);
+    let suffix = regions.subrange(idx + 1, regions.len() as int);
+
+    lemma_subrange_preserves_non_empty(regions, 0, idx);
+    lemma_split_result_wf(regions[idx].0, regions[idx].1, alloc_start, alloc_end);
+    lemma_subrange_preserves_non_empty(regions, idx + 1, regions.len() as int);
+
+    lemma_concat_preserves_non_empty(prefix, middle);
+    let pm = prefix + middle;
+    lemma_concat_preserves_non_empty(pm, suffix);
+    assert(pm + suffix == alloc_idx_update_result(regions, idx, alloc_start, alloc_end));
+}
+
+proof fn lemma_alloc_idx_update_preserves_free_list_inv(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    alloc_start: u64,
+    alloc_end: u64,
+)
+    requires
+        free_list_inv(regions),
+        0 <= idx < regions.len(),
+        regions[idx].0 <= alloc_start,
+        alloc_start < alloc_end,
+        alloc_end <= regions[idx].1,
+    ensures
+        free_list_inv(alloc_idx_update_result(regions, idx, alloc_start, alloc_end)),
+{
+    lemma_alloc_idx_update_preserves_sorted_disjoint(regions, idx, alloc_start, alloc_end);
+    lemma_alloc_idx_update_preserves_non_empty(regions, idx, alloc_start, alloc_end);
+}
+
+proof fn lemma_alloc_idx_update_semantics_partition(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    alloc_start: u64,
+    alloc_end: u64,
+    x: u64,
+)
+    requires
+        0 <= idx < regions.len(),
+        regions[idx].0 <= alloc_start,
+        alloc_start < alloc_end,
+        alloc_end <= regions[idx].1,
+    ensures
+        in_regions(x, alloc_idx_update_result(regions, idx, alloc_start, alloc_end))
+            <==> (
+                in_regions(x, regions.subrange(0, idx))
+                || in_regions(x, regions.subrange(idx + 1, regions.len() as int))
+                || (in_range(x, regions[idx].0, regions[idx].1) && !in_range(x, alloc_start, alloc_end))
+            ),
+{
+    let prefix = regions.subrange(0, idx);
+    let middle = split_result(regions[idx].0, regions[idx].1, alloc_start, alloc_end);
+    let suffix = regions.subrange(idx + 1, regions.len() as int);
+    let pm = prefix + middle;
+
+    lemma_in_regions_concat(x, middle, suffix);
+    lemma_in_regions_concat(x, pm, suffix);
+    lemma_split_result_semantics(regions[idx].0, regions[idx].1, alloc_start, alloc_end, x);
+
+    assert(pm + suffix == alloc_idx_update_result(regions, idx, alloc_start, alloc_end));
+    assert(in_regions(x, alloc_idx_update_result(regions, idx, alloc_start, alloc_end))
+        <==> in_regions(x, pm + suffix));
+    lemma_in_regions_concat(x, prefix, middle);
+    assert(in_regions(x, pm) <==> (in_regions(x, prefix) || in_regions(x, middle)));
+    assert(in_regions(x, pm + suffix)
+        <==> (in_regions(x, pm) || in_regions(x, suffix)));
+    assert(in_regions(x, middle + suffix) <==> (in_regions(x, middle) || in_regions(x, suffix)));
+    assert(in_regions(x, middle)
+        <==> (in_range(x, regions[idx].0, regions[idx].1) && !in_range(x, alloc_start, alloc_end)));
+}
+
+proof fn lemma_alloc_contiguous_range_idx_update_spec(
+    regions: Seq<(u64, u64)>,
+    idx: int,
+    min: u64,
+    max: u64,
+    pages: u64,
+    x: u64,
+)
+    requires
+        free_list_inv(regions),
+        0 <= idx < regions.len(),
+        regions[idx].1 <= MAX_PHYS_ADDR,
+        min <= max,
+        max < MAX_PHYS_ADDR,
+        pages > 0,
+        pages <= u64::MAX / PAGE_SIZE,
+        alloc_candidate_alloc_end(regions[idx].0, min, pages)
+            <= alloc_candidate_end(regions[idx].1, max),
+        regions[idx].0 <= alloc_candidate_start(regions[idx].0, min),
+        alloc_candidate_start(regions[idx].0, min)
+            < alloc_candidate_alloc_end(regions[idx].0, min, pages),
+        alloc_candidate_alloc_end(regions[idx].0, min, pages) <= regions[idx].1,
+    ensures
+        free_list_inv(
+            alloc_idx_update_result(
+                regions,
+                idx,
+                alloc_candidate_start(regions[idx].0, min),
+                alloc_candidate_alloc_end(regions[idx].0, min, pages),
+            ),
+        ),
+        in_regions(
+            x,
+            alloc_idx_update_result(
+                regions,
+                idx,
+                alloc_candidate_start(regions[idx].0, min),
+                alloc_candidate_alloc_end(regions[idx].0, min, pages),
+            ),
+        ) <==> (
+            in_regions(x, regions.subrange(0, idx))
+            || in_regions(x, regions.subrange(idx + 1, regions.len() as int))
+            || (
+                in_range(x, regions[idx].0, regions[idx].1)
+                && !in_range(
+                    x,
+                    alloc_candidate_start(regions[idx].0, min),
+                    alloc_candidate_alloc_end(regions[idx].0, min, pages),
+                )
+            )
+        ),
+{
+    let region_start = regions[idx].0;
+    let alloc_start = alloc_candidate_start(region_start, min);
+    let alloc_end = alloc_candidate_alloc_end(region_start, min, pages);
+
+    lemma_alloc_idx_update_preserves_free_list_inv(regions, idx, alloc_start, alloc_end);
+    lemma_alloc_idx_update_semantics_partition(regions, idx, alloc_start, alloc_end, x);
 }
 
 proof fn lemma_coalesce_step(
