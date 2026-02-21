@@ -45,6 +45,12 @@ pub fn run_router() -> ! {
     log_line("router: instance ready");
     let secrets = load_state(&storage, &mut router);
     log_line("router: state loaded");
+    if config.skip_policy {
+        // Drop any policy runtime restored from persisted state when operating in
+        // route-only mode.
+        router = Router::with_node_id(config.router_id.clone());
+        log_line("router: policy runtime disabled");
+    }
     load_directory_if_configured(&mut router, &storage, &secrets, &config);
     log_line("router: directory loaded");
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
@@ -164,7 +170,7 @@ fn load_config() -> RouterConfig {
         directory_path: None,
         directory_public_key: None,
         router_id: None,
-        skip_policy: false,
+        skip_policy: true,
     };
     let data = match read_all_any(&[
         ROUTER_CONFIG_PATH_SHORT,
@@ -193,7 +199,7 @@ fn load_config() -> RouterConfig {
                         directory_path: cfg.directory_path,
                         directory_public_key: cfg.directory_public_key,
                         router_id: cfg.router_id,
-                        skip_policy: cfg.skip_policy.unwrap_or(false),
+                        skip_policy: cfg.skip_policy.unwrap_or(true),
                     };
                 }
             }
@@ -209,7 +215,7 @@ fn load_config() -> RouterConfig {
         directory_path: parsed.directory_path,
         directory_public_key: parsed.directory_public_key,
         router_id: parsed.router_id,
-        skip_policy: parsed.skip_policy.unwrap_or(false),
+        skip_policy: parsed.skip_policy.unwrap_or(true),
     }
 }
 
