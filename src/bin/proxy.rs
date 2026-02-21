@@ -7,6 +7,17 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use aurora::policy::blocklist;
+use aurora::policy::TargetValue;
+use aurora::router::storage::StoredState;
+use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::setup::directory::RouteAnnouncement;
+use aurora::types::{Nonce, PacketType, Si};
+use aurora::utils::decode_hex;
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
+use serde::Deserialize;
+
 const STREAM_MAGIC: &[u8; 4] = b"HRS1";
 const STREAM_OP_OPEN: u8 = 1;
 const STREAM_OP_DATA: u8 = 2;
@@ -100,59 +111,91 @@ fn handle_connect_tunnel(
     let open_timeout_secs = env::var("HORNET_CONNECT_OPEN_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    let data_timeout_secs = env::var("HORNET_CONNECT_DATA_TIMEOUT_SECS")
+        .unwrap_or(3);
+    let data_timeout_override = env::var("HORNET_CONNECT_DATA_TIMEOUT_SECS")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60);
-    let poll_timeout_secs = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
+        .and_then(|s| s.parse::<u64>().ok());
+    let poll_timeout_override = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
-        .and_then(|s| s.parse().ok())
-        // Poll should be long enough to catch delayed TLS records after
-        // client Finished, while still bounded.
-        .unwrap_or(20);
+        .and_then(|s| s.parse::<u64>().ok());
+    let max_poll_timeout_override = env::var("HORNET_CONNECT_MAX_POLL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok());
     let session_id = fresh_session_id()?;
+    let internal_route_only = env::var("HORNET_PROXY_INTERNAL_ROUTE_ONLY")
+        .ok()
+        .as_deref()
+        == Some("1");
+    let mut route_only_session = if cfg.route_only == "1" && internal_route_only {
+        Some(RouteOnlyTunnelSession::new(cfg, target)?)
+    } else {
+        None
+    };
+    // External sender mode must tolerate slower backward responses because
+    // each sender process has an ephemeral listener; too-short timeouts
+    // lose responses irrecoverably.
+    let data_timeout_secs = data_timeout_override.unwrap_or(if route_only_session.is_some() {
+        2
+    } else {
+        20
+    });
+    let poll_timeout_secs = poll_timeout_override.unwrap_or(if route_only_session.is_some() {
+        3
+    } else {
+        12
+    });
+    let max_poll_timeout_secs =
+        max_poll_timeout_override.unwrap_or(if route_only_session.is_some() { 20 } else { 30 });
 
-    let open_payload = build_stream_payload(
-        cfg.payload_len,
-        cfg.host_offset,
-        host,
-        STREAM_OP_OPEN,
-        session_id,
-        &[],
-    )?;
-    let mut open_last_err: Option<String> = None;
-    for attempt in 0..3 {
-        match run_sender_tunnel(
-            cfg,
-            target,
-            &open_payload,
-            Some(open_timeout_secs),
-            None,
-        ) {
-            Ok(_) => {
-                open_last_err = None;
-                break;
-            }
-            Err(err) if err.contains("response timeout after") => {
-                eprintln!(
-                    "[proxy] CONNECT open timeout tolerated (attempt={}): {}",
-                    attempt + 1,
-                    err
-                );
-                open_last_err = None;
-                break;
-            }
-            Err(err) => {
-                open_last_err = Some(err);
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
+    // External sender mode relies on ExitTransport auto-open on first DATA.
+    // Sending explicit OPEN here only adds latency and can create duplicate
+    // state when retries happen.
+    if route_only_session.is_some() {
+        let open_payload = build_stream_payload(
+            cfg.payload_len,
+            cfg.host_offset,
+            host,
+            STREAM_OP_OPEN,
+            session_id,
+            &[],
+        )?;
+        let mut open_last_err: Option<String> = None;
+        for attempt in 0..3 {
+            let open_res = send_connect_payload(
+                cfg,
+                target,
+                &mut route_only_session,
+                &open_payload,
+                open_timeout_secs,
+                false,
+            );
+            match open_res {
+                Ok(_) => {
+                    open_last_err = None;
+                    break;
+                }
+                Err(err) if err.contains("response timeout after") => {
+                    eprintln!(
+                        "[proxy] CONNECT open timeout tolerated (attempt={}): {}",
+                        attempt + 1,
+                        err
+                    );
+                    open_last_err = None;
+                    break;
+                }
+                Err(err) => {
+                    open_last_err = Some(err);
+                    if attempt < 2 {
+                        thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
         }
-    }
-    if let Some(err) = open_last_err {
-        return Err(err);
+        if let Some(err) = open_last_err {
+            return Err(err);
+        }
+    } else {
+        eprintln!("[proxy] CONNECT open skipped (sender mode uses DATA auto-open)");
     }
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -166,6 +209,7 @@ fn handle_connect_tunnel(
     let mut poll_backoff_ms: u64 = 50;
     let mut empty_polls: u32 = 0;
     let mut last_client_activity = Instant::now();
+    let mut dumped_first_client_chunk = false;
     let poll_window_secs: u64 = env::var("HORNET_CONNECT_POLL_WINDOW_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -185,6 +229,18 @@ fn handle_connect_tunnel(
             Ok(n) => {
                 sent_any = true;
                 eprintln!("[proxy] CONNECT client->tunnel bytes={}", n);
+                if !dumped_first_client_chunk {
+                    if let Ok(path) = env::var("HORNET_PROXY_DUMP_FIRST_CHUNK_PATH") {
+                        if !path.trim().is_empty() {
+                            let _ = fs::write(&path, &chunk[..n]);
+                            eprintln!(
+                                "[proxy] dumped first CONNECT chunk bytes={} path={}",
+                                n, path
+                            );
+                        }
+                    }
+                    dumped_first_client_chunk = true;
+                }
                 let payload = build_stream_payload(
                     cfg.payload_len,
                     cfg.host_offset,
@@ -193,14 +249,14 @@ fn handle_connect_tunnel(
                     session_id,
                     &chunk[..n],
                 )?;
-                let response =
-                    run_sender_tunnel(
-                        cfg,
-                        target,
-                        &payload,
-                        Some(data_timeout_secs),
-                        None,
-                    )?;
+                let response = send_connect_payload(
+                    cfg,
+                    target,
+                    &mut route_only_session,
+                    &payload,
+                    data_timeout_secs,
+                    true,
+                )?;
                 if !response.is_empty() {
                     eprintln!("[proxy] CONNECT tunnel->client bytes={}", response.len());
                     stream
@@ -238,12 +294,17 @@ fn handle_connect_tunnel(
                 session_id,
                 &[],
             )?;
-            let response = run_sender_tunnel(
+            let current_poll_timeout = core::cmp::min(
+                poll_timeout_secs.saturating_add((empty_polls as u64).saturating_mul(2)),
+                max_poll_timeout_secs.max(poll_timeout_secs),
+            );
+            let response = send_connect_payload(
                 cfg,
                 target,
+                &mut route_only_session,
                 &payload,
-                Some(poll_timeout_secs),
-                None,
+                current_poll_timeout,
+                false,
             )?;
             if !response.is_empty() {
                 eprintln!(
@@ -284,8 +345,292 @@ fn handle_connect_tunnel(
         session_id,
         &[],
     )?;
-    let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), None)?;
+    if let Some(session) = route_only_session.as_mut() {
+        let _ = session.send(&close_payload, 1);
+    } else {
+        let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), None)?;
+    }
     Ok(())
+}
+
+fn send_connect_payload(
+    cfg: &SenderConfig,
+    target: &str,
+    route_only_session: &mut Option<RouteOnlyTunnelSession>,
+    payload: &[u8],
+    timeout_secs: u64,
+    fallback_on_empty: bool,
+) -> Result<Vec<u8>, String> {
+    if let Some(session) = route_only_session.as_mut() {
+        let response = session.send(payload, timeout_secs)?;
+        if fallback_on_empty && response.is_empty() {
+            eprintln!("[proxy] route-only internal empty response, fallback to sender process");
+            return run_sender_tunnel(cfg, target, payload, Some(timeout_secs), None);
+        }
+        return Ok(response);
+    }
+    run_sender_tunnel(cfg, target, payload, Some(timeout_secs), None)
+}
+
+#[derive(Clone, Deserialize)]
+struct PolicyInfo {
+    policy_id: String,
+    routers: Vec<RouterInfo>,
+}
+
+#[derive(Clone, Deserialize)]
+struct RouterInfo {
+    name: String,
+    bind: String,
+    directory_path: String,
+    storage_path: String,
+}
+
+struct RouteOnlyTunnelSession {
+    policy_id: [u8; 32],
+    routers: Vec<(StoredState, RouterInfo)>,
+    target_host: String,
+    target_ip: IpAddr,
+    target_port: u16,
+    entry_addr: String,
+    listener: TcpListener,
+    return_ip: IpAddr,
+    return_port: u16,
+    rng: ChaCha20Rng,
+}
+
+impl RouteOnlyTunnelSession {
+    fn new(cfg: &SenderConfig, target: &str) -> Result<Self, String> {
+        let json = fs::read_to_string(&cfg.policy_info)
+            .map_err(|err| format!("failed to read {}: {err}", cfg.policy_info))?;
+        let info: PolicyInfo =
+            serde_json::from_str(&json).map_err(|err| format!("invalid policy-info JSON: {err}"))?;
+        if info.routers.is_empty() {
+            return Err("policy-info has no routers".into());
+        }
+        let policy_id = decode_policy_id(&info.policy_id)?;
+        let routers = load_router_states(&info.routers, &policy_id)?;
+        let (host, port) = parse_host_port(target, 443)?;
+        let (target_ip, target_port) = resolve_target_parts(&host, port)?;
+        let entry_addr = env::var("HORNET_PROXY_ENTRY_ADDR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| normalize_entry_addr(&cfg.policy_info, &routers[0].1.bind));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("failed to bind response listener: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set nonblocking listener: {e}"))?;
+        let local = listener
+            .local_addr()
+            .map_err(|e| format!("local_addr response listener: {e}"))?;
+        let return_ip = if let Ok(host) = env::var("HORNET_PROXY_RETURN_HOST") {
+            if !host.trim().is_empty() {
+                IpAddr::V4(parse_ipv4_octets(&host)?)
+            } else {
+                resolve_return_ip(local)?
+            }
+        } else if let Ok(host) = env::var("HORNET_RETURN_HOST") {
+            if !host.trim().is_empty() {
+                IpAddr::V4(parse_ipv4_octets(&host)?)
+            } else {
+                resolve_return_ip(local)?
+            }
+        } else if cfg.policy_info.contains("config/qemu/") {
+            IpAddr::V4([10, 0, 2, 2])
+        } else {
+            resolve_return_ip(local)?
+        };
+        let return_port = local.port();
+        let rng = ChaCha20Rng::seed_from_u64(derive_seed());
+        eprintln!(
+            "[proxy][route-only] cfg entry_addr={} return={:?}:{} target={:?}:{}",
+            entry_addr, return_ip, return_port, target_ip, target_port
+        );
+        Ok(Self {
+            policy_id,
+            routers,
+            target_host: host,
+            target_ip,
+            target_port,
+            entry_addr,
+            listener,
+            return_ip,
+            return_port,
+            rng,
+        })
+    }
+
+    fn send(&mut self, request_payload: &[u8], timeout_secs: u64) -> Result<Vec<u8>, String> {
+        eprintln!(
+            "[proxy][route-only] send req_bytes={} timeout={}s",
+            request_payload.len(),
+            timeout_secs
+        );
+        let hops = self.routers.len();
+        let rmax = hops;
+        let mut keys = Vec::with_capacity(hops);
+        for _ in 0..hops {
+            let mut si = [0u8; 16];
+            self.rng.fill_bytes(&mut si);
+            keys.push(Si(si));
+        }
+        let exp = compute_expiry(600);
+        let mut fses = Vec::with_capacity(hops);
+        for (hop, (state, _route_info)) in self.routers.iter().enumerate() {
+            let segment = if hop == hops - 1 {
+                routing::segment_from_elems(&[RouteElem::ExitTcp {
+                    addr: self.target_ip.clone(),
+                    port: self.target_port,
+                }])
+            } else {
+                let route = select_route(state, &self.policy_id)?;
+                route.segment
+            };
+            let fs = aurora::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
+                .map_err(|err| format!("failed to build FS for hop {}: {err:?}", hop))?;
+            fses.push(fs);
+        }
+        let mut ahdr_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xA55A_A55A);
+        let ahdr = aurora::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut ahdr_rng)
+            .map_err(|err| format!("failed to build AHDR: {err:?}"))?;
+
+        let mut iv = {
+            let mut buf = [0u8; 16];
+            self.rng.fill_bytes(&mut buf);
+            Nonce(buf)
+        };
+        let mut chdr = aurora::packet::chdr::data_header(hops as u8, iv);
+
+        let mut keys_b = Vec::with_capacity(hops);
+        for _ in 0..hops {
+            let mut si = [0u8; 16];
+            self.rng.fill_bytes(&mut si);
+            keys_b.push(Si(si));
+        }
+        let mut fses_b = Vec::with_capacity(hops);
+        for (i, hop_idx) in (0..hops).rev().enumerate() {
+            let segment = if hop_idx == 0 {
+                routing::segment_from_elems(&[RouteElem::NextHop {
+                    addr: self.return_ip.clone(),
+                    port: self.return_port,
+                }])
+            } else {
+                let prev_router = &self.routers[hop_idx - 1].1;
+                let (ip_str, port_str) = prev_router
+                    .bind
+                    .rsplit_once(':')
+                    .ok_or("invalid bind addr")?;
+                let port: u16 = port_str.parse().map_err(|_| "invalid bind port")?;
+                let ip = parse_ipv4_octets(ip_str)?;
+                routing::segment_from_elems(&[RouteElem::NextHop {
+                    addr: IpAddr::V4(ip),
+                    port,
+                }])
+            };
+            let state = &self.routers[hop_idx].0;
+            let fs = aurora::packet::core::create(&state.sv(), &keys_b[i], &segment, exp)
+                .map_err(|err| format!("failed to build Backward FS for hop {}: {err:?}", i))?;
+            fses_b.push(fs);
+        }
+        let mut ahdr_b_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xBEEF_BEEF);
+        let ahdr_b = aurora::packet::ahdr::create_ahdr(&keys_b, &fses_b, rmax, &mut ahdr_b_rng)
+            .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
+
+        let canonical_bytes = canonical_target_leaf(&self.target_host)?;
+        let mut full_payload = Vec::new();
+        full_payload.extend_from_slice(&(ahdr_b.bytes.len() as u32).to_le_bytes());
+        full_payload.extend_from_slice(&ahdr_b.bytes);
+        full_payload.extend_from_slice(request_payload);
+
+        let mut encrypted_tail = Vec::new();
+        encrypted_tail.extend_from_slice(&canonical_bytes);
+        encrypted_tail.extend_from_slice(&full_payload);
+        aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
+            .map_err(|err| format!("failed to build payload: {err:?}"))?;
+        let frame = encode_frame(&chdr, &ahdr.bytes, &encrypted_tail)?;
+        send_frame_to(&self.entry_addr, &frame)?;
+        eprintln!("[proxy][route-only] frame sent bytes={}", frame.len());
+
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        loop {
+            if Instant::now() >= deadline {
+                eprintln!("[proxy][route-only] response timeout");
+                return Ok(Vec::new());
+            }
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .map_err(|e| format!("set read timeout response stream: {e}"))?;
+                    let frame = match read_backward_frame(&mut stream) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let mut payload = frame.payload;
+                    let mut iv_resp = frame.specific;
+                    let mut keys_b_reversed = keys_b.clone();
+                    keys_b_reversed.reverse();
+                    if aurora::source::decrypt_backward_payload(
+                        &keys_b_reversed,
+                        &mut iv_resp,
+                        &mut payload,
+                    )
+                    .is_ok()
+                    {
+                        eprintln!(
+                            "[proxy][route-only] response decrypted bytes={}",
+                            payload.len()
+                        );
+                        return Ok(payload);
+                    }
+                    eprintln!("[proxy][route-only] stale/unmatched response ignored");
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(e) => return Err(format!("accept response failed: {e}")),
+            }
+        }
+    }
+}
+
+struct BackwardFrame {
+    specific: [u8; 16],
+    payload: Vec<u8>,
+}
+
+fn read_backward_frame(stream: &mut TcpStream) -> Result<BackwardFrame, String> {
+    let mut header = [0u8; 4];
+    stream
+        .read_exact(&mut header)
+        .map_err(|e| format!("read backward header failed: {e}"))?;
+    let mut specific = [0u8; 16];
+    stream
+        .read_exact(&mut specific)
+        .map_err(|e| format!("read backward specific failed: {e}"))?;
+    let mut len_buf = [0u8; 4];
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|e| format!("read backward ahdr len failed: {e}"))?;
+    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|e| format!("read backward payload len failed: {e}"))?;
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    if ahdr_len > 0 {
+        let mut ahdr = vec![0u8; ahdr_len];
+        stream
+            .read_exact(&mut ahdr)
+            .map_err(|e| format!("read backward ahdr failed: {e}"))?;
+    }
+    let mut payload = vec![0u8; payload_len];
+    if payload_len > 0 {
+        stream
+            .read_exact(&mut payload)
+            .map_err(|e| format!("read backward payload failed: {e}"))?;
+    }
+    Ok(BackwardFrame { specific, payload })
 }
 
 fn run_sender_tunnel(
@@ -341,6 +686,10 @@ fn run_sender(
         if !entry_addr.is_empty() {
             cmd.env("HORNET_ENTRY_ADDR", entry_addr);
         }
+    } else if cfg.policy_info.contains("config/qemu/") {
+        let entry_addr = default_entry_addr_for_policy(&cfg.policy_info)
+            .unwrap_or_else(|| "127.0.0.1:17011".to_string());
+        cmd.env("HORNET_ENTRY_ADDR", entry_addr);
     }
     if !cfg.route_only.is_empty() {
         cmd.env("HORNET_ROUTE_ONLY", &cfg.route_only);
@@ -405,6 +754,180 @@ fn allocate_response_bind() -> Result<String, String> {
         .local_addr()
         .map_err(|e| format!("read response bind port: {e}"))?;
     Ok(addr.to_string())
+}
+
+fn decode_policy_id(hex: &str) -> Result<[u8; 32], String> {
+    let bytes = decode_hex(hex).map_err(|err| format!("invalid policy_id hex: {err}"))?;
+    if bytes.len() != 32 {
+        return Err("policy_id must be 32 bytes".into());
+    }
+    let mut id = [0u8; 32];
+    id.copy_from_slice(&bytes);
+    Ok(id)
+}
+
+fn load_router_states(
+    routers: &[RouterInfo],
+    policy_id: &[u8; 32],
+) -> Result<Vec<(StoredState, RouterInfo)>, String> {
+    let mut out = Vec::new();
+    for info in routers {
+        let data = fs::read(&info.storage_path)
+            .map_err(|err| format!("failed to read {}: {err}", info.storage_path))?;
+        let state: StoredState =
+            serde_json::from_slice(&data).map_err(|err| format!("invalid state JSON: {err}"))?;
+        if select_route(&state, policy_id).is_err() {
+            return Err(format!(
+                "state {} has no route for policy",
+                info.storage_path
+            ));
+        }
+        out.push((state, info.clone()));
+    }
+    Ok(out)
+}
+
+fn select_route(state: &StoredState, policy_id: &[u8; 32]) -> Result<RouteAnnouncement, String> {
+    state
+        .routes()
+        .into_iter()
+        .find(|route| &route.policy_id == policy_id)
+        .ok_or_else(|| "no route for policy".into())
+}
+
+fn resolve_target_parts(hostname: &str, port: u16) -> Result<(IpAddr, u16), String> {
+    use std::net::ToSocketAddrs;
+
+    let mut addrs = (hostname, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("failed to resolve {hostname}:{port}: {e}"))?;
+    let addr = addrs
+        .next()
+        .ok_or_else(|| format!("no suitable address found for {hostname}:{port}"))?;
+    match addr {
+        std::net::SocketAddr::V4(v4) => Ok((IpAddr::V4(v4.ip().octets()), v4.port())),
+        std::net::SocketAddr::V6(v6) => Ok((IpAddr::V6(v6.ip().octets()), v6.port())),
+    }
+}
+
+fn normalize_entry_addr(policy_info_path: &str, bind: &str) -> String {
+    if !policy_info_path.contains("config/qemu/") {
+        return bind.to_string();
+    }
+    let Some((ip, port)) = bind.rsplit_once(':') else {
+        return bind.to_string();
+    };
+    if ip == "10.0.2.2" {
+        format!("127.0.0.1:{port}")
+    } else {
+        bind.to_string()
+    }
+}
+
+fn default_entry_addr_for_policy(policy_info_path: &str) -> Option<String> {
+    let json = fs::read_to_string(policy_info_path).ok()?;
+    let info: PolicyInfo = serde_json::from_str(&json).ok()?;
+    let first = info.routers.first()?;
+    Some(normalize_entry_addr(policy_info_path, &first.bind))
+}
+
+fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
+    let addr: std::net::Ipv4Addr = ip.parse().map_err(|_| "invalid ipv4".to_string())?;
+    Ok(addr.octets())
+}
+
+fn resolve_return_ip(local_addr: std::net::SocketAddr) -> Result<IpAddr, String> {
+    if let Ok(host) = env::var("HORNET_PROXY_RETURN_HOST") {
+        if !host.trim().is_empty() {
+            return Ok(IpAddr::V4(parse_ipv4_octets(&host)?));
+        }
+    }
+    if let Ok(host) = env::var("HORNET_RETURN_HOST") {
+        if !host.trim().is_empty() {
+            return Ok(IpAddr::V4(parse_ipv4_octets(&host)?));
+        }
+    }
+    match local_addr {
+        std::net::SocketAddr::V4(v4) => Ok(IpAddr::V4(v4.ip().octets())),
+        std::net::SocketAddr::V6(v6) => Ok(IpAddr::V6(v6.ip().octets())),
+    }
+}
+
+fn target_host_from_ip(ip: &IpAddr, port: u16) -> String {
+    match ip {
+        IpAddr::V4(o) => format!("{}.{}.{}.{}:{}", o[0], o[1], o[2], o[3], port),
+        IpAddr::V6(b) => {
+            let mut parts = Vec::new();
+            for chunk in b.chunks(2) {
+                parts.push(format!("{:x}", u16::from_be_bytes([chunk[0], chunk[1]])));
+            }
+            format!("[{}]:{}", parts.join(":"), port)
+        }
+    }
+}
+
+fn canonical_target_leaf(host_port: &str) -> Result<Vec<u8>, String> {
+    let (host, _port) = parse_host_port(host_port, 443)?;
+    let target = if let Ok(addr) = host.parse::<std::net::Ipv4Addr>() {
+        TargetValue::Ipv4(addr.octets())
+    } else if let Ok(addr) = host.parse::<std::net::Ipv6Addr>() {
+        TargetValue::Ipv6(addr.octets())
+    } else {
+        TargetValue::Domain(host.to_ascii_lowercase().into_bytes())
+    };
+    let entry = blocklist::entry_from_target(&target)
+        .map_err(|err| format!("failed to canonicalise host: {err:?}"))?;
+    Ok(entry.leaf_bytes().as_slice().to_vec())
+}
+
+fn compute_expiry(delta_secs: u64) -> aurora::types::Exp {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let expiry = now.saturating_add(delta_secs);
+    aurora::types::Exp(expiry.min(u32::MAX as u64) as u32)
+}
+
+fn derive_seed() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    (nanos ^ (std::process::id() as u128)) as u64
+}
+
+fn encode_frame(
+    chdr: &aurora::types::Chdr,
+    ahdr: &[u8],
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    if ahdr.len() > u32::MAX as usize || payload.len() > u32::MAX as usize {
+        return Err("frame too large".into());
+    }
+    let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.len() + payload.len());
+    frame.push(0);
+    frame.push(match chdr.typ {
+        PacketType::Setup => 0,
+        PacketType::Data => 1,
+    });
+    frame.push(chdr.hops);
+    frame.push(0);
+    frame.extend_from_slice(&chdr.specific);
+    frame.extend_from_slice(&(ahdr.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(ahdr);
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+fn send_frame_to(addr: &str, frame: &[u8]) -> Result<(), String> {
+    let mut stream =
+        TcpStream::connect(addr).map_err(|err| format!("failed to connect to {}: {err}", addr))?;
+    stream
+        .write_all(frame)
+        .map_err(|err| format!("failed to send frame: {err}"))?;
+    Ok(())
 }
 
 fn build_stream_payload(
