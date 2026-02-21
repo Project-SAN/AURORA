@@ -22,9 +22,6 @@ pub const SYS_FS_OPEN: u64 = 32;
 pub const SYS_FS_READ: u64 = 33;
 pub const SYS_FS_WRITE: u64 = 34;
 pub const SYS_FS_CLOSE: u64 = 35;
-pub const SYS_FS_MKDIR: u64 = 36;
-pub const SYS_FS_OPENDIR: u64 = 37;
-pub const SYS_FS_READDIR: u64 = 38;
 pub const SYS_FS_SYNC: u64 = 39;
 
 pub fn write(fd: u64, buf: &[u8]) -> u64 {

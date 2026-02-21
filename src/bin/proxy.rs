@@ -19,7 +19,6 @@ use rand_core::{RngCore, SeedableRng};
 use serde::Deserialize;
 
 const STREAM_MAGIC: &[u8; 4] = b"HRS1";
-const STREAM_OP_OPEN: u8 = 1;
 const STREAM_OP_DATA: u8 = 2;
 const STREAM_OP_CLOSE: u8 = 3;
 const STREAM_DATA_OFFSET: usize = 64;
@@ -391,9 +390,7 @@ struct PolicyInfo {
 
 #[derive(Clone, Deserialize)]
 struct RouterInfo {
-    name: String,
     bind: String,
-    directory_path: String,
     storage_path: String,
 }
 
@@ -768,15 +765,6 @@ fn run_sender(
     Ok(bytes)
 }
 
-fn allocate_response_bind() -> Result<String, String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("allocate response bind port: {e}"))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| format!("read response bind port: {e}"))?;
-    Ok(addr.to_string())
-}
-
 fn decode_policy_id(hex: &str) -> Result<[u8; 32], String> {
     let bytes = decode_hex(hex).map_err(|err| format!("invalid policy_id hex: {err}"))?;
     if bytes.len() != 32 {
@@ -871,19 +859,6 @@ fn resolve_return_ip(local_addr: std::net::SocketAddr) -> Result<IpAddr, String>
     match local_addr {
         std::net::SocketAddr::V4(v4) => Ok(IpAddr::V4(v4.ip().octets())),
         std::net::SocketAddr::V6(v6) => Ok(IpAddr::V6(v6.ip().octets())),
-    }
-}
-
-fn target_host_from_ip(ip: &IpAddr, port: u16) -> String {
-    match ip {
-        IpAddr::V4(o) => format!("{}.{}.{}.{}:{}", o[0], o[1], o[2], o[3], port),
-        IpAddr::V6(b) => {
-            let mut parts = Vec::new();
-            for chunk in b.chunks(2) {
-                parts.push(format!("{:x}", u16::from_be_bytes([chunk[0], chunk[1]])));
-            }
-            format!("[{}]:{}", parts.join(":"), port)
-        }
     }
 }
 

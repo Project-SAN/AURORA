@@ -1,7 +1,6 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::socket::{ConnectState, TcpListener, TcpSocket};
@@ -25,10 +24,6 @@ impl UserlandPacketListener {
     pub fn listen(port: u16, sv: Sv) -> Result<Self> {
         let listener = TcpListener::listen(port).map_err(|_| Error::Crypto)?;
         Ok(Self { listener, sv })
-    }
-
-    pub fn update_sv(&mut self, sv: Sv) {
-        self.sv = sv;
     }
 }
 
@@ -342,13 +337,4 @@ fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
         }
     }
     Ok(response)
-}
-
-fn format_ipv4(ip: [u8; 4], port: u16) -> String {
-    let mut buf = String::new();
-    let _ = core::fmt::Write::write_fmt(
-        &mut buf,
-        format_args!("{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port),
-    );
-    buf
 }

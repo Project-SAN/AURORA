@@ -9,7 +9,7 @@ use aurora::application::setup::RegistrySetupPipeline;
 use aurora::node::ReplayCache;
 use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
 use aurora::router::io::PacketListener;
-use aurora::router::storage::{RouterStorage, StoredState};
+use aurora::router::storage::RouterStorage;
 use aurora::router::Router;
 use aurora::setup::directory::from_signed_json;
 use aurora::setup::wire;
@@ -760,16 +760,6 @@ fn load_directory_if_configured(
             log_line("directory: signature invalid");
         }
     }
-}
-
-fn persist_state(storage: &dyn RouterStorage, router: &Router, secrets: &RouterSecrets) {
-    let state = StoredState::new(
-        router.policies(),
-        router.routes(),
-        secrets.sv,
-        secrets.node_secret,
-    );
-    let _ = storage.save(&state);
 }
 
 fn log_line(msg: &str) {
