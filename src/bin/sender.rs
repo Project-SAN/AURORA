@@ -1,8 +1,8 @@
-use hornet::router::storage::StoredState;
-use hornet::setup::directory;
-use hornet::setup::wire;
-use hornet::types::{Chdr, PacketType};
-use hornet::utils::decode_hex;
+use aurora::router::storage::StoredState;
+use aurora::setup::directory;
+use aurora::setup::wire;
+use aurora::types::{Chdr, PacketType};
+use aurora::utils::decode_hex;
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 use rand_core::SeedableRng;
@@ -16,14 +16,14 @@ use x25519_dalek::x25519;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("hornet_sender error: {err}");
+        eprintln!("aurora_sender error: {err}");
         std::process::exit(1);
     }
 }
 
 fn run() -> Result<(), String> {
     let mut args = env::args();
-    let program = args.next().unwrap_or_else(|| "hornet_sender".into());
+    let program = args.next().unwrap_or_else(|| "aurora_sender".into());
     let info_path = args
         .next()
         .ok_or_else(|| format!("usage: {program} <policy-info.json>"))?;
@@ -57,7 +57,7 @@ fn send_setup(info_path: &str) -> Result<(), String> {
 
     let exp = compute_expiry(600);
     let mut state =
-        hornet::setup::source_init(&source_secret, &node_pubs, node_pubs.len(), exp, &mut rng);
+        aurora::setup::source_init(&source_secret, &node_pubs, node_pubs.len(), exp, &mut rng);
     directory::apply_to_source_state(&mut state, &announcement);
     let encoded = wire::encode(&state.packet)
         .map_err(|err| format!("failed to encode setup packet: {err:?}"))?;
@@ -94,13 +94,13 @@ fn clamp_scalar(bytes: &mut [u8; 32]) {
     bytes[31] |= 64;
 }
 
-fn compute_expiry(delta_secs: u64) -> hornet::types::Exp {
+fn compute_expiry(delta_secs: u64) -> aurora::types::Exp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let expiry = now.saturating_add(delta_secs);
-    hornet::types::Exp(expiry.min(u32::MAX as u64) as u32)
+    aurora::types::Exp(expiry.min(u32::MAX as u64) as u32)
 }
 
 fn derive_seed() -> u64 {

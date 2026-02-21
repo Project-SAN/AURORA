@@ -1,4 +1,4 @@
-use hornet::routing::{elems_from_segment, segment_from_elems, IpAddr, RouteElem};
+use aurora::routing::{elems_from_segment, segment_from_elems, IpAddr, RouteElem};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 fn main() {

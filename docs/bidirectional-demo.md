@@ -46,7 +46,7 @@ cargo run --bin localnet_prep
 HORNET_ROUTER_BIND=127.0.0.1:7101 \
 HORNET_DIRECTORY_PATH=config/localnet/router-entry.directory.json \
 HORNET_STORAGE_PATH=target/localnet/router-entry-state.json \
-cargo run --bin hornet_router
+cargo run --bin aurora_router
 ```
 
 **Middle Router (ターミナル2):**
@@ -54,7 +54,7 @@ cargo run --bin hornet_router
 HORNET_ROUTER_BIND=127.0.0.1:7102 \
 HORNET_DIRECTORY_PATH=config/localnet/router-middle.directory.json \
 HORNET_STORAGE_PATH=target/localnet/router-middle-state.json \
-cargo run --bin hornet_router
+cargo run --bin aurora_router
 ```
 
 **Exit Router (ターミナル3):**
@@ -62,7 +62,7 @@ cargo run --bin hornet_router
 HORNET_ROUTER_BIND=127.0.0.1:7103 \
 HORNET_DIRECTORY_PATH=config/localnet/router-exit.directory.json \
 HORNET_STORAGE_PATH=target/localnet/router-exit-state.json \
-cargo run --bin hornet_router
+cargo run --bin aurora_router
 ```
 
 各ルータが正常に起動すると、それぞれのポート（7101, 7102, 7103）でリスニングを開始します。
@@ -82,7 +82,7 @@ python3 -m http.server 8080
 データセンダーを実行して、双方向通信をテストします：
 
 ```bash
-cargo run --bin hornet_data_sender config/localnet/policy-info.json 127.0.0.1:8080
+cargo run --bin aurora_data_sender config/localnet/policy-info.json 127.0.0.1:8080
 ```
 
 ### 期待される出力
@@ -117,13 +117,13 @@ Content-Length: 872
 #### ブロックされたドメインへのアクセス（blocked.example）
 
 ```bash
-cargo run --bin hornet_data_sender config/localnet/policy-info.json blocked.example:8080
+cargo run --bin aurora_data_sender config/localnet/policy-info.json blocked.example:8080
 ```
 
 **期待される出力:**
 ```
 Resolved blocked.example:8080 to ...
-hornet_data_sender error: failed to prove payload: PolicyViolation
+aurora_data_sender error: failed to prove payload: PolicyViolation
 ```
 
 ポリシー証明の生成段階で `Error::PolicyViolation` が発生し、パケットは送信されません。
@@ -131,13 +131,13 @@ hornet_data_sender error: failed to prove payload: PolicyViolation
 #### 実際のブロックされたドメインへのアクセス（lp.sejuku.ne）
 
 ```bash
-cargo run --bin hornet_data_sender config/localnet/policy-info.json lp.sejuku.ne:443
+cargo run --bin aurora_data_sender config/localnet/policy-info.json lp.sejuku.ne:443
 ```
 
 **期待される出力:**
 ```
 Resolved lp.sejuku.ne to V4([...]):443
-hornet_data_sender error: failed to prove payload: PolicyViolation
+aurora_data_sender error: failed to prove payload: PolicyViolation
 ```
 
 同様に、ポリシー違反により証明生成が失敗します。
@@ -150,7 +150,7 @@ hornet_data_sender error: failed to prove payload: PolicyViolation
 ブロックリストに含まれないドメインへのアクセスは成功することを確認：
 
 ```bash
-cargo run --bin hornet_data_sender config/localnet/policy-info.json 127.0.0.1:8080
+cargo run --bin aurora_data_sender config/localnet/policy-info.json 127.0.0.1:8080
 ```
 
 正常にHTTPレスポンスを受信できるはずです。
@@ -187,7 +187,7 @@ cargo run --bin hornet_data_sender config/localnet/policy-info.json 127.0.0.1:80
 ### レスポンスが暗号化されたまま
 
 これは修正済みですが、もし発生した場合は：
-- `src/bin/hornet_data_sender.rs` で鍵の順序が正しくreverse()されているか確認
+- `src/bin/aurora_data_sender.rs` で鍵の順序が正しくreverse()されているか確認
 - `src/node/backward.rs` でポリシーカプセルの処理が削除されているか確認
 
 ## ログの確認
@@ -208,7 +208,7 @@ tail -f entry.log  # Entry Routerのログをリアルタイム表示
 
 ```bash
 # すべてのルータを停止
-pkill -f hornet_router
+pkill -f aurora_router
 
 # HTTPサーバーを停止
 pkill -f "python3 -m http.server"

@@ -393,7 +393,7 @@ No TLV is used for these fields; the concatenation order is fixed.
 - `ip_version` is `0x04` or `0x06`.
 - `target_port` is big‑endian.
 
-This definition matches `compute_route_id()` in `src/bin/hornet_data_sender.rs`.
+This definition matches `compute_route_id()` in `src/bin/aurora_data_sender.rs`.
 
 #### Public input encoding (KeyBinding)
 
@@ -515,7 +515,7 @@ Key locations:
 - Forward pipeline: `src/node/forward.rs`
 - Backward pipeline: `src/node/backward.rs`
 - TCP I/O: `src/router/io.rs`
-- Client build: `src/bin/hornet_data_sender.rs`
+- Client build: `src/bin/aurora_data_sender.rs`
 
 ## 10. Known Limitations
 

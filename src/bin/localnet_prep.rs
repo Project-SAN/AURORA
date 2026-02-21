@@ -1,10 +1,10 @@
-use hornet::crypto::zkp::ascon_circuit;
-use hornet::core::policy::{ProofKind, VerifierEntry};
-use hornet::policy::zkboo::ZkBooPolicy;
-use hornet::routing::{self, IpAddr, RouteElem};
-use hornet::setup::directory::{from_signed_json, public_key_from_seed, to_signed_json};
-use hornet::setup::directory::{DirectoryAnnouncement, RouteAnnouncement};
-use hornet::utils::encode_hex;
+use aurora::crypto::zkp::ascon_circuit;
+use aurora::core::policy::{ProofKind, VerifierEntry};
+use aurora::policy::zkboo::ZkBooPolicy;
+use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::setup::directory::{from_signed_json, public_key_from_seed, to_signed_json};
+use aurora::setup::directory::{DirectoryAnnouncement, RouteAnnouncement};
+use aurora::utils::encode_hex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
@@ -273,7 +273,7 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
 
 fn write_directory(
     routers: &[RouterSpec],
-    metadata: &hornet::policy::PolicyMetadata,
+    metadata: &aurora::policy::PolicyMetadata,
     out_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut directory = DirectoryAnnouncement::new();
