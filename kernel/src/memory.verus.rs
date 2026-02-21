@@ -14,6 +14,10 @@ spec fn disjoint(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
     a_end <= b_start || b_end <= a_start
 }
 
+spec fn contained_in(outer_start: u64, outer_end: u64, inner_start: u64, inner_end: u64) -> bool {
+    outer_start <= inner_start && inner_end <= outer_end
+}
+
 #[verifier::bit_vector]
 proof fn lemma_align_up_page(addr: u64)
     requires
@@ -22,6 +26,17 @@ proof fn lemma_align_up_page(addr: u64)
         addr <= ((((addr + PAGE_SIZE - 1) as u64) & !PAGE_OFFSET_MASK) as int),
         ((((addr + PAGE_SIZE - 1) as u64) & !PAGE_OFFSET_MASK) & PAGE_OFFSET_MASK) == 0,
         ((((addr + PAGE_SIZE - 1) as u64) & !PAGE_OFFSET_MASK) as int) <= addr + PAGE_OFFSET_MASK,
+{
+}
+
+#[verifier::bit_vector]
+proof fn lemma_saturating_guard_implies_bounded_sum(start: u64, size: u64, bound: u64)
+    requires
+        bound < u64::MAX,
+        start.saturating_add(size) <= bound,
+    ensures
+        start + size <= bound,
+        start <= start + size,
 {
 }
 
@@ -62,6 +77,83 @@ proof fn lemma_allocation_window_is_sound(
     } else {
         assert(usable_end == max + 1);
     }
+}
+
+proof fn lemma_split_case_partition_is_exhaustive(
+    region_start: u64,
+    region_end: u64,
+    alloc_start: u64,
+    alloc_end: u64,
+)
+    requires
+        region_start <= alloc_start,
+        alloc_start < alloc_end,
+        alloc_end <= region_end,
+    ensures
+        (alloc_start == region_start && alloc_end == region_end)
+        || (alloc_start == region_start && alloc_end < region_end)
+        || (alloc_start > region_start && alloc_end == region_end)
+        || (alloc_start > region_start && alloc_end < region_end),
+{
+    if alloc_start == region_start {
+        if alloc_end == region_end {
+        } else {
+            assert(alloc_end < region_end);
+        }
+    } else {
+        assert(alloc_start > region_start);
+        if alloc_end == region_end {
+        } else {
+            assert(alloc_end < region_end);
+        }
+    }
+}
+
+proof fn lemma_split_prefix_case_sound(
+    region_start: u64,
+    region_end: u64,
+    alloc_end: u64,
+)
+    requires
+        region_start < alloc_end,
+        alloc_end < region_end,
+    ensures
+        contained_in(region_start, region_end, alloc_end, region_end),
+        disjoint(alloc_end, region_end, region_start, alloc_end),
+{
+}
+
+proof fn lemma_split_suffix_case_sound(
+    region_start: u64,
+    region_end: u64,
+    alloc_start: u64,
+)
+    requires
+        region_start < alloc_start,
+        alloc_start < region_end,
+    ensures
+        contained_in(region_start, region_end, region_start, alloc_start),
+        disjoint(region_start, alloc_start, alloc_start, region_end),
+{
+}
+
+proof fn lemma_split_middle_case_sound(
+    region_start: u64,
+    region_end: u64,
+    alloc_start: u64,
+    alloc_end: u64,
+)
+    requires
+        region_start < alloc_start,
+        alloc_start < alloc_end,
+        alloc_end < region_end,
+    ensures
+        contained_in(region_start, region_end, region_start, alloc_start),
+        contained_in(region_start, region_end, alloc_end, region_end),
+        disjoint(region_start, alloc_start, alloc_start, alloc_end),
+        disjoint(alloc_end, region_end, alloc_start, alloc_end),
+        disjoint(region_start, alloc_start, alloc_end, region_end),
+{
 }
 
 proof fn lemma_split_cases_keep_disjointness(

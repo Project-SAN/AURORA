@@ -40,6 +40,8 @@ From repository root:
 - `kernel/src/memory.verus.rs`
   - `align_up` page-alignment and upper-bound properties
   - allocation window soundness used by `alloc_contiguous_range`
+  - split-case exhaustiveness and per-branch safety invariants
+  - saturating-add guard implies bounded plain-sum arithmetic
   - split/coalesce step invariants for non-overlap and merge safety
 
 ## 4) Next files to migrate
