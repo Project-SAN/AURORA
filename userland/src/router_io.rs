@@ -317,7 +317,7 @@ fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
     // Tunnel mode is polled repeatedly by the proxy; return quickly when
     // no bytes are currently available so source-side response listeners
     // do not timeout before this call returns.
-    let idle_limit_empty = 3_000u32;
+    let idle_limit_empty = 300u32;
     let idle_limit_after_data = 80u32;
     loop {
         match socket.recv(&mut buf) {

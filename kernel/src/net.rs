@@ -20,7 +20,7 @@ const RX_POOL_SIZE: usize = 64;
 const TX_POOL_SIZE: usize = 64;
 const EPHEMERAL_START: u16 = 49152;
 const EPHEMERAL_END: u16 = 65534;
-const MAX_SOCKETS: usize = 8;
+const MAX_SOCKETS: usize = 64;
 
 pub fn now() -> Instant {
     let ms = interrupts::ticks().saturating_mul(10);
