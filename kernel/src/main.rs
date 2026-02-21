@@ -273,10 +273,14 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
     let user_ss = (arch::gdt::USER_DATA | 3) as u64;
     let rflags = read_rflags() | (1 << 9);
     // Match C ABI function-entry stack alignment for `_start` (as if entered via `call`).
-    let user_rsp = stack_top.saturating_sub(8);
-    if user_rsp != 0 {
-        core::ptr::write_volatile(user_rsp as *mut u64, 0);
-    }
+    // Only adjust the stack and write the dummy value if there is room; avoid saturating to 0.
+    let user_rsp = if stack_top >= 8 {
+        let aligned_rsp = stack_top - 8;
+        core::ptr::write_volatile(aligned_rsp as *mut u64, 0);
+        aligned_rsp
+    } else {
+        stack_top
+    };
     serial::write(format_args!(
         "enter_user: rip={:#x} cs={:#x} rflags={:#x} rsp={:#x} ss={:#x}\n",
         entry, user_cs, rflags, user_rsp, user_ss
