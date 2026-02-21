@@ -11,9 +11,7 @@ pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_SLEEP: u64 = 4;
 pub const SYS_NET_SOCKET: u64 = 9;
-#[allow(dead_code)]
 pub const SYS_NET_LISTEN: u64 = 10;
-#[allow(dead_code)]
 pub const SYS_NET_ACCEPT: u64 = 11;
 pub const SYS_NET_RECV: u64 = 12;
 pub const SYS_NET_SEND: u64 = 13;
