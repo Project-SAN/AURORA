@@ -13,7 +13,7 @@ use aurora::router::storage::RouterStorage;
 use aurora::router::Router;
 use aurora::setup::directory::from_signed_json;
 use aurora::setup::wire;
-use aurora::types::{self, PacketDirection, PacketType, Result as AuroraResult};
+use aurora::types::{self, PacketDirection, PacketType, Result};
 use aurora::utils::decode_hex;
 
 use crate::fs;
@@ -225,7 +225,7 @@ fn load_config() -> RouterConfig {
     }
 }
 
-fn read_all_any(paths: &[&str]) -> AuroraResult<Vec<u8>> {
+fn read_all_any(paths: &[&str]) -> Result<Vec<u8>> {
     let mut last_err = None;
     for path in paths {
         match read_all(path) {
@@ -236,7 +236,7 @@ fn read_all_any(paths: &[&str]) -> AuroraResult<Vec<u8>> {
     Err(last_err.unwrap_or(types::Error::Crypto))
 }
 
-fn read_all(path: &str) -> AuroraResult<Vec<u8>> {
+fn read_all(path: &str) -> Result<Vec<u8>> {
     let handle = fs::open(path, fs::O_READ).ok_or(types::Error::Crypto)?;
     let mut out = Vec::new();
     let mut buf = [0u8; 512];
@@ -256,7 +256,7 @@ fn read_all(path: &str) -> AuroraResult<Vec<u8>> {
     Ok(out)
 }
 
-fn write_all(path: &str, data: &[u8]) -> AuroraResult<()> {
+fn write_all(path: &str, data: &[u8]) -> Result<()> {
     let handle =
         fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC).ok_or(types::Error::Crypto)?;
     let mut offset = 0usize;
@@ -278,7 +278,7 @@ fn write_all(path: &str, data: &[u8]) -> AuroraResult<()> {
     Ok(())
 }
 
-fn save_config(config: &RouterConfig) -> AuroraResult<()> {
+fn save_config(config: &RouterConfig) -> Result<()> {
     let file = RouterConfigFile {
         listen_port: Some(config.listen_port),
         storage_path: Some(config.storage_path.clone()),
@@ -598,16 +598,16 @@ fn send_kv_str(socket: &crate::socket::TcpSocket, key: &str, value: &str) -> boo
     send_line(socket, &line).is_ok()
 }
 
-fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> AuroraResult<()> {
+fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> Result<()> {
     send_bytes(socket, line.as_bytes())?;
     send_bytes(socket, b"\n")
 }
 
-fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> AuroraResult<()> {
+fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> Result<()> {
     send_bytes(socket, s.as_bytes())
 }
 
-fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> AuroraResult<()> {
+fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> Result<()> {
     let mut offset = 0usize;
     let mut retries = 0u16;
     const MAX_SEND_RETRIES: u16 = 200;
@@ -636,7 +636,7 @@ fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> AuroraResult<()>
     Ok(())
 }
 
-fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> AuroraResult<bool> {
+fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> Result<bool> {
     out.clear();
     let mut buf = [0u8; 64];
     loop {
@@ -783,7 +783,7 @@ fn handle_setup_packet(
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
-) -> AuroraResult<()> {
+) -> Result<()> {
     if packet.chdr.typ != PacketType::Setup {
         return Err(types::Error::Length);
     }
