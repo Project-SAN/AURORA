@@ -1,6 +1,4 @@
-#[allow(unused_imports)]
 use verus_builtin::*;
-#[allow(unused_imports)]
 use verus_builtin_macros::*;
 use vstd::prelude::*;
 

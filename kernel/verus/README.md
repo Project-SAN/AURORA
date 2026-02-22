@@ -37,8 +37,18 @@ From repository root:
   - page-table index bounds (`< 512`) for all levels
   - 2MiB align-down invariants with bit masks
   - page/huge-page offset range checks
+- `kernel/src/memory.verus.rs`
+  - `align_up` page-alignment and upper-bound properties
+  - allocation window soundness used by `alloc_contiguous_range`
+  - abstract `split_result` semantics (`region - alloc`) with branch exhaustiveness
+  - idx-update model (`alloc_idx_update_result`) preserves free-list sorted/disjoint invariants
+  - function-level step spec for `alloc_contiguous_range` branch (`lemma_alloc_contiguous_range_idx_update_spec`)
+  - full first-fit search spec over the whole loop (`first_fit_idx_from`, `lemma_alloc_contiguous_range_first_fit_complete`)
+  - abstract `coalesce_step_result` semantics preserving interval union
+  - split-case exhaustiveness and per-branch safety invariants
+  - saturating-add guard implies bounded plain-sum arithmetic
+  - split/coalesce step invariants for non-overlap and merge safety
 
 ## 4) Next files to migrate
 
-- `kernel/src/memory.rs`: region coalescing and allocator split invariants
 - `kernel/src/user/elf.rs`: parser bounds and segment range validity
