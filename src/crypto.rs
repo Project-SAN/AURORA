@@ -9,3 +9,4 @@ pub mod random;
 pub mod rng;
 pub mod stream;
 pub mod zkp;
+pub mod aegis;
