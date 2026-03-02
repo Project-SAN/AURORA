@@ -19,7 +19,7 @@ const C1: Block = [
     0xdb, 0x3d, 0x18, 0x55, 0x6d, 0xc2, 0x2f, 0xf1, 0x20, 0x11, 0x31, 0x42, 0x73, 0xb5, 0x28, 0xdd,
 ];
 
-const AES_SBOX: [u8; 256] = [
+const SBOX: [u8; 256] = [
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
     0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
     0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
@@ -313,20 +313,20 @@ fn state_update(state: &mut State, m0: Block, m1: Block) {
     let s5 = state[5];
     let s6 = state[6];
     let s7 = state[7];
-    state[0] = aes_round(s7, xor_block(s0, m0));
-    state[1] = aes_round(s0, s1);
-    state[2] = aes_round(s1, s2);
-    state[3] = aes_round(s2, s3);
-    state[4] = aes_round(s3, xor_block(s4, m1));
-    state[5] = aes_round(s4, s5);
-    state[6] = aes_round(s5, s6);
-    state[7] = aes_round(s6, s7);
+    state[0] = round(s7, xor_block(s0, m0));
+    state[1] = round(s0, s1);
+    state[2] = round(s1, s2);
+    state[3] = round(s2, s3);
+    state[4] = round(s3, xor_block(s4, m1));
+    state[5] = round(s4, s5);
+    state[6] = round(s5, s6);
+    state[7] = round(s6, s7);
 }
 
-fn aes_round(input: Block, round_key: Block) -> Block {
+fn round(input: Block, round_key: Block) -> Block {
     let mut sub = [0u8; 16];
     for i in 0..16 {
-        sub[i] = AES_SBOX[input[i] as usize];
+        sub[i] = SBOX[input[i] as usize];
     }
 
     let shifted = [
@@ -418,11 +418,11 @@ mod tests {
     }
 
     #[test]
-    fn aes_round_matches_spec_vector() {
+    fn round_matches_spec_vector() {
         let input = block("000102030405060708090a0b0c0d0e0f");
         let rk = block("101112131415161718191a1b1c1d1e1f");
         let expected = block("7a7b4e5638782546a8c0477a3b813f43");
-        assert_eq!(aes_round(input, rk), expected);
+        assert_eq!(round(input, rk), expected);
     }
 
     #[test]
