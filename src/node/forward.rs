@@ -74,13 +74,13 @@ pub fn process_data(
         );
     }
 
-    let tail = &mut payload[capsule_len..];
-    onion::remove_layer(&res.s, &mut iv, tail)?;
+    onion::remove_layer_suffix(&res.s, &mut iv, payload, capsule_len)?;
     chdr.specific = iv;
 
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
         if let Some(RouteElem::ExitTcp { addr, port }) = elems.first() {
             let mut exit = ctx.exit.take();
+            let tail = &mut payload[capsule_len..];
             let res = if let Some(exit) = exit.as_deref_mut() {
                 handle_exit(ctx, exit, addr, *port, chdr.hops, tail)
             } else {

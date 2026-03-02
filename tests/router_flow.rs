@@ -90,7 +90,7 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
 
     // Encrypt only the body so the capsule stays in the clear for policy checks.
     let mut iv = nonce.0;
-    aurora::packet::onion::add_layer(&si, &mut iv, &mut payload[capsule_len..])
+    aurora::packet::onion::add_layer_suffix(&si, &mut iv, &mut payload, capsule_len)
         .expect("encrypt body");
     chdr.specific = iv;
 
