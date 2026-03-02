@@ -1,9 +1,11 @@
+use alloc::vec::Vec;
+
 use crate::types::{Ahdr, Chdr, Error, Nonce, Result, Si};
 
 // Build a forward data packet payload per Alg.19:
 // - Input: CHDR (Data), AHDR (forward), random nonce IV0, and plaintext payload.
-// - Apply onion encryption layers with forward keys (last->first) to produce O0 and
-//   update IV in-place to the value carried in CHDR for the first hop.
+// - Apply onion encryption layers with forward keys (last->first) to produce O0.
+// - IV0 is carried in CHDR.specific as the per-packet AEAD nonce.
 // Note: The forward per-hop keys Si must be provided by the caller based on the
 // prior setup. This function does not derive keys from AHDR.
 
@@ -13,13 +15,14 @@ pub fn build(
     _ahdr: &Ahdr,
     keys_f: &[Si],
     iv0: &mut Nonce,
-    payload: &mut [u8],
+    payload: &mut Vec<u8>,
 ) -> Result<()> {
     // CHDR must be a data header
     if !matches!(chdr.typ, crate::types::PacketType::Data) {
         return Err(Error::Length);
     }
-    // Start from the provided IV0 (random nonce) and apply layers from last to first
+    // Start from the provided IV0 (random nonce) and apply layers from last to first.
+    // Onion AEAD mode keeps IV unchanged across layers.
     let mut iv = iv0.0;
     for key in keys_f.iter().rev() {
         crate::packet::onion::add_layer(key, &mut iv, payload)?;
@@ -35,7 +38,7 @@ pub fn build(
 // Place AHDRb into the first data payload buffer.
 // Extract AHDRb from the first data payload buffer.
 // Encrypt a forward payload at the source: apply layers from last to first
-pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut [u8]) -> Result<()> {
+pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()> {
     let mut iv = *iv0;
     for key in keys.iter().rev() {
         crate::packet::onion::add_layer(key, &mut iv, payload)?;
@@ -45,7 +48,7 @@ pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut [u
 }
 
 // Decrypt a backward payload at the source: remove layers from first to last
-pub fn decrypt_backward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut [u8]) -> Result<()> {
+pub fn decrypt_backward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()> {
     let mut iv = *iv0;
     for key in keys {
         crate::packet::onion::remove_layer(key, &mut iv, payload)?;
