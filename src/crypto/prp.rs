@@ -215,3 +215,40 @@ pub fn lioness_decrypt(key_src: &[u8], data: &mut [u8]) {
 
     l_slice.copy_from_slice(&l);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{prp_dec, prp_dec_bytes, prp_enc, prp_enc_bytes};
+    use alloc::vec;
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::{RngCore, SeedableRng};
+
+    #[test]
+    fn prp_block_roundtrip_randomized() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0xA570_A55A);
+        for _ in 0..256 {
+            let mut key = [0u8; 16];
+            let mut block = [0u8; 16];
+            rng.fill_bytes(&mut key);
+            rng.fill_bytes(&mut block);
+            let orig = block;
+            prp_enc(&key, &mut block);
+            prp_dec(&key, &mut block);
+            assert_eq!(block, orig);
+        }
+    }
+
+    #[test]
+    fn prp_bytes_roundtrip_multiple_blocks() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0x1A2B_3C4D);
+        let mut key = [0u8; 16];
+        rng.fill_bytes(&mut key);
+        let mut data = vec![0u8; 16 * 12];
+        rng.fill_bytes(&mut data);
+        let orig = data.clone();
+        prp_enc_bytes(&key, &mut data);
+        assert_ne!(data, orig);
+        prp_dec_bytes(&key, &mut data);
+        assert_eq!(data, orig);
+    }
+}
