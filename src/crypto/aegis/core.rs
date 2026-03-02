@@ -110,6 +110,51 @@ pub fn decrypt_detached(
     Ok(msg)
 }
 
+/// Apply AEGIS-128L-derived keystream directly to `buf` in-place.
+///
+/// This is a stream-only helper for CTR-like internal use: no tag is produced
+/// and no heap allocation is performed.
+pub fn apply_keystream_in_place(
+    key: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    buf: &mut [u8],
+) {
+    if buf.is_empty() {
+        return;
+    }
+    let mut state = init(*key, *nonce);
+    let zero = [0u8; 16];
+    let mut offset = 0usize;
+
+    while offset + 32 <= buf.len() {
+        let (z0, z1) = z_blocks(&state);
+        for (dst, src) in buf[offset..offset + 16].iter_mut().zip(z0.iter()) {
+            *dst ^= *src;
+        }
+        for (dst, src) in buf[offset + 16..offset + 32].iter_mut().zip(z1.iter()) {
+            *dst ^= *src;
+        }
+        state_update(&mut state, zero, zero);
+        offset += 32;
+    }
+
+    if offset < buf.len() {
+        let (z0, z1) = z_blocks(&state);
+        let rem = buf.len() - offset;
+        let first = rem.min(16);
+        for (dst, src) in buf[offset..offset + first].iter_mut().zip(z0.iter()) {
+            *dst ^= *src;
+        }
+        if rem > 16 {
+            let tail = rem - 16;
+            for (dst, src) in buf[offset + 16..offset + 16 + tail].iter_mut().zip(z1.iter()) {
+                *dst ^= *src;
+            }
+        }
+        state_update(&mut state, zero, zero);
+    }
+}
+
 fn init(key: Block, nonce: Block) -> State {
     let key_nonce = xor_block(key, nonce);
     let mut state = [
