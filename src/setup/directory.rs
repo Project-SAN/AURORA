@@ -190,22 +190,10 @@ impl RouteMessage {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RouteElemMessage {
-    NextHop4 {
-        ip: String,
-        port: u16,
-    },
-    NextHop6 {
-        ip: String,
-        port: u16,
-    },
-    ExitTcp4 {
-        ip: String,
-        port: u16,
-    },
-    ExitTcp6 {
-        ip: String,
-        port: u16,
-    },
+    NextHop4 { ip: String, port: u16 },
+    NextHop6 { ip: String, port: u16 },
+    ExitTcp4 { ip: String, port: u16 },
+    ExitTcp6 { ip: String, port: u16 },
 }
 
 impl RouteElemMessage {

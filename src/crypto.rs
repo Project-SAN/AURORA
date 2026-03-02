@@ -1,5 +1,5 @@
+pub mod aegis;
 pub mod ascon;
-pub mod ctr;
 pub mod dh;
 pub mod kdf;
 pub mod mac;
@@ -7,6 +7,4 @@ pub mod prg;
 pub mod prp;
 pub mod random;
 pub mod rng;
-pub mod stream;
 pub mod zkp;
-pub mod aegis;

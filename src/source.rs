@@ -38,7 +38,11 @@ pub fn build(
 // Place AHDRb into the first data payload buffer.
 // Extract AHDRb from the first data payload buffer.
 // Encrypt a forward payload at the source: apply layers from last to first
-pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()> {
+pub fn encrypt_forward_payload(
+    keys: &[Si],
+    iv0: &mut [u8; 16],
+    payload: &mut Vec<u8>,
+) -> Result<()> {
     let mut iv = *iv0;
     for key in keys.iter().rev() {
         crate::packet::onion::add_layer(key, &mut iv, payload)?;
@@ -48,7 +52,11 @@ pub fn encrypt_forward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut Ve
 }
 
 // Decrypt a backward payload at the source: remove layers from first to last
-pub fn decrypt_backward_payload(keys: &[Si], iv0: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()> {
+pub fn decrypt_backward_payload(
+    keys: &[Si],
+    iv0: &mut [u8; 16],
+    payload: &mut Vec<u8>,
+) -> Result<()> {
     let mut iv = *iv0;
     for key in keys {
         crate::packet::onion::remove_layer(key, &mut iv, payload)?;

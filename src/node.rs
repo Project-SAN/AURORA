@@ -10,8 +10,8 @@ use crate::policy::{PolicyId, PolicyRole};
 use crate::sphinx::*;
 use crate::types::{Chdr, Result, RoutingSegment, Sv};
 use alloc::collections::BTreeMap;
-pub use exit::ExitTransport;
 pub use exit::ExitMode;
+pub use exit::ExitTransport;
 
 pub trait ReplayFilter {
     fn insert(&mut self, tag: [u8; TAU_TAG_BYTES]) -> bool;

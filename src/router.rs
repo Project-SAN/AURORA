@@ -6,9 +6,9 @@ use crate::node::PolicyRuntime;
 use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::setup::pipeline::SetupPipeline;
-use crate::types::{Ahdr, Chdr, Result};
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
+use crate::types::{Ahdr, Chdr, Result};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

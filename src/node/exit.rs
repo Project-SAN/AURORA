@@ -13,7 +13,8 @@ pub enum ExitMode {
 }
 
 pub trait ExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, mode: ExitMode, request: &[u8]) -> Result<Vec<u8>>;
+    fn send(&mut self, addr: &IpAddr, port: u16, mode: ExitMode, request: &[u8])
+        -> Result<Vec<u8>>;
 }
 
 #[cfg(feature = "std")]

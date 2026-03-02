@@ -121,10 +121,8 @@ fn handle_connect_tunnel(
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
     let session_id = fresh_session_id()?;
-    let internal_route_only = env::var("HORNET_PROXY_INTERNAL_ROUTE_ONLY")
-        .ok()
-        .as_deref()
-        == Some("1");
+    let internal_route_only =
+        env::var("HORNET_PROXY_INTERNAL_ROUTE_ONLY").ok().as_deref() == Some("1");
     let mut route_only_session = if cfg.route_only == "1" && internal_route_only {
         Some(RouteOnlyTunnelSession::new(cfg, target)?)
     } else {
@@ -133,16 +131,10 @@ fn handle_connect_tunnel(
     // External sender mode must tolerate slower backward responses because
     // each sender process has an ephemeral listener; too-short timeouts
     // lose responses irrecoverably.
-    let data_timeout_secs = data_timeout_override.unwrap_or(if route_only_session.is_some() {
-        10
-    } else {
-        20
-    });
-    let poll_timeout_secs = poll_timeout_override.unwrap_or(if route_only_session.is_some() {
-        6
-    } else {
-        12
-    });
+    let data_timeout_secs =
+        data_timeout_override.unwrap_or(if route_only_session.is_some() { 10 } else { 20 });
+    let poll_timeout_secs =
+        poll_timeout_override.unwrap_or(if route_only_session.is_some() { 6 } else { 12 });
     let max_poll_timeout_secs =
         max_poll_timeout_override.unwrap_or(if route_only_session.is_some() { 20 } else { 30 });
 
@@ -362,10 +354,8 @@ fn send_connect_payload(
             .ok()
             .as_deref()
             == Some("1");
-        let allow_internal_fallback = env::var("HORNET_PROXY_INTERNAL_FALLBACK")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let allow_internal_fallback =
+            env::var("HORNET_PROXY_INTERNAL_FALLBACK").ok().as_deref() == Some("1");
         if fallback_on_empty && response.is_empty() && degrade_on_empty {
             eprintln!(
                 "[proxy] route-only internal empty response, switching to sender mode for remaining tunnel"
@@ -411,8 +401,8 @@ impl RouteOnlyTunnelSession {
     fn new(cfg: &SenderConfig, target: &str) -> Result<Self, String> {
         let json = fs::read_to_string(&cfg.policy_info)
             .map_err(|err| format!("failed to read {}: {err}", cfg.policy_info))?;
-        let info: PolicyInfo =
-            serde_json::from_str(&json).map_err(|err| format!("invalid policy-info JSON: {err}"))?;
+        let info: PolicyInfo = serde_json::from_str(&json)
+            .map_err(|err| format!("invalid policy-info JSON: {err}"))?;
         if info.routers.is_empty() {
             return Err("policy-info has no routers".into());
         }
@@ -610,7 +600,6 @@ impl RouteOnlyTunnelSession {
             }
         }
     }
-
 }
 
 struct BackwardFrame {
@@ -983,7 +972,11 @@ fn normalize_http_request_for_policy(
     build_fixed_http_get(host, cfg.payload_len, cfg.host_offset)
 }
 
-fn build_fixed_http_get(host: &str, payload_len: usize, host_offset: usize) -> Result<Vec<u8>, String> {
+fn build_fixed_http_get(
+    host: &str,
+    payload_len: usize,
+    host_offset: usize,
+) -> Result<Vec<u8>, String> {
     let prefix = b"GET / HTTP/1.1\r\n";
     if host_offset != prefix.len() {
         return Err(format!(
@@ -1013,7 +1006,9 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
-        let n = stream.read(&mut tmp).map_err(|e| format!("read request: {e}"))?;
+        let n = stream
+            .read(&mut tmp)
+            .map_err(|e| format!("read request: {e}"))?;
         if n == 0 {
             break;
         }
@@ -1036,7 +1031,9 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
     let content_len = parse_content_length(&buf[..header_end])?;
     let wanted = header_end + content_len;
     while buf.len() < wanted {
-        let n = stream.read(&mut tmp).map_err(|e| format!("read body: {e}"))?;
+        let n = stream
+            .read(&mut tmp)
+            .map_err(|e| format!("read body: {e}"))?;
         if n == 0 {
             break;
         }
@@ -1119,9 +1116,7 @@ fn parse_content_length(headers: &[u8]) -> Result<usize, String> {
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| i + 4)
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
 }
 
 fn write_temp_request(req: &[u8]) -> Result<PathBuf, String> {

@@ -34,8 +34,14 @@ pub fn build_consistency_circuit(secret_len_bytes: usize, payload_len_bytes: usi
         secret_len_bytes,
         &secret_bits,
     );
-    let payload_hash_bits =
-        mix_fold_bits(&mut circuit, zero, one, MIX_DOMAIN_PAYLOAD, payload_len_bytes, &payload_bits);
+    let payload_hash_bits = mix_fold_bits(
+        &mut circuit,
+        zero,
+        one,
+        MIX_DOMAIN_PAYLOAD,
+        payload_len_bytes,
+        &payload_bits,
+    );
 
     let mut outputs = Vec::with_capacity(hkey_bits.len() + payload_hash_bits.len());
     outputs.extend_from_slice(&hkey_bits);
@@ -44,14 +50,24 @@ pub fn build_consistency_circuit(secret_len_bytes: usize, payload_len_bytes: usi
     circuit
 }
 
-pub fn build_policy_allow_host_circuit(payload_len_bytes: usize, host_header_offset: usize, host: &str) -> Circuit {
+pub fn build_policy_allow_host_circuit(
+    payload_len_bytes: usize,
+    host_header_offset: usize,
+    host: &str,
+) -> Circuit {
     let n_inputs = payload_len_bytes * 8;
     let mut circuit = Circuit::new(n_inputs);
     let (zero, one) = const_zero_one(&mut circuit);
 
     let payload_bits = input_bits(0, payload_len_bytes);
-    let payload_hash_bits =
-        mix_fold_bits(&mut circuit, zero, one, MIX_DOMAIN_PAYLOAD, payload_len_bytes, &payload_bits);
+    let payload_hash_bits = mix_fold_bits(
+        &mut circuit,
+        zero,
+        one,
+        MIX_DOMAIN_PAYLOAD,
+        payload_len_bytes,
+        &payload_bits,
+    );
 
     let expected = {
         let mut bytes = Vec::new();
@@ -158,13 +174,25 @@ fn ascon_round(circuit: &mut Circuit, state: &mut [Word; 5], rc: u8) {
     state[2] = not_word(circuit, &state[2]);
 
     // linear diffusion
-    let d0 = xor_word(circuit, &rotr_word(&state[0], 19), &rotr_word(&state[0], 28));
+    let d0 = xor_word(
+        circuit,
+        &rotr_word(&state[0], 19),
+        &rotr_word(&state[0], 28),
+    );
     state[0] = xor_word(circuit, &state[0], &d0);
-    let d1 = xor_word(circuit, &rotr_word(&state[1], 61), &rotr_word(&state[1], 39));
+    let d1 = xor_word(
+        circuit,
+        &rotr_word(&state[1], 61),
+        &rotr_word(&state[1], 39),
+    );
     state[1] = xor_word(circuit, &state[1], &d1);
     let d2 = xor_word(circuit, &rotr_word(&state[2], 1), &rotr_word(&state[2], 6));
     state[2] = xor_word(circuit, &state[2], &d2);
-    let d3 = xor_word(circuit, &rotr_word(&state[3], 10), &rotr_word(&state[3], 17));
+    let d3 = xor_word(
+        circuit,
+        &rotr_word(&state[3], 10),
+        &rotr_word(&state[3], 17),
+    );
     state[3] = xor_word(circuit, &state[3], &d3);
     let d4 = xor_word(circuit, &rotr_word(&state[4], 7), &rotr_word(&state[4], 41));
     state[4] = xor_word(circuit, &state[4], &d4);
@@ -268,22 +296,23 @@ mod tests {
         let out_bits = circuit.eval(&input).expect("eval");
         let out_bytes = bits_to_bytes_lsb(&out_bits);
         assert_eq!(out_bytes.len(), 32);
-        assert_eq!(out_bytes.as_slice(), mix_fold(MIX_DOMAIN_KEYBIND, &secret).as_slice());
+        assert_eq!(
+            out_bytes.as_slice(),
+            mix_fold(MIX_DOMAIN_KEYBIND, &secret).as_slice()
+        );
     }
 
     #[test]
     fn policy_circuit_outputs_payload_hash_and_allow_bit() {
         let host = "example.com";
-        let payload = (
-            b"GET / HTTP/1.1\r\n\
+        let payload = (b"GET / HTTP/1.1\r\n\
 Host: example.com\r\n\
 User-Agent: hornet\r\n\
 Accept: */*\r\n\
 X: ab\r\n\
 Connection: close\r\n\
-\r\n"
-        )
-        .to_vec();
+\r\n")
+            .to_vec();
         assert_eq!(payload.len(), 96);
         let circuit = build_policy_allow_host_circuit(96, 16, host);
         let input = bytes_to_bits_lsb(&payload);

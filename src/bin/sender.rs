@@ -1,8 +1,8 @@
+use aurora::policy::{PolicyId, POLICY_ID_TLV};
 use aurora::router::storage::StoredState;
 use aurora::setup::wire;
 use aurora::types::{Chdr, PacketType};
 use aurora::utils::decode_hex;
-use aurora::policy::{PolicyId, POLICY_ID_TLV};
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 use rand_core::SeedableRng;
