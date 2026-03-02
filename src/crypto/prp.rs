@@ -1,10 +1,11 @@
+use crate::crypto::aegis::core::{encrypt_detached, TAG128_LEN};
 use crate::crypto::kdf::{hop_key, OpLabel};
 use crate::crypto::{mac, prg};
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
-use aes::Aes128;
 use alloc::vec;
 
 extern crate alloc;
+
+const FEISTEL_ROUNDS: usize = 8;
 
 fn derive_prp_key(key_src: &[u8]) -> [u8; 16] {
     let mut k = [0u8; 16];
@@ -14,31 +15,33 @@ fn derive_prp_key(key_src: &[u8]) -> [u8; 16] {
 
 pub fn prp_enc(key_src: &[u8], block: &mut [u8; 16]) {
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new((&k).into());
-    cipher.encrypt_block(block.into());
+    feistel_encrypt_block(&k, block);
 }
 
 pub fn prp_dec(key_src: &[u8], block: &mut [u8; 16]) {
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new((&k).into());
-    cipher.decrypt_block(block.into());
+    feistel_decrypt_block(&k, block);
 }
 
 pub fn prp_enc_bytes(key_src: &[u8], data: &mut [u8]) {
     assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new((&k).into());
     for chunk in data.chunks_mut(16) {
-        cipher.encrypt_block(chunk.into());
+        let mut block = [0u8; 16];
+        block.copy_from_slice(chunk);
+        feistel_encrypt_block(&k, &mut block);
+        chunk.copy_from_slice(&block);
     }
 }
 
 pub fn prp_dec_bytes(key_src: &[u8], data: &mut [u8]) {
     assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
-    let cipher = Aes128::new((&k).into());
     for chunk in data.chunks_mut(16) {
-        cipher.decrypt_block(chunk.into());
+        let mut block = [0u8; 16];
+        block.copy_from_slice(chunk);
+        feistel_decrypt_block(&k, &mut block);
+        chunk.copy_from_slice(&block);
     }
 }
 
@@ -79,6 +82,60 @@ fn prg_with_tweak(key: &[u8; 16], tweak: &[u8; 16], out: &mut [u8]) {
         *s = key[i] ^ tweak[i];
     }
     prg::prg2(&seed, out);
+}
+
+fn feistel_encrypt_block(key: &[u8; 16], block: &mut [u8; 16]) {
+    let mut l = [0u8; 8];
+    let mut r = [0u8; 8];
+    l.copy_from_slice(&block[..8]);
+    r.copy_from_slice(&block[8..]);
+
+    for round in 0..FEISTEL_ROUNDS {
+        let f = prf_round(key, round as u8, &r);
+        let mut next_r = [0u8; 8];
+        for i in 0..8 {
+            next_r[i] = l[i] ^ f[i];
+        }
+        l = r;
+        r = next_r;
+    }
+
+    block[..8].copy_from_slice(&l);
+    block[8..].copy_from_slice(&r);
+}
+
+fn feistel_decrypt_block(key: &[u8; 16], block: &mut [u8; 16]) {
+    let mut l = [0u8; 8];
+    let mut r = [0u8; 8];
+    l.copy_from_slice(&block[..8]);
+    r.copy_from_slice(&block[8..]);
+
+    for round in (0..FEISTEL_ROUNDS).rev() {
+        let ri = l;
+        let f = prf_round(key, round as u8, &ri);
+        let mut li = [0u8; 8];
+        for i in 0..8 {
+            li[i] = r[i] ^ f[i];
+        }
+        l = li;
+        r = ri;
+    }
+
+    block[..8].copy_from_slice(&l);
+    block[8..].copy_from_slice(&r);
+}
+
+fn prf_round(key: &[u8; 16], round: u8, input: &[u8; 8]) -> [u8; 8] {
+    let mut nonce = [0u8; 16];
+    nonce[0] = round;
+    nonce[1..9].copy_from_slice(input);
+    nonce[9] = 0xA5;
+    let zeros = [0u8; 8];
+    let (stream, _) = encrypt_detached(key, &nonce, b"AURORA-PRP", &zeros, TAG128_LEN)
+        .expect("AEGIS-128L internal call with fixed tag size must succeed");
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&stream[..8]);
+    out
 }
 
 pub fn lioness_encrypt(key_src: &[u8], data: &mut [u8]) {

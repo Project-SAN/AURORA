@@ -18,7 +18,6 @@ regex-policy = ["std", "dep:regex"]
 localnet-debug = []
 
 [dependencies]
-aes = { version = "0.8", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
