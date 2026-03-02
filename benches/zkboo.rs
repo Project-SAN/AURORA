@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use aurora::crypto::zkp::ascon_circuit;
-use aurora::crypto::zkp::{Proof, ProverConfig, VerifierConfig, Engine};
+use aurora::crypto::zkp::{Engine, Proof, ProverConfig, VerifierConfig};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 
@@ -40,21 +40,24 @@ fn bench_zkboo_prove_round_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("zkboo/prove_round_scaling");
     let (circuit, input, output) = payload_hash_fixture_32b();
     for &rounds in ROUND_CASES {
-        group.bench_function(BenchmarkId::from_parameter(format!("rounds{rounds}")), |b| {
-            let mut rng_ = ChaCha20Rng::seed_from_u64(0x88BB_99CC_DDEE_F011 + rounds as u64);
-            b.iter(|| {
-                let proof = Engine
-                    .prove(
-                        &circuit,
-                        black_box(&input),
-                        black_box(&output),
-                        ProverConfig { rounds },
-                        &mut rng_,
-                    )
-                    .expect("prove");
-                black_box(proof);
-            });
-        });
+        group.bench_function(
+            BenchmarkId::from_parameter(format!("rounds{rounds}")),
+            |b| {
+                let mut rng_ = ChaCha20Rng::seed_from_u64(0x88BB_99CC_DDEE_F011 + rounds as u64);
+                b.iter(|| {
+                    let proof = Engine
+                        .prove(
+                            &circuit,
+                            black_box(&input),
+                            black_box(&output),
+                            ProverConfig { rounds },
+                            &mut rng_,
+                        )
+                        .expect("prove");
+                    black_box(proof);
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -67,18 +70,21 @@ fn bench_zkboo_verify_round_scaling(c: &mut Criterion) {
         let proof = Engine
             .prove(&circuit, &input, &output, ProverConfig { rounds }, &mut rng)
             .expect("prove");
-        group.bench_function(BenchmarkId::from_parameter(format!("rounds{rounds}")), |b| {
-            b.iter(|| {
-                Engine
-                    .verify(
-                        &circuit,
-                        black_box(&output),
-                        black_box(&proof),
-                        VerifierConfig { rounds },
-                    )
-                    .expect("verify");
-            });
-        });
+        group.bench_function(
+            BenchmarkId::from_parameter(format!("rounds{rounds}")),
+            |b| {
+                b.iter(|| {
+                    Engine
+                        .verify(
+                            &circuit,
+                            black_box(&output),
+                            black_box(&proof),
+                            VerifierConfig { rounds },
+                        )
+                        .expect("verify");
+                });
+            },
+        );
     }
     group.finish();
 }

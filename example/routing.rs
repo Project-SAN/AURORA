@@ -46,12 +46,9 @@ fn main() {
 fn describe_route_elem(elem: &RouteElem) -> String {
     match elem {
         RouteElem::NextHop { addr, port } => format!("NextHop {}:{}", fmt_ip(addr), port),
-        RouteElem::ExitTcp { addr, port } => format!(
-            "ExitTcp {}:{} ({})",
-            fmt_ip(addr),
-            port,
-            "plaintext"
-        ),
+        RouteElem::ExitTcp { addr, port } => {
+            format!("ExitTcp {}:{} ({})", fmt_ip(addr), port, "plaintext")
+        }
     }
 }
 

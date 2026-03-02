@@ -1,5 +1,7 @@
+use aurora::core::policy::{
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH,
+};
 use aurora::core::policy::{PolicyMetadata, ProofKind, VerifierEntry};
-use aurora::core::policy::{encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH};
 use aurora::forward::Forward;
 use aurora::policy::zkboo::ZkBooPolicy;
 use aurora::policy::zkboo::ZkBooProofService;
@@ -389,7 +391,12 @@ fn router_entry_accepts_valid_keybinding_part() {
         policy_id: metadata.policy_id,
         version: aurora::core::policy::POLICY_CAPSULE_VERSION,
         part_count: 1,
-        parts: [part, aurora::policy::ProofPart::default(), aurora::policy::ProofPart::default(), aurora::policy::ProofPart::default()],
+        parts: [
+            part,
+            aurora::policy::ProofPart::default(),
+            aurora::policy::ProofPart::default(),
+            aurora::policy::ProofPart::default(),
+        ],
     };
 
     let body_plain = b"opaque-body".to_vec();
@@ -397,7 +404,9 @@ fn router_entry_accepts_valid_keybinding_part() {
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-entry");
-    router.install_policies(&[metadata.clone()]).expect("install policy");
+    router
+        .install_policies(&[metadata.clone()])
+        .expect("install policy");
 
     let time = FixedTime(now);
     let mut forward = RecordingForward::default();

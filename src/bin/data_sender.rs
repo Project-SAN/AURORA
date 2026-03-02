@@ -1,14 +1,14 @@
 use aurora::core::policy::ProofKind;
 use aurora::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_SEQUENCE,
-    EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH,
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PAYLOAD_HASH,
+    EXT_TAG_PCD_KEY_HASH, EXT_TAG_SEQUENCE,
 };
 use aurora::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use aurora::crypto::zkp::Circuit;
 use aurora::crypto::zkp::{Engine, Proof, VerifierConfig};
-use aurora::policy::PolicyMetadata;
 use aurora::policy::blocklist;
 use aurora::policy::zkboo::ZkBooProofService;
+use aurora::policy::PolicyMetadata;
 use aurora::policy::TargetValue;
 use aurora::router::storage::StoredState;
 use aurora::routing::{self, IpAddr, RouteElem};
@@ -239,7 +239,9 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
         if local_verify_enabled {
             local_verify_part(
                 "KeyBinding",
-                kb_verify.as_ref().ok_or_else(|| "missing kb circuit".to_string())?,
+                kb_verify
+                    .as_ref()
+                    .ok_or_else(|| "missing kb circuit".to_string())?,
                 &kb,
                 &bits_from_bytes_lsb_first(&hkey),
             )?;
@@ -549,7 +551,9 @@ fn local_verify_part(
             circuit,
             expected_outputs,
             &proof,
-            VerifierConfig { rounds: proof.rounds },
+            VerifierConfig {
+                rounds: proof.rounds,
+            },
         )
         .map_err(|err| format!("[local-verify] {label}: verify failed: {err:?}"))?;
     println!(
@@ -826,8 +830,13 @@ struct RouterInfo {
     storage_path: String,
 }
 
-fn load_policy_metadata(routers: &[RouterInfo], policy_id: &[u8; 32]) -> Result<PolicyMetadata, String> {
-    let first = routers.first().ok_or_else(|| "policy-info has no routers".to_string())?;
+fn load_policy_metadata(
+    routers: &[RouterInfo],
+    policy_id: &[u8; 32],
+) -> Result<PolicyMetadata, String> {
+    let first = routers
+        .first()
+        .ok_or_else(|| "policy-info has no routers".to_string())?;
     let body = fs::read_to_string(&first.directory_path)
         .map_err(|err| format!("failed to read directory {}: {err}", first.directory_path))?;
     #[derive(Deserialize)]

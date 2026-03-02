@@ -21,7 +21,11 @@ impl ZkBooCapsuleValidator {
         }
     }
 
-    fn load_circuit(&self, metadata: &PolicyMetadata, kind: ProofKind) -> Result<Option<Arc<Circuit>>> {
+    fn load_circuit(
+        &self,
+        metadata: &PolicyMetadata,
+        kind: ProofKind,
+    ) -> Result<Option<Arc<Circuit>>> {
         let Some(entry) = metadata
             .verifiers
             .iter()
@@ -140,7 +144,9 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
                 let kb = capsule
                     .part(ProofKind::KeyBinding)
                     .ok_or(Error::PolicyViolation)?;
-                let pol = capsule.part(ProofKind::Policy).ok_or(Error::PolicyViolation)?;
+                let pol = capsule
+                    .part(ProofKind::Policy)
+                    .ok_or(Error::PolicyViolation)?;
                 let kb_hkey = find_32(kb.aux(), EXT_TAG_PCD_KEY_HASH)?;
                 let pol_payload = find_32(pol.aux(), EXT_TAG_PAYLOAD_HASH)?;
                 if kb_hkey != cons_hkey || pol_payload != cons_payload {
@@ -190,11 +196,11 @@ fn bytes_to_bits_lsb_first(bytes: &[u8; 32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::core::policy::{encode_extensions_into, CapsuleExtensionRef, EXT_TAG_SEQUENCE};
     use crate::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND};
     use crate::crypto::zkp::ascon_circuit;
     use crate::policy::zkboo::ZkBooProofService;
+    use alloc::vec;
 
     #[test]
     fn keybinding_proof_validates_for_entry_role() {

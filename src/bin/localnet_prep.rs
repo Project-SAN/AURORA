@@ -1,5 +1,5 @@
-use aurora::crypto::zkp::ascon_circuit;
 use aurora::core::policy::{ProofKind, VerifierEntry};
+use aurora::crypto::zkp::ascon_circuit;
 use aurora::policy::zkboo::ZkBooPolicy;
 use aurora::routing::{self, IpAddr, RouteElem};
 use aurora::setup::directory::{from_signed_json, public_key_from_seed, to_signed_json};

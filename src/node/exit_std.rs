@@ -1,5 +1,5 @@
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as FmtWrite;
 use std::io::{Read, Write};
@@ -26,7 +26,13 @@ impl TcpExitTransport {
 }
 
 impl ExitTransport for TcpExitTransport {
-    fn send(&mut self, addr: &IpAddr, port: u16, _mode: ExitMode, request: &[u8]) -> Result<Vec<u8>> {
+    fn send(
+        &mut self,
+        addr: &IpAddr,
+        port: u16,
+        _mode: ExitMode,
+        request: &[u8],
+    ) -> Result<Vec<u8>> {
         // _mode is reserved for future TLS support; currently only plain TCP is implemented.
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
@@ -61,9 +67,7 @@ impl TcpExitTransport {
                     stream
                         .set_read_timeout(Some(Duration::from_millis(60)))
                         .ok();
-                    stream
-                        .set_write_timeout(Some(Duration::from_secs(2)))
-                        .ok();
+                    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
                     self.sessions.insert(key, stream);
                 }
                 Ok(Vec::new())
@@ -75,12 +79,13 @@ impl TcpExitTransport {
                     stream
                         .set_read_timeout(Some(Duration::from_millis(60)))
                         .ok();
-                    stream
-                        .set_write_timeout(Some(Duration::from_secs(2)))
-                        .ok();
+                    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
                     self.sessions.insert(frame.session_id, stream);
                 }
-                let stream = self.sessions.get_mut(&frame.session_id).ok_or(Error::Crypto)?;
+                let stream = self
+                    .sessions
+                    .get_mut(&frame.session_id)
+                    .ok_or(Error::Crypto)?;
                 stream.write_all(frame.data).map_err(|_| Error::Crypto)?;
                 stream.flush().map_err(|_| Error::Crypto)?;
                 read_available(stream)

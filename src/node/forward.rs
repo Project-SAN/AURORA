@@ -140,7 +140,11 @@ fn handle_exit(
 
     // Infer exit mode from the destination port: port 443 is the standard
     // HTTPS/TLS port and is treated as TLS-enabled traffic.
-    let mode = if port == 443 { ExitMode::Tls } else { ExitMode::Tcp };
+    let mode = if port == 443 {
+        ExitMode::Tls
+    } else {
+        ExitMode::Tcp
+    };
 
     let mut response = exit.send(addr, port, mode, request)?;
     // Empty exit responses are normal in tunnel/poll operation.
