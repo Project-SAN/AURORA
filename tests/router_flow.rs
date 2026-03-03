@@ -9,7 +9,7 @@ use aurora::router::Router;
 use aurora::routing::{self, IpAddr, RouteElem};
 use aurora::time::TimeProvider;
 use aurora::types::{
-    Ahdr, Chdr, Exp, Nonce, PacketDirection, Result, RoutingSegment, Si, Sv, R_MAX,
+    Ahdr, Chdr, Exp, HopCount, Nonce, PacketDirection, Result, RoutingSegment, Si, Sv, R_MAX,
 };
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
@@ -83,7 +83,7 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
     let mut iv0 = [0u8; 16];
     rng.fill_bytes(&mut iv0);
     let nonce = Nonce(iv0);
-    let mut chdr = aurora::packet::chdr::data_header(1, nonce);
+    let mut chdr = aurora::packet::chdr::data_header(HopCount::new(1).expect("hop"), nonce);
 
     let capsule_len = capsule.len();
     let mut payload = capsule;
@@ -94,7 +94,7 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
     let mut iv = nonce.0;
     aurora::packet::onion::add_layer_suffix(&si, &mut iv, &mut payload, capsule_len)
         .expect("encrypt body");
-    chdr.specific = iv;
+    chdr.set_nonce(Nonce(iv)).expect("set nonce");
 
     PacketFixture {
         sv,

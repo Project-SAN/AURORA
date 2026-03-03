@@ -5,13 +5,13 @@ use aurora::node::exit::TcpExitTransport;
 use aurora::node::NoReplay;
 use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
 use aurora::router::config::RouterConfig;
-use aurora::router::io::{IncomingPacket, PacketListener, TcpForward, TcpPacketListener};
+use aurora::router::io::{PacketListener, TcpForward, TcpPacketListener};
 use aurora::router::runtime::RouterRuntime;
 use aurora::router::storage::{FileRouterStorage, RouterStorage, StoredState};
 use aurora::router::sync::client::{sync_once, DirectoryClient};
 use aurora::router::Router;
 use aurora::setup::wire;
-use aurora::types::{self, PacketType, Result as AuroraResult};
+use aurora::types::{self, Packet, Result as AuroraResult};
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
@@ -49,64 +49,81 @@ fn main() {
     let mut exit = TcpExitTransport::new();
     loop {
         match listener.next() {
-            Ok(Some(mut packet)) => {
-                if packet.chdr.packet_type() == PacketType::Setup {
-                    if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
-                        eprintln!("setup packet handling failed: {:?}", err);
-                    }
-                    continue;
-                }
-                let mut runtime = RouterRuntime::new(
-                    &mut router,
-                    &time,
-                    move || Box::new(TcpForward::new()),
-                    || Box::new(NoReplay),
-                );
-                if let Err(err) = runtime.process_with_exit(
-                    packet.direction,
-                    packet.sv,
-                    &mut packet.chdr,
-                    &mut packet.ahdr,
-                    &mut packet.payload,
-                    Some(&mut exit),
-                ) {
-                    eprintln!("packet processing failed: {:?}", err);
-                    eprintln!(
-                        "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
-                        packet.direction,
-                        packet.chdr.hops().get(),
-                        packet.ahdr.bytes.len(),
-                        packet.payload.len()
-                    );
-                } else {
-                    if let Ok(actions) = runtime.handle_async_violations() {
-                        for req in actions.resend {
-                            if let Some(seq) = req.sequence {
-                                eprintln!(
-                                    "async violation: resend requested for policy {:x?} seq {}",
-                                    req.policy_id, seq
-                                );
-                            } else {
-                                eprintln!(
-                                    "async violation: resend requested for policy {:x?}",
-                                    req.policy_id
-                                );
-                            }
-                            if let Ok(addr) = control_target() {
-                                let msg = ControlMessage::ResendRequest {
-                                    policy_id: req.policy_id,
-                                    sequence: req.sequence,
-                                };
-                                let bytes = control::encode(&msg);
-                                let _ = TcpStream::connect(addr)
-                                    .and_then(|mut stream| stream.write_all(&bytes));
-                            }
+            Ok(Some(packet)) => {
+                let aurora::router::io::IncomingPacket {
+                    direction,
+                    sv,
+                    packet,
+                } = packet;
+                match packet {
+                    Packet::Setup(setup_frame) => {
+                        if let Err(err) =
+                            handle_setup_packet(setup_frame, &mut router, &storage, &secrets)
+                        {
+                            eprintln!("setup packet handling failed: {:?}", err);
                         }
-                        if !actions.blocked.is_empty() {
+                        continue;
+                    }
+                    Packet::Data(data_packet_raw) => {
+                        let data_packet = match data_packet_raw.validate_lengths() {
+                            Ok(pkt) => pkt,
+                            Err(err) => {
+                                eprintln!("packet processing failed: {:?}", err);
+                                continue;
+                            }
+                        };
+                        let (mut chdr, mut ahdr, mut payload) = data_packet.into_wire_parts();
+                        let mut runtime = RouterRuntime::new(
+                            &mut router,
+                            &time,
+                            move || Box::new(TcpForward::new()),
+                            || Box::new(NoReplay),
+                        );
+                        if let Err(err) = runtime.process_with_exit(
+                            direction,
+                            sv,
+                            &mut chdr,
+                            &mut ahdr,
+                            &mut payload,
+                            Some(&mut exit),
+                        ) {
+                            eprintln!("packet processing failed: {:?}", err);
                             eprintln!(
-                                "async violations exceeded threshold; blocked policies: {:?}",
-                                actions.blocked
+                                "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
+                                direction,
+                                chdr.hops().get(),
+                                ahdr.bytes.len(),
+                                payload.len()
                             );
+                        } else if let Ok(actions) = runtime.handle_async_violations() {
+                            for req in actions.resend {
+                                if let Some(seq) = req.sequence {
+                                    eprintln!(
+                                        "async violation: resend requested for policy {:x?} seq {}",
+                                        req.policy_id, seq
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "async violation: resend requested for policy {:x?}",
+                                        req.policy_id
+                                    );
+                                }
+                                if let Ok(addr) = control_target() {
+                                    let msg = ControlMessage::ResendRequest {
+                                        policy_id: req.policy_id,
+                                        sequence: req.sequence,
+                                    };
+                                    let bytes = control::encode(&msg);
+                                    let _ = TcpStream::connect(addr)
+                                        .and_then(|mut stream| stream.write_all(&bytes));
+                                }
+                            }
+                            if !actions.blocked.is_empty() {
+                                eprintln!(
+                                    "async violations exceeded threshold; blocked policies: {:?}",
+                                    actions.blocked
+                                );
+                            }
                         }
                     }
                 }
@@ -176,15 +193,13 @@ fn persist_state(storage: &dyn RouterStorage, router: &Router, secrets: &RouterS
 }
 
 fn handle_setup_packet(
-    packet: IncomingPacket,
+    packet: types::SetupPacket,
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
 ) -> AuroraResult<()> {
-    if packet.chdr.packet_type() != PacketType::Setup {
-        return Err(types::Error::Length);
-    }
-    let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
+    let chdr: types::Chdr = packet.chdr.into();
+    let mut setup_packet = wire::decode(chdr, &packet.ahdr.bytes, &packet.payload)?;
     let policy_id = select_policy_id(&setup_packet).or_else(|| {
         let routes = router.routes();
         (routes.len() == 1).then_some(routes[0].policy_id)
@@ -258,7 +273,7 @@ mod tests {
     use super::*;
     use aurora::policy::PolicyMetadata;
     use aurora::setup::directory::RouteAnnouncement;
-    use aurora::types::{self, PacketDirection, RoutingSegment};
+    use aurora::types::{self, RoutingSegment};
     use rand_chacha::ChaCha20Rng;
     use rand_core::RngCore;
     use rand_core::SeedableRng;
@@ -324,11 +339,8 @@ mod tests {
             aurora::setup::source_init(&x_s, &[node_pub], 1, types::Exp(1234), &mut rng);
         state.attach_policy_metadata(&policy);
         let encoded = wire::encode(&state.packet).expect("encode setup");
-        let chdr = state.packet.chdr;
-        let incoming = IncomingPacket {
-            direction: PacketDirection::Forward,
-            sv: types::Sv([0x33; 16]),
-            chdr,
+        let incoming = types::SetupPacket {
+            chdr: types::SetupChdr::try_from(state.packet.chdr).expect("setup chdr"),
             ahdr: types::Ahdr {
                 bytes: encoded.header,
             },

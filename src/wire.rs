@@ -13,7 +13,7 @@
 //! The caller is responsible for validating semantic sizes (e.g., AHDR length
 //! matches r*c) at a higher layer. This module only enforces basic length checks.
 
-use crate::types::{Ahdr, Chdr, Error, PacketType, PayloadLen, Result};
+use crate::types::{Ahdr, Chdr, Error, Packet, PacketType, PayloadLen, Result};
 use alloc::vec::Vec;
 
 pub const WIRE_VERSION: u8 = 1;
@@ -60,7 +60,7 @@ pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
+pub fn decode(buf: &[u8]) -> Result<Packet> {
     if buf.len() < FIXED_HDR_LEN {
         return Err(Error::Length);
     }
@@ -85,7 +85,7 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
         bytes: Vec::from(ah_bytes),
     };
     let payload = Vec::from(pl_bytes);
-    Ok((chdr, ahdr, payload))
+    Ok(Packet::from_wire_parts(chdr, ahdr, payload))
 }
 
 #[cfg(test)]
@@ -101,7 +101,8 @@ mod tests {
         };
         let payload = alloc::vec![0x55; 80];
         let encoded = encode(&ch, &ah, &payload);
-        let (ch2, ah2, pl2) = decode(&encoded).expect("decode");
+        let packet = decode(&encoded).expect("decode");
+        let (ch2, ah2, pl2) = packet.into_wire_parts();
         assert!(matches!(ch2.packet_type(), PacketType::Data));
         assert_eq!(ch2.hops().get(), 3);
         assert_eq!(ch2.nonce(), ch.nonce());

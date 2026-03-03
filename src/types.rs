@@ -357,6 +357,40 @@ pub struct SetupChdr {
     pub exp: Exp,
 }
 
+impl From<DataChdr> for Chdr {
+    fn from(value: DataChdr) -> Self {
+        Chdr::data(value.hops, value.nonce)
+    }
+}
+
+impl From<SetupChdr> for Chdr {
+    fn from(value: SetupChdr) -> Self {
+        Chdr::setup(value.hops, value.exp)
+    }
+}
+
+impl TryFrom<Chdr> for DataChdr {
+    type Error = Error;
+
+    fn try_from(value: Chdr) -> Result<Self> {
+        match value {
+            Chdr::Data { hops, nonce } => Ok(Self { hops, nonce }),
+            Chdr::Setup { .. } => Err(Error::Length),
+        }
+    }
+}
+
+impl TryFrom<Chdr> for SetupChdr {
+    type Error = Error;
+
+    fn try_from(value: Chdr) -> Result<Self> {
+        match value {
+            Chdr::Setup { hops, exp } => Ok(Self { hops, exp }),
+            Chdr::Data { .. } => Err(Error::Length),
+        }
+    }
+}
+
 pub struct Raw;
 pub struct LenChecked;
 pub struct PolicyChecked;
@@ -387,11 +421,59 @@ impl<S> DataPacket<S> {
             _state: PhantomData,
         }
     }
+
+    pub fn into_wire_parts(self) -> (Chdr, Ahdr, Vec<u8>) {
+        (self.chdr.into(), self.ahdr, self.payload)
+    }
+}
+
+impl DataPacket<Raw> {
+    pub fn validate_lengths(self) -> Result<DataPacket<LenChecked>> {
+        AhdrLen::new(self.ahdr.bytes.len())?;
+        let _ = PayloadLen::new(self.payload.len())?;
+        Ok(self.transition())
+    }
+}
+
+impl DataPacket<LenChecked> {
+    pub fn mark_policy_checked(self) -> DataPacket<PolicyChecked> {
+        self.transition()
+    }
+}
+
+impl DataPacket<PolicyChecked> {
+    pub fn mark_onion_processed(self) -> DataPacket<OnionProcessed> {
+        self.transition()
+    }
 }
 
 pub enum Packet {
     Setup(SetupPacket),
     Data(DataPacket<Raw>),
+}
+
+impl Packet {
+    pub fn from_wire_parts(chdr: Chdr, ahdr: Ahdr, payload: Vec<u8>) -> Self {
+        match chdr {
+            Chdr::Setup { hops, exp } => Self::Setup(SetupPacket {
+                chdr: SetupChdr { hops, exp },
+                ahdr,
+                payload,
+            }),
+            Chdr::Data { hops, nonce } => Self::Data(DataPacket::new(
+                DataChdr { hops, nonce },
+                ahdr,
+                payload,
+            )),
+        }
+    }
+
+    pub fn into_wire_parts(self) -> (Chdr, Ahdr, Vec<u8>) {
+        match self {
+            Self::Setup(pkt) => (pkt.chdr.into(), pkt.ahdr, pkt.payload),
+            Self::Data(pkt) => pkt.into_wire_parts(),
+        }
+    }
 }
 
 pub struct SetupPacket {
