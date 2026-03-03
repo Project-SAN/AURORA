@@ -1,4 +1,4 @@
-use crate::types::{Error, Result};
+use crate::types::{Error, PolicyPartCount, Result};
 
 use super::metadata::PolicyId;
 
@@ -145,10 +145,7 @@ impl PolicyCapsule {
             return Err(Error::Length);
         }
         let _reserved = payload[37];
-        let part_count = payload[38] as usize;
-        if part_count > MAX_PARTS {
-            return Err(Error::Length);
-        }
+        let part_count = PolicyPartCount::new(payload[38])?;
         let mut cursor = HEADER_LEN;
         let mut parts = [
             ProofPart::default(),
@@ -156,7 +153,7 @@ impl PolicyCapsule {
             ProofPart::default(),
             ProofPart::default(),
         ];
-        for slot in parts.iter_mut().take(part_count) {
+        for slot in parts.iter_mut().take(part_count.get()) {
             if cursor + PART_HEADER_LEN > payload.len() {
                 return Err(Error::Length);
             }
@@ -190,14 +187,14 @@ impl PolicyCapsule {
         let capsule = PolicyCapsule {
             policy_id,
             version,
-            part_count: part_count as u8,
+            part_count: part_count.as_u8(),
             parts,
         };
         Ok((capsule, cursor))
     }
 
     pub fn encoded_len(&self) -> Result<usize> {
-        let part_count = self.part_count.min(MAX_PARTS as u8) as usize;
+        let part_count = PolicyPartCount::new(self.part_count)?.get();
         let mut total = HEADER_LEN;
         for part in self.parts[..part_count].iter() {
             total = total
@@ -221,7 +218,8 @@ impl PolicyCapsule {
     }
 
     pub fn encode_into(&self, out: &mut [u8]) -> Result<usize> {
-        let part_count = self.part_count.min(MAX_PARTS as u8) as usize;
+        let part_count = PolicyPartCount::new(self.part_count)?;
+        let part_count_len = part_count.get();
         let needed = self.encoded_len()?;
         if out.len() < needed {
             return Err(Error::Length);
@@ -238,9 +236,9 @@ impl PolicyCapsule {
         cursor += 1;
         out[cursor] = 0u8;
         cursor += 1;
-        out[cursor] = part_count as u8;
+        out[cursor] = part_count.as_u8();
         cursor += 1;
-        for part in self.parts[..part_count].iter() {
+        for part in self.parts[..part_count_len].iter() {
             let proof_len: u32 = part.proof.len().try_into().map_err(|_| Error::Length)?;
             let aux_len: u32 = part.aux.len().try_into().map_err(|_| Error::Length)?;
             out[cursor] = part.kind as u8;
@@ -258,7 +256,8 @@ impl PolicyCapsule {
     }
 
     pub fn part(&self, kind: ProofKind) -> Option<&ProofPart> {
-        self.parts[..(self.part_count as usize)]
+        let count = PolicyPartCount::new(self.part_count).ok()?.get();
+        self.parts[..count]
             .iter()
             .find(|part| part.kind == kind)
     }

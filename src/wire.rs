@@ -13,7 +13,7 @@
 //! The caller is responsible for validating semantic sizes (e.g., AHDR length
 //! matches r*c) at a higher layer. This module only enforces basic length checks.
 
-use crate::types::{Ahdr, Chdr, Error, PacketType, Result};
+use crate::types::{Ahdr, Chdr, Error, PacketType, PayloadLen, Result};
 use alloc::vec::Vec;
 
 pub const WIRE_VERSION: u8 = 1;
@@ -72,8 +72,8 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
     let _reserved = buf[3];
     let mut specific = [0u8; 16];
     specific.copy_from_slice(&buf[4..20]);
-    let ah_len = read_be_u32(&buf[20..24]) as usize;
-    let pl_len = read_be_u32(&buf[24..28]) as usize;
+    let ah_len = PayloadLen::from(read_be_u32(&buf[20..24])).get();
+    let pl_len = PayloadLen::from(read_be_u32(&buf[24..28])).get();
     let need = FIXED_HDR_LEN + ah_len + pl_len;
     if buf.len() < need {
         return Err(Error::Length);

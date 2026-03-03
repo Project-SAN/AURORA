@@ -60,6 +60,13 @@ impl HopCount {
     pub const fn get(self) -> u8 {
         self.0
     }
+
+    pub fn from_usize(value: usize) -> Result<Self> {
+        if value > u8::MAX as usize {
+            return Err(Error::Length);
+        }
+        Self::new(value as u8)
+    }
 }
 
 impl TryFrom<u8> for HopCount {
@@ -67,6 +74,14 @@ impl TryFrom<u8> for HopCount {
 
     fn try_from(value: u8) -> Result<Self> {
         Self::new(value)
+    }
+}
+
+impl TryFrom<usize> for HopCount {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        Self::from_usize(value)
     }
 }
 
@@ -88,6 +103,13 @@ impl RMax {
     pub const fn get(self) -> usize {
         self.0 as usize
     }
+
+    pub fn from_usize(value: usize) -> Result<Self> {
+        if value > u8::MAX as usize {
+            return Err(Error::Length);
+        }
+        Self::new(value as u8)
+    }
 }
 
 impl TryFrom<u8> for RMax {
@@ -95,6 +117,14 @@ impl TryFrom<u8> for RMax {
 
     fn try_from(value: u8) -> Result<Self> {
         Self::new(value)
+    }
+}
+
+impl TryFrom<usize> for RMax {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        Self::from_usize(value)
     }
 }
 
@@ -113,9 +143,122 @@ impl Stage {
     pub const fn get(self) -> usize {
         self.0 as usize
     }
+
+    pub fn from_usize(value: usize) -> Result<Self> {
+        if value > u8::MAX as usize {
+            return Err(Error::Length);
+        }
+        Self::new(value as u8)
+    }
 }
 
 impl TryFrom<u8> for Stage {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<usize> for Stage {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        Self::from_usize(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AhdrLen(usize);
+
+impl AhdrLen {
+    pub const MIN: usize = C_BLOCK;
+    pub const MAX: usize = 2 * R_MAX * C_BLOCK;
+
+    pub fn new(bytes: usize) -> Result<Self> {
+        if !(Self::MIN..=Self::MAX).contains(&bytes) || bytes % C_BLOCK != 0 {
+            return Err(Error::Length);
+        }
+        Ok(Self(bytes))
+    }
+
+    pub const fn get(self) -> usize {
+        self.0
+    }
+
+    pub const fn blocks(self) -> usize {
+        self.0 / C_BLOCK
+    }
+}
+
+impl TryFrom<usize> for AhdrLen {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PayloadLen(u32);
+
+impl PayloadLen {
+    pub fn new(bytes: usize) -> Result<Self> {
+        let value = u32::try_from(bytes).map_err(|_| Error::Length)?;
+        Ok(Self(value))
+    }
+
+    pub const fn from_u32(bytes: u32) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn get(self) -> usize {
+        self.0 as usize
+    }
+
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<usize> for PayloadLen {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self> {
+        Self::new(value)
+    }
+}
+
+impl From<u32> for PayloadLen {
+    fn from(value: u32) -> Self {
+        Self::from_u32(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PolicyPartCount(u8);
+
+impl PolicyPartCount {
+    pub const MAX: u8 = 4;
+
+    pub fn new(value: u8) -> Result<Self> {
+        if value <= Self::MAX {
+            Ok(Self(value))
+        } else {
+            Err(Error::Length)
+        }
+    }
+
+    pub const fn get(self) -> usize {
+        self.0 as usize
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for PolicyPartCount {
     type Error = Error;
 
     fn try_from(value: u8) -> Result<Self> {
