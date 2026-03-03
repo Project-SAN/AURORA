@@ -498,7 +498,10 @@ impl RouteOnlyTunnelSession {
             self.rng.fill_bytes(&mut buf);
             Nonce(buf)
         };
-        let mut chdr = aurora::packet::chdr::data_header(hops as u8, iv);
+        let mut chdr = aurora::packet::chdr::data_header(
+            aurora::types::HopCount::new(hops as u8).map_err(|_| "invalid hop count")?,
+            iv,
+        );
 
         let mut keys_b = Vec::with_capacity(hops);
         for _ in 0..hops {
@@ -890,15 +893,16 @@ fn encode_frame(
     if ahdr.len() > u32::MAX as usize || payload.len() > u32::MAX as usize {
         return Err("frame too large".into());
     }
+    let (typ, hops, specific) = chdr.to_raw_parts();
     let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.len() + payload.len());
     frame.push(0);
-    frame.push(match chdr.typ {
+    frame.push(match typ {
         PacketType::Setup => 0,
         PacketType::Data => 1,
     });
-    frame.push(chdr.hops);
+    frame.push(hops);
     frame.push(0);
-    frame.extend_from_slice(&chdr.specific);
+    frame.extend_from_slice(&specific);
     frame.extend_from_slice(&(ahdr.len() as u32).to_le_bytes());
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(ahdr);

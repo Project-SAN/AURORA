@@ -131,7 +131,7 @@ impl Forward for TcpForward {
 mod tests {
     use super::*;
     use crate::routing::{self, IpAddr as RouteIp, RouteElem};
-    use crate::types::{PacketType, Sv};
+    use crate::types::{HopCount, Nonce, Sv};
     use std::io::Cursor;
 
     #[test]
@@ -152,12 +152,7 @@ mod tests {
 
     #[test]
     fn encode_then_decode_roundtrip() {
-        let mut chdr = Chdr {
-            typ: PacketType::Data,
-            hops: 1,
-            specific: [0u8; 16],
-        };
-        chdr.specific[0] = 0xAA;
+        let chdr = Chdr::data(HopCount::new(1).expect("hop"), Nonce([0xAA; 16]));
         let ahdr = Ahdr {
             bytes: vec![0xBB, 0xCC],
         };
@@ -166,7 +161,7 @@ mod tests {
         let mut cursor = Cursor::new(frame);
         let incoming = read_incoming_packet(&mut cursor, Sv([0x11; 16])).expect("decode");
         assert_eq!(incoming.direction, PacketDirection::Forward);
-        assert_eq!(incoming.chdr.hops, 1);
+        assert_eq!(incoming.chdr.hops().get(), 1);
         assert_eq!(incoming.ahdr.bytes, ahdr.bytes);
         assert_eq!(incoming.payload, payload);
     }

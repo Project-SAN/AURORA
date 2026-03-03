@@ -76,7 +76,8 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     send_frame(&entry_addr, &frame)?;
     println!(
         "送信完了: {} へ setup フレーム ({:?} hops)",
-        entry_addr, state.packet.chdr.hops
+        entry_addr,
+        state.packet.chdr.hops().get()
     );
     Ok(())
 }
@@ -137,15 +138,16 @@ fn encode_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, S
     if header.len() > u32::MAX as usize || payload.len() > u32::MAX as usize {
         return Err("setup frame too large".into());
     }
+    let (typ, hops, specific) = chdr.to_raw_parts();
     let mut frame = Vec::with_capacity(4 + 16 + 8 + header.len() + payload.len());
     frame.push(0); // direction = forward
-    frame.push(match chdr.typ {
+    frame.push(match typ {
         PacketType::Setup => 0,
         PacketType::Data => 1,
     });
-    frame.push(chdr.hops);
+    frame.push(hops);
     frame.push(0);
-    frame.extend_from_slice(&chdr.specific);
+    frame.extend_from_slice(&specific);
     frame.extend_from_slice(&(header.len() as u32).to_le_bytes());
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(header);

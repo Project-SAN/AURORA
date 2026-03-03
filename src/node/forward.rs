@@ -1,13 +1,13 @@
 use alloc::vec::Vec;
 
-use crate::{crypto::prg, node::exit::ExitMode, types::PacketType};
+use crate::{crypto::prg, node::exit::ExitMode};
 use crate::{
     node::NodeCtx,
     packet::{ahdr::proc_ahdr, onion},
     policy::PolicyCapsule,
     routing::{self, RouteElem},
     sphinx::derive_tau_tag,
-    types::{Ahdr, Chdr, Error, Exp, RoutingSegment, Sv},
+    types::{Ahdr, Chdr, Error, Exp, Nonce, RoutingSegment, Sv},
 };
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -61,10 +61,10 @@ pub fn process_data(
 
     use crate::types::PacketDirection;
 
-    let mut iv = chdr.specific;
+    let mut iv = chdr.nonce().ok_or(Error::Length)?.0;
     if capsule_len >= payload.len() {
         // nothing beyond the capsule to decrypt for the next hop
-        chdr.specific = iv;
+        chdr.set_nonce(Nonce(iv))?;
         return ctx.forward.send(
             &res.r,
             chdr,
@@ -75,14 +75,14 @@ pub fn process_data(
     }
 
     onion::remove_layer_suffix(&res.s, &mut iv, payload, capsule_len)?;
-    chdr.specific = iv;
+    chdr.set_nonce(Nonce(iv))?;
 
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
         if let Some(RouteElem::ExitTcp { addr, port }) = elems.first() {
             let mut exit = ctx.exit.take();
             let tail = &mut payload[capsule_len..];
             let res = if let Some(exit) = exit.as_deref_mut() {
-                handle_exit(ctx, exit, addr, *port, chdr.hops, tail)
+                handle_exit(ctx, exit, addr, *port, chdr.hops(), tail)
             } else {
                 Err(Error::NotImplemented)
             };
@@ -116,7 +116,7 @@ fn handle_exit(
     exit: &mut dyn crate::node::ExitTransport,
     addr: &crate::routing::IpAddr,
     port: u16,
-    hops: u8,
+    hops: crate::types::HopCount,
     tail: &mut [u8],
 ) -> Result<()> {
     let canonical_len = leaf_len(tail)?;
@@ -155,11 +155,7 @@ fn handle_exit(
     }
 
     let mut ahdr_b = Ahdr { bytes: ahdr_bytes };
-    let mut chdr_b = Chdr {
-        typ: PacketType::Data,
-        hops,
-        specific: derive_exit_iv(ctx, &ahdr_b),
-    };
+    let mut chdr_b = Chdr::data(hops, Nonce(derive_exit_iv(ctx, &ahdr_b)));
 
     crate::node::backward::process_data(ctx, &mut chdr_b, &mut ahdr_b, &mut response)
 }

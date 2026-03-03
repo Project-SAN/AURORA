@@ -46,12 +46,13 @@ fn read_be_u32(b: &[u8]) -> u32 {
 pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
     let ah_len = ahdr.bytes.len();
     let pl_len = payload.len();
+    let (typ, hops, specific) = chdr.to_raw_parts();
     let mut out = Vec::with_capacity(FIXED_HDR_LEN + ah_len + pl_len);
     out.push(WIRE_VERSION);
-    out.push(pkt_type_to_u8(chdr.typ));
-    out.push(chdr.hops);
+    out.push(pkt_type_to_u8(typ));
+    out.push(hops);
     out.push(0u8); // reserved
-    out.extend_from_slice(&chdr.specific);
+    out.extend_from_slice(&specific);
     out.extend_from_slice(&be_u32(ah_len as u32));
     out.extend_from_slice(&be_u32(pl_len as u32));
     out.extend_from_slice(&ahdr.bytes);
@@ -79,11 +80,7 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
     }
     let ah_bytes = &buf[FIXED_HDR_LEN..FIXED_HDR_LEN + ah_len];
     let pl_bytes = &buf[FIXED_HDR_LEN + ah_len..need];
-    let chdr = Chdr {
-        typ,
-        hops,
-        specific,
-    };
+    let chdr = Chdr::from_raw_parts(typ, hops, specific)?;
     let ahdr = Ahdr {
         bytes: Vec::from(ah_bytes),
     };
@@ -94,24 +91,20 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Nonce;
+    use crate::types::{HopCount, Nonce, PacketType};
 
     #[test]
     fn roundtrip_data_packet() {
-        let ch = Chdr {
-            typ: PacketType::Data,
-            hops: 3,
-            specific: Nonce([1u8; 16]).0,
-        };
+        let ch = Chdr::data(HopCount::new(3).expect("hop"), Nonce([1u8; 16]));
         let ah = Ahdr {
             bytes: alloc::vec![0xAA; 96],
         };
         let payload = alloc::vec![0x55; 80];
         let encoded = encode(&ch, &ah, &payload);
         let (ch2, ah2, pl2) = decode(&encoded).expect("decode");
-        assert!(matches!(ch2.typ, PacketType::Data));
-        assert_eq!(ch2.hops, 3);
-        assert_eq!(ch2.specific, ch.specific);
+        assert!(matches!(ch2.packet_type(), PacketType::Data));
+        assert_eq!(ch2.hops().get(), 3);
+        assert_eq!(ch2.nonce(), ch.nonce());
         assert_eq!(ah2.bytes, ah.bytes);
         assert_eq!(pl2, payload);
     }

@@ -50,7 +50,7 @@ fn main() {
     loop {
         match listener.next() {
             Ok(Some(mut packet)) => {
-                if packet.chdr.typ == PacketType::Setup {
+                if packet.chdr.packet_type() == PacketType::Setup {
                     if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
                         eprintln!("setup packet handling failed: {:?}", err);
                     }
@@ -74,7 +74,7 @@ fn main() {
                     eprintln!(
                         "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
                         packet.direction,
-                        packet.chdr.hops,
+                        packet.chdr.hops().get(),
                         packet.ahdr.bytes.len(),
                         packet.payload.len()
                     );
@@ -181,7 +181,7 @@ fn handle_setup_packet(
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
 ) -> AuroraResult<()> {
-    if packet.chdr.typ != PacketType::Setup {
+    if packet.chdr.packet_type() != PacketType::Setup {
         return Err(types::Error::Length);
     }
     let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
@@ -324,11 +324,7 @@ mod tests {
             aurora::setup::source_init(&x_s, &[node_pub], 1, types::Exp(1234), &mut rng);
         state.attach_policy_metadata(&policy);
         let encoded = wire::encode(&state.packet).expect("encode setup");
-        let chdr = types::Chdr {
-            typ: PacketType::Setup,
-            hops: state.packet.chdr.hops,
-            specific: state.packet.chdr.specific,
-        };
+        let chdr = state.packet.chdr;
         let incoming = IncomingPacket {
             direction: PacketDirection::Forward,
             sv: types::Sv([0x33; 16]),

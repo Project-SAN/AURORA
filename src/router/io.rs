@@ -54,12 +54,13 @@ pub fn encode_frame_bytes(
     ahdr: &Ahdr,
     payload: &[u8],
 ) -> Vec<u8> {
+    let (typ, hops, specific) = chdr.to_raw_parts();
     let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.bytes.len() + payload.len());
     frame.push(direction_to_u8(direction));
-    frame.push(packet_type_to_u8(chdr.typ));
-    frame.push(chdr.hops);
+    frame.push(packet_type_to_u8(typ));
+    frame.push(hops);
     frame.push(0);
-    frame.extend_from_slice(&chdr.specific);
+    frame.extend_from_slice(&specific);
     frame.extend_from_slice(&(ahdr.bytes.len() as u32).to_le_bytes());
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(&ahdr.bytes);
@@ -91,11 +92,7 @@ pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<I
     Ok(IncomingPacket {
         direction,
         sv,
-        chdr: Chdr {
-            typ: pkt_type,
-            hops,
-            specific,
-        },
+        chdr: Chdr::from_raw_parts(pkt_type, hops, specific)?,
         ahdr: Ahdr { bytes: ahdr_bytes },
         payload,
     })
