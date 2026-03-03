@@ -161,8 +161,13 @@ mod tests {
         let mut cursor = Cursor::new(frame);
         let incoming = read_incoming_packet(&mut cursor, Sv([0x11; 16])).expect("decode");
         assert_eq!(incoming.direction, PacketDirection::Forward);
-        assert_eq!(incoming.chdr.hops().get(), 1);
-        assert_eq!(incoming.ahdr.bytes, ahdr.bytes);
-        assert_eq!(incoming.payload, payload);
+        match incoming.packet {
+            crate::types::Packet::Data(pkt) => {
+                assert_eq!(pkt.chdr.hops.get(), 1);
+                assert_eq!(pkt.ahdr.bytes, ahdr.bytes);
+                assert_eq!(pkt.payload, payload);
+            }
+            crate::types::Packet::Setup(_) => panic!("expected data packet"),
+        }
     }
 }

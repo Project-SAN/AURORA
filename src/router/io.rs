@@ -1,13 +1,13 @@
-use crate::types::{Ahdr, Chdr, Error, PacketDirection, PacketType, PayloadLen, Result, Sv};
+use crate::types::{
+    Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Result, Sv,
+};
 use alloc::vec;
 use alloc::vec::Vec;
 
 pub struct IncomingPacket {
     pub direction: PacketDirection,
     pub sv: Sv,
-    pub chdr: Chdr,
-    pub ahdr: Ahdr,
-    pub payload: Vec<u8>,
+    pub packet: Packet,
 }
 
 pub trait PacketListener {
@@ -92,9 +92,11 @@ pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<I
     Ok(IncomingPacket {
         direction,
         sv,
-        chdr: Chdr::from_raw_parts(pkt_type, hops, specific)?,
-        ahdr: Ahdr { bytes: ahdr_bytes },
-        payload,
+        packet: Packet::from_wire_parts(
+            Chdr::from_raw_parts(pkt_type, hops, specific)?,
+            Ahdr { bytes: ahdr_bytes },
+            payload,
+        ),
     })
 }
 
