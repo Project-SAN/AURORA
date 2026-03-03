@@ -222,11 +222,7 @@ impl Router {
         use crate::node;
         let policy = self.policy_runtime();
         #[cfg(feature = "localnet-debug")]
-        let orig_chdr = Chdr {
-            typ: chdr.typ,
-            hops: chdr.hops,
-            specific: chdr.specific,
-        };
+        let orig_chdr = *chdr;
         #[cfg(feature = "localnet-debug")]
         let orig_ahdr_bytes = ahdr.bytes.clone();
         #[cfg(feature = "localnet-debug")]

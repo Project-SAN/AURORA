@@ -65,35 +65,32 @@ fn main() {
                         continue;
                     }
                     Packet::Data(data_packet_raw) => {
-                        let data_packet = match data_packet_raw.validate_lengths() {
+                        let mut data_packet = match data_packet_raw.validate_lengths() {
                             Ok(pkt) => pkt,
                             Err(err) => {
                                 eprintln!("packet processing failed: {:?}", err);
                                 continue;
                             }
                         };
-                        let (mut chdr, mut ahdr, mut payload) = data_packet.into_wire_parts();
                         let mut runtime = RouterRuntime::new(
                             &mut router,
                             &time,
                             move || Box::new(TcpForward::new()),
                             || Box::new(NoReplay),
                         );
-                        if let Err(err) = runtime.process_with_exit(
+                        if let Err(err) = runtime.process_data_packet_with_exit(
                             direction,
                             sv,
-                            &mut chdr,
-                            &mut ahdr,
-                            &mut payload,
+                            &mut data_packet,
                             Some(&mut exit),
                         ) {
                             eprintln!("packet processing failed: {:?}", err);
                             eprintln!(
                                 "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
                                 direction,
-                                chdr.hops().get(),
-                                ahdr.bytes.len(),
-                                payload.len()
+                                data_packet.chdr.hops.get(),
+                                data_packet.ahdr.bytes.len(),
+                                data_packet.payload.len()
                             );
                         } else if let Ok(actions) = runtime.handle_async_violations() {
                             for req in actions.resend {
@@ -219,8 +216,7 @@ fn handle_setup_packet(
         &route_segment,
         Some(&mut pipeline),
     )?;
-    let _ = (storage, secrets);
-    eprintln!("setup: persist skipped");
+    persist_state(storage, router, secrets);
     Ok(())
 }
 
