@@ -1,4 +1,4 @@
-use crate::types::{Ahdr, Chdr, Error, PacketDirection, PacketType, Result, Sv};
+use crate::types::{Ahdr, Chdr, Error, PacketDirection, PacketType, PayloadLen, Result, Sv};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -78,9 +78,9 @@ pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<I
     reader.read_exact(&mut specific)?;
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
-    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
+    let ahdr_len = PayloadLen::from_u32(u32::from_le_bytes(len_buf)).get();
     reader.read_exact(&mut len_buf)?;
-    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    let payload_len = PayloadLen::from_u32(u32::from_le_bytes(len_buf)).get();
     let mut ahdr_bytes = vec![0u8; ahdr_len];
     if ahdr_len > 0 {
         reader.read_exact(&mut ahdr_bytes)?;
