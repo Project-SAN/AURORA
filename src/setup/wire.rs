@@ -81,7 +81,7 @@ fn expected_payload_len(rmax: usize) -> usize {
 mod tests {
     use super::*;
     use crate::setup;
-    use crate::types::{Exp, PacketType, RoutingSegment, Sv};
+    use crate::types::{Exp, HopCount, RoutingSegment, Sv};
     use alloc::vec;
     use rand_core::{CryptoRng, RngCore};
 
@@ -153,12 +153,7 @@ mod tests {
         let mut state = setup::source_init(&x_s, &pubs, rmax, exp, &mut rng);
         state.packet.tlvs.push(vec![0xA1, 0x01, 0x02]);
         let encoded = encode(&state.packet).expect("encode");
-        let mut chdr = crate::types::Chdr {
-            typ: PacketType::Setup,
-            hops: state.packet.chdr.hops,
-            specific: state.packet.chdr.specific,
-        };
-        chdr.hops = state.packet.chdr.hops;
+        let chdr = state.packet.chdr;
         let decoded = decode(chdr, &encoded.header, &encoded.payload).expect("decode setup packet");
         assert_eq!(decoded.rmax, state.packet.rmax);
         assert_eq!(decoded.payload.bytes, state.packet.payload.bytes);
@@ -168,17 +163,13 @@ mod tests {
         assert_eq!(decoded.shdr.gamma, state.packet.shdr.gamma);
         assert_eq!(decoded.shdr.hops, state.packet.shdr.hops);
         assert_eq!(decoded.shdr.rmax, state.packet.shdr.rmax);
-        assert_eq!(decoded.chdr.hops, state.packet.chdr.hops);
+        assert_eq!(decoded.chdr.hops(), state.packet.chdr.hops());
     }
 
     #[test]
     fn decode_requires_complete_payload() {
         fn sample_chdr() -> crate::types::Chdr {
-            crate::types::Chdr {
-                typ: PacketType::Setup,
-                hops: 1,
-                specific: [0u8; 16],
-            }
+            crate::types::Chdr::setup(HopCount::new(1).expect("hop"), Exp(0))
         }
         let header = sphinx::Header {
             alpha: [0xAA; sphinx::GROUP_LEN],

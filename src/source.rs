@@ -18,7 +18,7 @@ pub fn build(
     payload: &mut Vec<u8>,
 ) -> Result<()> {
     // CHDR must be a data header
-    if !matches!(chdr.typ, crate::types::PacketType::Data) {
+    if chdr.nonce().is_none() {
         return Err(Error::Length);
     }
     // Start from the provided IV0 (random nonce) and apply layers from last to first.
@@ -29,7 +29,7 @@ pub fn build(
     }
     // Update IV0 (for caller) and CHDR.specific to the final IV carried on the wire
     iv0.0 = iv;
-    chdr.specific = iv;
+    chdr.set_nonce(Nonce(iv))?;
     Ok(())
 }
 
