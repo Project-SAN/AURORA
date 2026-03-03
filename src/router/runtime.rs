@@ -1,5 +1,5 @@
 use crate::router::Router;
-use crate::types::{Ahdr, Chdr, PacketDirection, Result};
+use crate::types::{Ahdr, Chdr, DataPacket, LenChecked, PacketDirection, Result};
 use crate::{
     forward::Forward,
     node::{ExitTransport, ReplayFilter},
@@ -80,6 +80,35 @@ impl<'a> RouterRuntime<'a> {
                 payload,
             ),
         }
+    }
+
+    pub fn process_data_packet(
+        &mut self,
+        direction: PacketDirection,
+        sv: crate::types::Sv,
+        packet: &mut DataPacket<LenChecked>,
+    ) -> Result<()> {
+        self.process_data_packet_with_exit(direction, sv, packet, None)
+    }
+
+    pub fn process_data_packet_with_exit(
+        &mut self,
+        direction: PacketDirection,
+        sv: crate::types::Sv,
+        packet: &mut DataPacket<LenChecked>,
+        exit: Option<&mut dyn ExitTransport>,
+    ) -> Result<()> {
+        let mut chdr: Chdr = packet.chdr.into();
+        self.process_with_exit(
+            direction,
+            sv,
+            &mut chdr,
+            &mut packet.ahdr,
+            &mut packet.payload,
+            exit,
+        )?;
+        packet.chdr = chdr.try_into()?;
+        Ok(())
     }
 
     pub fn drain_pending(&mut self) -> Result<Vec<crate::policy::PolicyCapsule>> {
