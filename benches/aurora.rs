@@ -3,12 +3,14 @@ use criterion::{black_box, criterion_group, criterion_main, BatchSize, Benchmark
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use std::cell::RefCell;
-use std::io::{self, Read, Write};
+use std::collections::HashMap;
+use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
+use std::time::Duration;
 
 const HOP_CASES: &[usize] = &[2, 3, 5, 7];
 const PAYLOAD_CASES: &[usize] = &[256, 1024, 4096, 16 * 1024];
@@ -47,7 +49,7 @@ fn bench_build_data_packet(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let payload = payload_template.clone();
-                        let chdr = aurora::packet::chdr::data_header(hops as u8, iv0);
+                        let chdr = aurora::packet::chdr::data_header(hop_count(hops), iv0);
                         let iv = iv0;
                         (chdr, iv, payload)
                     },
@@ -118,14 +120,13 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
     for &hops in HOP_CASES {
         for &payload_len in PAYLOAD_CASES {
             let fixture = HornetFixture::new(hops, payload_len);
-            let mut router = aurora::router::Router::new();
             let time = FixedTimeProvider { now: fixture.now };
             let id = BenchmarkId::from_parameter(format!("hops{hops}_payload{payload_len}"));
             group.bench_function(id, move |b| {
                 b.iter_batched(
                     || {
                         let chdr =
-                            aurora::packet::chdr::data_header(fixture.hops as u8, fixture.iv0);
+                            aurora::packet::chdr::data_header(hop_count(fixture.hops), fixture.iv0);
                         let ahdr = clone_ahdr(&fixture.ahdr);
                         let payload = fixture.payload_template.clone();
                         (chdr, ahdr, payload, fixture.iv0)
@@ -139,33 +140,8 @@ fn bench_end_to_end_user_to_router(c: &mut Criterion) {
                             &mut payload,
                         )
                         .expect("build data packet");
-                        let capture_slot: Rc<RefCell<Option<aurora::types::Ahdr>>> =
-                            Rc::new(RefCell::new(None));
-                        let factory_slot = capture_slot.clone();
-                        let mut runtime = aurora::router::runtime::RouterRuntime::new(
-                            &mut router,
-                            &time,
-                            move || Box::new(CaptureForward::new(factory_slot.clone())),
-                            || Box::new(aurora::node::NoReplay),
-                        );
-                        for &sv in &fixture.svs {
-                            capture_slot.borrow_mut().take();
-                            runtime
-                                .process(
-                                    aurora::types::PacketDirection::Forward,
-                                    sv,
-                                    &mut chdr,
-                                    &mut ahdr,
-                                    &mut payload,
-                                )
-                                .expect("forward hop");
-                            if let Some(next) = capture_slot.borrow_mut().take() {
-                                ahdr = next;
-                            } else {
-                                panic!("forwarder did not capture next AHDR");
-                            }
-                        }
-                        black_box((chdr.hops, payload.len()));
+                        run_forward_chain(&fixture, &time, &mut chdr, &mut ahdr, &mut payload);
+                        black_box((chdr.hops().get(), payload.len()));
                     },
                     BatchSize::SmallInput,
                 );
@@ -213,7 +189,7 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let mut iv_fwd = fixture.forward.iv0;
-                    let mut chdr_fwd = aurora::packet::chdr::data_header(hops as u8, iv_fwd);
+                    let mut chdr_fwd = aurora::packet::chdr::data_header(hop_count(hops), iv_fwd);
                     let ahdr_fwd = clone_ahdr(&fixture.forward.ahdr);
                     let mut request = fixture.http_request.clone();
                     aurora::source::build(
@@ -224,7 +200,8 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
                         &mut request,
                     )
                     .expect("build forward payload");
-                    let chdr_bwd = aurora::packet::chdr::data_header(hops as u8, fixture.iv_resp);
+                    let chdr_bwd =
+                        aurora::packet::chdr::data_header(hop_count(hops), fixture.iv_resp);
                     let ahdr_bwd = clone_ahdr(&fixture.backward_ahdr);
                     (chdr_fwd, ahdr_fwd, request, chdr_bwd, ahdr_bwd)
                 },
@@ -252,7 +229,7 @@ fn bench_round_trip_example_com(c: &mut Criterion) {
                         &mut ahdr_bwd,
                         &mut response,
                     );
-                    let mut iv = chdr_bwd.specific;
+                    let mut iv = chdr_bwd.nonce().expect("backward data nonce").0;
                     let mut keys = fixture.backward_keys.clone();
                     keys.reverse();
                     aurora::source::decrypt_backward_payload(&keys, &mut iv, &mut response)
@@ -370,7 +347,7 @@ impl HornetFixture {
     }
 
     fn forward_packet(&self) -> ForwardPacket {
-        let mut chdr = aurora::packet::chdr::data_header(self.hops as u8, self.iv0);
+        let mut chdr = aurora::packet::chdr::data_header(hop_count(self.hops), self.iv0);
         let mut payload = self.payload_template.clone();
         let mut iv = self.iv0;
         aurora::source::build(&mut chdr, &self.ahdr, &self.keys, &mut iv, &mut payload)
@@ -547,16 +524,16 @@ fn process_backward_silent(
     ahdr: &mut aurora::types::Ahdr,
     payload: &mut Vec<u8>,
 ) -> aurora::types::Result<()> {
-    use aurora::types::{Error, Exp, PacketDirection};
+    use aurora::types::{Error, Exp, Nonce, PacketDirection};
     let now = Exp(ctx.now.now_coarse());
     let res = aurora::packet::ahdr::proc_ahdr(&ctx.sv, ahdr, now)?;
     let tau = aurora::sphinx::derive_tau_tag(&res.s);
     if !ctx.replay.insert(tau) {
         return Err(Error::Replay);
     }
-    let mut iv = chdr.specific;
+    let mut iv = chdr.nonce().ok_or(Error::Length)?.0;
     aurora::packet::onion::add_layer(&res.s, &mut iv, payload)?;
-    chdr.specific = iv;
+    chdr.set_nonce(Nonce(iv))?;
     ctx.forward.send(
         &res.r,
         chdr,
@@ -573,11 +550,7 @@ struct ForwardPacket {
 }
 
 fn clone_chdr(chdr: &aurora::types::Chdr) -> aurora::types::Chdr {
-    aurora::types::Chdr {
-        typ: chdr.typ,
-        hops: chdr.hops,
-        specific: chdr.specific,
-    }
+    *chdr
 }
 
 fn clone_ahdr(ahdr: &aurora::types::Ahdr) -> aurora::types::Ahdr {
@@ -631,18 +604,11 @@ fn tcp_next_hop_route(port: u16) -> aurora::types::RoutingSegment {
     }])
 }
 
-fn tcp_exit_route(port: u16) -> aurora::types::RoutingSegment {
-    use aurora::routing::{IpAddr, RouteElem};
-    aurora::routing::segment_from_elems(&[RouteElem::ExitTcp {
-        addr: IpAddr::V4([127, 0, 0, 1]),
-        port,
-    }])
-}
-
 struct NetworkHarness {
     fixture: HornetFixture,
     _routers: Vec<RouterWorker>,
     first_hop_addr: String,
+    ingress: TcpStream,
     delivery_rx: mpsc::Receiver<()>,
     _sink: SinkServer,
 }
@@ -665,7 +631,7 @@ impl NetworkHarness {
 
         let fixture = HornetFixture::with_routing(hops, payload_len, |idx, total| {
             if idx + 1 == total {
-                tcp_exit_route(sink_port)
+                tcp_next_hop_route(sink_port)
             } else {
                 tcp_next_hop_route(router_ports[idx + 1])
             }
@@ -678,23 +644,27 @@ impl NetworkHarness {
         for (idx, listener) in router_listeners.into_iter().enumerate() {
             routers.push(RouterWorker::new(listener, fixture.svs[idx], fixture.now)?);
         }
+        thread::sleep(Duration::from_millis(10));
 
         let first_hop_addr = router_addrs
             .first()
             .cloned()
             .unwrap_or_else(|| "127.0.0.1:0".to_string());
+        let ingress = connect_with_retry(&first_hop_addr)?;
+        let _ = ingress.set_nodelay(true);
 
         Ok(Self {
             fixture,
             _routers: routers,
             first_hop_addr,
+            ingress,
             delivery_rx,
             _sink: sink,
         })
     }
 
     fn run_once(&mut self) {
-        let chdr = aurora::packet::chdr::data_header(self.fixture.hops as u8, self.fixture.iv0);
+        let chdr = aurora::packet::chdr::data_header(hop_count(self.fixture.hops), self.fixture.iv0);
         let ahdr = clone_ahdr(&self.fixture.ahdr);
         let payload = self.fixture.payload_template.clone();
         self.send_over_network(chdr, ahdr, payload, self.fixture.iv0);
@@ -710,10 +680,94 @@ impl NetworkHarness {
         aurora::source::build(&mut chdr, &ahdr, &self.fixture.keys, &mut iv, &mut payload)
             .expect("network build data packet");
 
-        let frame = encode_frame_bytes(PacketDirection::Forward, &chdr, &ahdr, &payload);
-        let mut stream = TcpStream::connect(&self.first_hop_addr).expect("connect to first router");
-        stream.write_all(&frame).expect("write frame to first hop");
-        self.delivery_rx.recv().expect("await sink delivery");
+        let frame = aurora::router::io::encode_frame_bytes(PacketDirection::Forward, &chdr, &ahdr, &payload);
+        if self.ingress.write_all(&frame).is_err() {
+            self.ingress = connect_with_retry(&self.first_hop_addr).expect("reconnect first hop");
+            let _ = self.ingress.set_nodelay(true);
+            self.ingress
+                .write_all(&frame)
+                .expect("write frame to first hop");
+        }
+        self.delivery_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("await sink delivery");
+    }
+}
+
+struct SilentTcpForward {
+    pool: Rc<RefCell<HashMap<String, TcpStream>>>,
+}
+
+impl SilentTcpForward {
+    fn new(pool: Rc<RefCell<HashMap<String, TcpStream>>>) -> Self {
+        Self { pool }
+    }
+
+    fn format_addr(addr: &aurora::routing::IpAddr, port: u16) -> String {
+        match addr {
+            aurora::routing::IpAddr::V4(octets) => {
+                format!("{}.{}.{}.{}:{}", octets[0], octets[1], octets[2], octets[3], port)
+            }
+            aurora::routing::IpAddr::V6(bytes) => {
+                let mut out = String::from("[");
+                for (i, chunk) in bytes.chunks(2).enumerate() {
+                    if i > 0 {
+                        out.push(':');
+                    }
+                    let value = u16::from_be_bytes([chunk[0], chunk[1]]);
+                    out.push_str(&format!("{value:x}"));
+                }
+                out.push(']');
+                out.push(':');
+                out.push_str(&port.to_string());
+                out
+            }
+        }
+    }
+
+    fn first_hop_addr(rseg: &aurora::types::RoutingSegment) -> aurora::types::Result<String> {
+        let elems = aurora::routing::elems_from_segment(rseg).map_err(|_| aurora::types::Error::Length)?;
+        let hop = elems.first().ok_or(aurora::types::Error::Length)?;
+        match hop {
+            aurora::routing::RouteElem::NextHop { addr, port }
+            | aurora::routing::RouteElem::ExitTcp { addr, port } => {
+                Ok(Self::format_addr(addr, *port))
+            }
+        }
+    }
+}
+
+impl aurora::forward::Forward for SilentTcpForward {
+    fn send(
+        &mut self,
+        rseg: &aurora::types::RoutingSegment,
+        chdr: &aurora::types::Chdr,
+        ahdr: &aurora::types::Ahdr,
+        payload: &mut Vec<u8>,
+        direction: PacketDirection,
+    ) -> aurora::types::Result<()> {
+        let addr = Self::first_hop_addr(rseg)?;
+        let frame = aurora::router::io::encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
+        {
+            let mut pool = self.pool.borrow_mut();
+            if let Some(stream) = pool.get_mut(&addr) {
+                if stream.write_all(&frame).is_ok() {
+                    return Ok(());
+                }
+                pool.remove(&addr);
+            }
+        }
+        match connect_with_retry(&addr) {
+            Ok(mut stream) => {
+                let _ = stream.set_nodelay(true);
+                stream
+                    .write_all(&frame)
+                    .map_err(|_| aurora::types::Error::Crypto)?;
+                self.pool.borrow_mut().insert(addr, stream);
+                Ok(())
+            }
+            Err(_) => Err(aurora::types::Error::Crypto),
+        }
     }
 }
 
@@ -731,28 +785,56 @@ impl RouterWorker {
         let handle = thread::spawn(move || {
             let mut router = aurora::router::Router::new();
             let time = FixedTimeProvider { now };
+            let forward_pool: Rc<RefCell<HashMap<String, TcpStream>>> =
+                Rc::new(RefCell::new(HashMap::new()));
+            let forward_pool_factory = forward_pool.clone();
             let mut runtime = aurora::router::runtime::RouterRuntime::new(
                 &mut router,
                 &time,
-                || Box::new(aurora::router::io::TcpForward::new()),
+                move || Box::new(SilentTcpForward::new(forward_pool_factory.clone())),
                 || Box::new(aurora::node::NoReplay),
             );
 
             let listener = listener;
-            loop {
+            'accept_loop: loop {
                 let (mut stream, _) = listener.accept().expect("router accept");
                 if stop_signal.load(Ordering::SeqCst) {
                     break;
                 }
-                let mut packet = read_bench_packet(&mut stream).expect("router packet decode");
-                if let Err(err) = runtime.process(
-                    packet.direction,
-                    sv,
-                    &mut packet.chdr,
-                    &mut packet.ahdr,
-                    &mut packet.payload,
-                ) {
-                    eprintln!("[bench router] forward process error: {:?}", err);
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                loop {
+                    let incoming = match aurora::router::io::read_incoming_packet(&mut stream, sv) {
+                        Ok(incoming) => incoming,
+                        Err(aurora::types::Error::Crypto) => {
+                            if stop_signal.load(Ordering::SeqCst) {
+                                break 'accept_loop;
+                            }
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("[bench router] decode error: {:?}", err);
+                            break;
+                        }
+                    };
+                    let result = match (incoming.direction, incoming.packet) {
+                        (
+                            PacketDirection::Forward,
+                            aurora::types::Packet::Data(data_packet),
+                        ) => runtime
+                            .process_forward_data_packet(sv, data_packet)
+                            .map(|_| ()),
+                        (
+                            PacketDirection::Backward,
+                            aurora::types::Packet::Data(data_packet),
+                        ) => runtime
+                            .process_backward_data_packet(sv, data_packet)
+                            .map(|_| ()),
+                        (_, aurora::types::Packet::Setup(_)) => Ok(()),
+                    };
+                    if let Err(err) = result {
+                        eprintln!("[bench router] process error: {:?}", err);
+                        break;
+                    }
                 }
             }
         });
@@ -788,13 +870,32 @@ impl SinkServer {
         let stop_signal = stop.clone();
         let handle = thread::spawn(move || {
             let listener = listener;
-            loop {
+            'accept_loop: loop {
                 let (mut stream, _) = listener.accept().expect("sink accept");
                 if stop_signal.load(Ordering::SeqCst) {
                     break;
                 }
-                let _packet = read_bench_packet(&mut stream).expect("sink packet decode");
-                let _ = notify.send(());
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                loop {
+                    match aurora::router::io::read_incoming_packet(
+                        &mut stream,
+                        aurora::types::Sv([0u8; 16]),
+                    ) {
+                        Ok(_) => {
+                            let _ = notify.send(());
+                        }
+                        Err(aurora::types::Error::Crypto) => {
+                            if stop_signal.load(Ordering::SeqCst) {
+                                break 'accept_loop;
+                            }
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("[bench sink] decode error: {:?}", err);
+                            break;
+                        }
+                    }
+                }
             }
         });
 
@@ -816,100 +917,20 @@ impl Drop for SinkServer {
     }
 }
 
-struct RawPacket {
-    direction: PacketDirection,
-    chdr: aurora::types::Chdr,
-    ahdr: aurora::types::Ahdr,
-    payload: Vec<u8>,
+fn connect_with_retry(addr: &str) -> io::Result<TcpStream> {
+    let mut last_err = None;
+    for _ in 0..20 {
+        match TcpStream::connect(addr) {
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                last_err = Some(err);
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "connect failed")))
 }
 
-fn encode_frame_bytes(
-    direction: PacketDirection,
-    chdr: &aurora::types::Chdr,
-    ahdr: &aurora::types::Ahdr,
-    payload: &[u8],
-) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.bytes.len() + payload.len());
-    frame.push(direction_to_u8(direction));
-    frame.push(packet_type_to_u8(chdr.typ));
-    frame.push(chdr.hops);
-    frame.push(0);
-    frame.extend_from_slice(&chdr.specific);
-    frame.extend_from_slice(&(ahdr.bytes.len() as u32).to_le_bytes());
-    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    frame.extend_from_slice(&ahdr.bytes);
-    frame.extend_from_slice(payload);
-    frame
-}
-
-fn read_bench_packet(stream: &mut TcpStream) -> io::Result<RawPacket> {
-    let mut header = [0u8; 4];
-    stream.read_exact(&mut header)?;
-    let direction = direction_from_u8(header[0])?;
-    let pkt_type = packet_type_from_u8(header[1])?;
-    let hops = header[2];
-
-    let mut specific = [0u8; 16];
-    stream.read_exact(&mut specific)?;
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
-    stream.read_exact(&mut len_buf)?;
-    let payload_len = u32::from_le_bytes(len_buf) as usize;
-
-    let mut ahdr_bytes = vec![0u8; ahdr_len];
-    if ahdr_len > 0 {
-        stream.read_exact(&mut ahdr_bytes)?;
-    }
-    let mut payload = vec![0u8; payload_len];
-    if payload_len > 0 {
-        stream.read_exact(&mut payload)?;
-    }
-
-    Ok(RawPacket {
-        direction,
-        chdr: aurora::types::Chdr {
-            typ: pkt_type,
-            hops,
-            specific,
-        },
-        ahdr: aurora::types::Ahdr { bytes: ahdr_bytes },
-        payload,
-    })
-}
-
-fn packet_type_to_u8(pt: aurora::types::PacketType) -> u8 {
-    match pt {
-        aurora::types::PacketType::Setup => 0,
-        aurora::types::PacketType::Data => 1,
-    }
-}
-
-fn packet_type_from_u8(value: u8) -> io::Result<aurora::types::PacketType> {
-    match value {
-        0 => Ok(aurora::types::PacketType::Setup),
-        1 => Ok(aurora::types::PacketType::Data),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unknown packet type",
-        )),
-    }
-}
-
-fn direction_to_u8(direction: PacketDirection) -> u8 {
-    match direction {
-        PacketDirection::Forward => 0,
-        PacketDirection::Backward => 1,
-    }
-}
-
-fn direction_from_u8(value: u8) -> io::Result<PacketDirection> {
-    match value {
-        0 => Ok(PacketDirection::Forward),
-        1 => Ok(PacketDirection::Backward),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unknown direction",
-        )),
-    }
+fn hop_count(hops: usize) -> aurora::types::HopCount {
+    aurora::types::HopCount::try_from(hops).expect("valid benchmark hop count")
 }
