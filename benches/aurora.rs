@@ -664,7 +664,8 @@ impl NetworkHarness {
     }
 
     fn run_once(&mut self) {
-        let chdr = aurora::packet::chdr::data_header(hop_count(self.fixture.hops), self.fixture.iv0);
+        let chdr =
+            aurora::packet::chdr::data_header(hop_count(self.fixture.hops), self.fixture.iv0);
         let ahdr = clone_ahdr(&self.fixture.ahdr);
         let payload = self.fixture.payload_template.clone();
         self.send_over_network(chdr, ahdr, payload, self.fixture.iv0);
@@ -680,7 +681,12 @@ impl NetworkHarness {
         aurora::source::build(&mut chdr, &ahdr, &self.fixture.keys, &mut iv, &mut payload)
             .expect("network build data packet");
 
-        let frame = aurora::router::io::encode_frame_bytes(PacketDirection::Forward, &chdr, &ahdr, &payload);
+        let frame = aurora::router::io::encode_frame_bytes(
+            PacketDirection::Forward,
+            &chdr,
+            &ahdr,
+            &payload,
+        );
         if self.ingress.write_all(&frame).is_err() {
             self.ingress = connect_with_retry(&self.first_hop_addr).expect("reconnect first hop");
             let _ = self.ingress.set_nodelay(true);
@@ -706,7 +712,10 @@ impl SilentTcpForward {
     fn format_addr(addr: &aurora::routing::IpAddr, port: u16) -> String {
         match addr {
             aurora::routing::IpAddr::V4(octets) => {
-                format!("{}.{}.{}.{}:{}", octets[0], octets[1], octets[2], octets[3], port)
+                format!(
+                    "{}.{}.{}.{}:{}",
+                    octets[0], octets[1], octets[2], octets[3], port
+                )
             }
             aurora::routing::IpAddr::V6(bytes) => {
                 let mut out = String::from("[");
@@ -726,7 +735,8 @@ impl SilentTcpForward {
     }
 
     fn first_hop_addr(rseg: &aurora::types::RoutingSegment) -> aurora::types::Result<String> {
-        let elems = aurora::routing::elems_from_segment(rseg).map_err(|_| aurora::types::Error::Length)?;
+        let elems =
+            aurora::routing::elems_from_segment(rseg).map_err(|_| aurora::types::Error::Length)?;
         let hop = elems.first().ok_or(aurora::types::Error::Length)?;
         match hop {
             aurora::routing::RouteElem::NextHop { addr, port }
@@ -747,7 +757,8 @@ impl aurora::forward::Forward for SilentTcpForward {
         direction: PacketDirection,
     ) -> aurora::types::Result<()> {
         let addr = Self::first_hop_addr(rseg)?;
-        let frame = aurora::router::io::encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
+        let frame =
+            aurora::router::io::encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
         {
             let mut pool = self.pool.borrow_mut();
             if let Some(stream) = pool.get_mut(&addr) {
@@ -817,18 +828,16 @@ impl RouterWorker {
                         }
                     };
                     let result = match (incoming.direction, incoming.packet) {
-                        (
-                            PacketDirection::Forward,
-                            aurora::types::Packet::Data(data_packet),
-                        ) => runtime
-                            .process_forward_data_packet(sv, data_packet)
-                            .map(|_| ()),
-                        (
-                            PacketDirection::Backward,
-                            aurora::types::Packet::Data(data_packet),
-                        ) => runtime
-                            .process_backward_data_packet(sv, data_packet)
-                            .map(|_| ()),
+                        (PacketDirection::Forward, aurora::types::Packet::Data(data_packet)) => {
+                            runtime
+                                .process_forward_data_packet(sv, data_packet)
+                                .map(|_| ())
+                        }
+                        (PacketDirection::Backward, aurora::types::Packet::Data(data_packet)) => {
+                            runtime
+                                .process_backward_data_packet(sv, data_packet)
+                                .map(|_| ())
+                        }
                         (_, aurora::types::Packet::Setup(_)) => Ok(()),
                     };
                     if let Err(err) = result {
