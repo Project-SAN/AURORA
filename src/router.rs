@@ -8,7 +8,9 @@ use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnno
 use crate::setup::pipeline::SetupPipeline;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
-use crate::types::{Ahdr, Chdr, DataPacket, LenChecked, OnionProcessed, Result};
+use crate::types::{
+    Ahdr, BackwardOnionProcessed, Chdr, DataPacket, ForwardOnionProcessed, LenChecked, Result,
+};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -268,7 +270,7 @@ impl Router {
         exit: Option<&mut dyn crate::node::ExitTransport>,
         replay: &'io mut dyn crate::node::ReplayFilter,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<OnionProcessed>> {
+    ) -> Result<DataPacket<ForwardOnionProcessed>> {
         let mut chdr: Chdr = packet.chdr.into();
         let mut ahdr = packet.ahdr;
         let mut payload = packet.payload;
@@ -283,8 +285,8 @@ impl Router {
             &mut payload,
         )?;
         Ok(DataPacket::new(chdr.try_into()?, ahdr, payload)
-            .mark_policy_checked()
-            .mark_onion_processed())
+            .mark_forward_policy_checked()
+            .mark_forward_onion_processed())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -319,7 +321,7 @@ impl Router {
         forward: &'io mut dyn crate::forward::Forward,
         replay: &'io mut dyn crate::node::ReplayFilter,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<OnionProcessed>> {
+    ) -> Result<DataPacket<BackwardOnionProcessed>> {
         let mut chdr: Chdr = packet.chdr.into();
         let mut ahdr = packet.ahdr;
         let mut payload = packet.payload;
@@ -332,9 +334,7 @@ impl Router {
             &mut ahdr,
             &mut payload,
         )?;
-        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload)
-            .mark_policy_checked()
-            .mark_onion_processed())
+        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload).mark_backward_onion_processed())
     }
 
     fn refresh_policy_roles(&mut self, routes: &[RouteAnnouncement]) {
