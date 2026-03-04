@@ -2,7 +2,7 @@ use crate::packet::{core, payload};
 use crate::policy::PolicyMetadata;
 use crate::setup::pipeline::SetupPipeline;
 use crate::sphinx;
-use crate::types::{Chdr, Exp, Result, RoutingSegment, Si, Sv};
+use crate::types::{Chdr, Exp, HopCount, Result, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
 
 pub mod directory;
@@ -39,7 +39,8 @@ pub fn source_init(
     let mut seed = [0u8; 16];
     rng.fill_bytes(&mut seed);
     let payload = payload::Payload::new_with_seed(rmax, &seed);
-    let chdr = crate::packet::chdr::setup_header(node_pubs.len() as u8, exp);
+    let hops = HopCount::new(node_pubs.len() as u8).expect("hops must be within R_MAX");
+    let chdr = crate::packet::chdr::setup_header(hops, exp);
     let packet = SetupPacket {
         chdr,
         shdr,
@@ -101,6 +102,7 @@ pub fn install_policy_metadata(pkt: &SetupPacket, installer: &mut dyn SetupPipel
 
 #[cfg(test)]
 mod tests {
+    use crate::types::HopCount;
     use rand_core::{CryptoRng, RngCore};
 
     struct XorShift64(u64);
@@ -335,7 +337,10 @@ mod tests {
             .collect();
         let ahdr_b =
             crate::packet::ahdr::create_ahdr(&keys_b_rev, &fses_b, rmax, &mut rng2).unwrap();
-        let mut chdr = crate::packet::chdr::data_header(lf as u8, Nonce([0u8; 16]));
+        let mut chdr = crate::packet::chdr::data_header(
+            HopCount::new(lf as u8).expect("hops"),
+            Nonce([0u8; 16]),
+        );
         let mut iv0 = Nonce([0u8; 16]);
         rng.fill_bytes(&mut iv0.0);
         let mut payload = alloc::vec![0u8; sp_len.max(ahdr_b.bytes.len())];
@@ -351,7 +356,7 @@ mod tests {
             &mut payload,
         )
         .expect("build first data");
-        let mut iv = chdr.specific;
+        let mut iv = chdr.nonce().expect("data nonce").0;
         for i in 0..lf {
             crate::packet::onion::remove_layer(&st.keys_f[i], &mut iv, &mut payload)
                 .expect("remove");

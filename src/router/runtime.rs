@@ -1,5 +1,5 @@
 use crate::router::Router;
-use crate::types::{Ahdr, Chdr, PacketDirection, Result};
+use crate::types::{BackwardOnionProcessed, DataPacket, ForwardOnionProcessed, LenChecked, Result};
 use crate::{
     forward::Forward,
     node::{ExitTransport, ReplayFilter},
@@ -36,50 +36,46 @@ impl<'a> RouterRuntime<'a> {
         }
     }
 
-    pub fn process(
+    pub fn process_forward_data_packet(
         &mut self,
-        direction: PacketDirection,
         sv: crate::types::Sv,
-        chdr: &mut Chdr,
-        ahdr: &mut Ahdr,
-        payload: &mut Vec<u8>,
-    ) -> Result<()> {
-        self.process_with_exit(direction, sv, chdr, ahdr, payload, None)
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<ForwardOnionProcessed>> {
+        self.process_forward_data_packet_with_exit(sv, packet, None)
     }
 
-    pub fn process_with_exit(
+    pub fn process_forward_data_packet_with_exit(
         &mut self,
-        direction: PacketDirection,
         sv: crate::types::Sv,
-        chdr: &mut Chdr,
-        ahdr: &mut Ahdr,
-        payload: &mut Vec<u8>,
-        mut exit: Option<&mut dyn ExitTransport>,
-    ) -> Result<()> {
+        packet: DataPacket<LenChecked>,
+        exit: Option<&mut dyn ExitTransport>,
+    ) -> Result<DataPacket<ForwardOnionProcessed>> {
         let mut forward = (self.forward_factory)();
         let mut replay = (self.replay_factory)();
-        let exit_ref = exit.take();
-        match direction {
-            PacketDirection::Forward => self.router.process_forward_packet(
-                sv,
-                self.time,
-                forward.as_mut(),
-                exit_ref,
-                replay.as_mut(),
-                chdr,
-                ahdr,
-                payload,
-            ),
-            PacketDirection::Backward => self.router.process_backward_packet(
-                sv,
-                self.time,
-                forward.as_mut(),
-                replay.as_mut(),
-                chdr,
-                ahdr,
-                payload,
-            ),
-        }
+        self.router.process_forward_data_packet(
+            sv,
+            self.time,
+            forward.as_mut(),
+            exit,
+            replay.as_mut(),
+            packet,
+        )
+    }
+
+    pub fn process_backward_data_packet(
+        &mut self,
+        sv: crate::types::Sv,
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<BackwardOnionProcessed>> {
+        let mut forward = (self.forward_factory)();
+        let mut replay = (self.replay_factory)();
+        self.router.process_backward_data_packet(
+            sv,
+            self.time,
+            forward.as_mut(),
+            replay.as_mut(),
+            packet,
+        )
     }
 
     pub fn drain_pending(&mut self) -> Result<Vec<crate::policy::PolicyCapsule>> {

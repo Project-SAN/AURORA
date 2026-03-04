@@ -1,6 +1,6 @@
 use crate::crypto::kdf::{hop_key, OpLabel};
 use crate::crypto::{prg, prp};
-use crate::types::{Error, Si, R_MAX};
+use crate::types::{Error, HopCount, RMax, Si, Stage, R_MAX};
 use core::ops::{Deref, DerefMut};
 use rand_core::RngCore;
 use sha2::{Digest, Sha256, Sha512};
@@ -328,10 +328,13 @@ fn create_header_internal(
     dest_override: Option<&[u8]>,
     id_override: Option<&[u8]>,
 ) -> core::result::Result<(Header, SiKeys, [u8; 32]), Error> {
-    let hops = node_pubs.len();
-    if hops == 0 || hops > rmax || rmax > R_MAX {
+    let hops = HopCount::from_usize(node_pubs.len())?;
+    let rmax = RMax::from_usize(rmax)?;
+    if usize::from(hops.get()) > rmax.get() {
         return Err(Error::Length);
     }
+    let hops = usize::from(hops.get());
+    let rmax = rmax.get();
 
     let dest = dest_override.unwrap_or(&STAR_DESTINATION);
     let ident = id_override.unwrap_or(&ZERO_KAPPA);
@@ -471,7 +474,9 @@ pub fn node_process_forward(
     h: &mut Header,
     node_secret: &[u8; 32],
 ) -> core::result::Result<Si, Error> {
-    if h.stage >= h.hops {
+    let hops = HopCount::from_usize(h.hops)?;
+    let _stage = Stage::from_usize(h.stage)?;
+    if h.stage >= usize::from(hops.get()) {
         return Err(Error::Length);
     }
 
@@ -650,10 +655,10 @@ pub fn decrypt_reply(
 
 /// Encode a `Header` into bytes for transport over the setup channel.
 pub fn encode_header(header: &Header) -> Result<Vec<u8>, Error> {
-    if header.rmax > u8::MAX as usize || header.hops > u8::MAX as usize {
-        return Err(Error::Length);
-    }
-    if header.stage > u8::MAX as usize {
+    let rmax = RMax::from_usize(header.rmax)?;
+    let hops = HopCount::from_usize(header.hops)?;
+    let stage = Stage::from_usize(header.stage)?;
+    if stage.get() > usize::from(hops.get()) || usize::from(hops.get()) > rmax.get() {
         return Err(Error::Length);
     }
     let expected_beta = (2 * header.rmax + 1) * KAPPA_BYTES;
@@ -665,9 +670,9 @@ pub fn encode_header(header: &Header) -> Result<Vec<u8>, Error> {
     );
     encoded.extend_from_slice(&header.alpha);
     encoded.extend_from_slice(&header.gamma);
-    encoded.push(header.rmax as u8);
-    encoded.push(header.hops as u8);
-    encoded.push(header.stage as u8);
+    encoded.push(rmax.get() as u8);
+    encoded.push(hops.get());
+    encoded.push(stage.get() as u8);
     encoded.push(0); // reserved for future use / alignment
     encoded.extend_from_slice(&(header.beta.len() as u32).to_le_bytes());
     encoded.extend_from_slice(header.beta.as_slice());
@@ -685,16 +690,19 @@ pub fn decode_header(bytes: &[u8]) -> Result<Header, Error> {
     let mut gamma = [0u8; MU_LEN];
     gamma.copy_from_slice(&bytes[GROUP_LEN..GROUP_LEN + MU_LEN]);
     let meta_start = GROUP_LEN + MU_LEN;
-    let rmax = bytes[meta_start] as usize;
-    let hops = bytes[meta_start + 1] as usize;
-    let stage = bytes[meta_start + 2] as usize;
+    let rmax = RMax::new(bytes[meta_start])?;
+    let hops = HopCount::new(bytes[meta_start + 1])?;
+    let stage = Stage::new(bytes[meta_start + 2])?;
+    if stage.get() > usize::from(hops.get()) || usize::from(hops.get()) > rmax.get() {
+        return Err(Error::Length);
+    }
     let beta_len_offset = meta_start + 4;
     let beta_len = u32::from_le_bytes(
         bytes[beta_len_offset..beta_len_offset + 4]
             .try_into()
             .map_err(|_| Error::Length)?,
     ) as usize;
-    let expected_beta = (2 * rmax + 1) * KAPPA_BYTES;
+    let expected_beta = (2 * rmax.get() + 1) * KAPPA_BYTES;
     if beta_len != expected_beta {
         return Err(Error::Length);
     }
@@ -707,9 +715,9 @@ pub fn decode_header(bytes: &[u8]) -> Result<Header, Error> {
         alpha,
         beta,
         gamma,
-        rmax,
-        hops,
-        stage,
+        rmax: rmax.get(),
+        hops: usize::from(hops.get()),
+        stage: stage.get(),
     })
 }
 
