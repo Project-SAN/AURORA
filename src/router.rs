@@ -208,7 +208,7 @@ impl Router {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn process_forward_packet<'io>(
+    fn process_forward_packet_raw<'io>(
         &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
@@ -270,7 +270,7 @@ impl Router {
         packet: &mut DataPacket<LenChecked>,
     ) -> Result<()> {
         let mut chdr: Chdr = packet.chdr.into();
-        self.process_forward_packet(
+        self.process_forward_packet_raw(
             sv,
             now,
             forward,
@@ -285,7 +285,7 @@ impl Router {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn process_backward_packet<'io>(
+    fn process_backward_packet_raw<'io>(
         &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
@@ -318,7 +318,7 @@ impl Router {
         packet: &mut DataPacket<LenChecked>,
     ) -> Result<()> {
         let mut chdr: Chdr = packet.chdr.into();
-        self.process_backward_packet(
+        self.process_backward_packet_raw(
             sv,
             now,
             forward,

@@ -1,5 +1,5 @@
 use crate::router::Router;
-use crate::types::{Ahdr, Chdr, DataPacket, LenChecked, PacketDirection, Result};
+use crate::types::{DataPacket, LenChecked, PacketDirection, Result};
 use crate::{
     forward::Forward,
     node::{ExitTransport, ReplayFilter},
@@ -33,52 +33,6 @@ impl<'a> RouterRuntime<'a> {
             time,
             forward_factory: Rc::new(forward_factory),
             replay_factory: Rc::new(replay_factory),
-        }
-    }
-
-    pub fn process(
-        &mut self,
-        direction: PacketDirection,
-        sv: crate::types::Sv,
-        chdr: &mut Chdr,
-        ahdr: &mut Ahdr,
-        payload: &mut Vec<u8>,
-    ) -> Result<()> {
-        self.process_with_exit(direction, sv, chdr, ahdr, payload, None)
-    }
-
-    pub fn process_with_exit(
-        &mut self,
-        direction: PacketDirection,
-        sv: crate::types::Sv,
-        chdr: &mut Chdr,
-        ahdr: &mut Ahdr,
-        payload: &mut Vec<u8>,
-        mut exit: Option<&mut dyn ExitTransport>,
-    ) -> Result<()> {
-        let mut forward = (self.forward_factory)();
-        let mut replay = (self.replay_factory)();
-        let exit_ref = exit.take();
-        match direction {
-            PacketDirection::Forward => self.router.process_forward_packet(
-                sv,
-                self.time,
-                forward.as_mut(),
-                exit_ref,
-                replay.as_mut(),
-                chdr,
-                ahdr,
-                payload,
-            ),
-            PacketDirection::Backward => self.router.process_backward_packet(
-                sv,
-                self.time,
-                forward.as_mut(),
-                replay.as_mut(),
-                chdr,
-                ahdr,
-                payload,
-            ),
         }
     }
 
