@@ -96,7 +96,7 @@ pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<I
             Chdr::from_raw_parts(pkt_type, hops, specific)?,
             Ahdr { bytes: ahdr_bytes },
             payload,
-        ),
+        )?,
     })
 }
 

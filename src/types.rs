@@ -449,20 +449,20 @@ impl DataPacket<PolicyChecked> {
 
 pub enum Packet {
     Setup(SetupPacket),
-    Data(DataPacket<Raw>),
+    Data(DataPacket<LenChecked>),
 }
 
 impl Packet {
-    pub fn from_wire_parts(chdr: Chdr, ahdr: Ahdr, payload: Vec<u8>) -> Self {
+    pub fn from_wire_parts(chdr: Chdr, ahdr: Ahdr, payload: Vec<u8>) -> Result<Self> {
         match chdr {
-            Chdr::Setup { hops, exp } => Self::Setup(SetupPacket {
+            Chdr::Setup { hops, exp } => Ok(Self::Setup(SetupPacket {
                 chdr: SetupChdr { hops, exp },
                 ahdr,
                 payload,
-            }),
-            Chdr::Data { hops, nonce } => {
-                Self::Data(DataPacket::new(DataChdr { hops, nonce }, ahdr, payload))
-            }
+            })),
+            Chdr::Data { hops, nonce } => Ok(Self::Data(
+                DataPacket::new(DataChdr { hops, nonce }, ahdr, payload).validate_lengths()?,
+            )),
         }
     }
 

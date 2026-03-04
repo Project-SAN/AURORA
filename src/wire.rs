@@ -10,8 +10,8 @@
 //! [24..28] : u32  payload_len (big-endian)
 //! [28..]   : ahdr bytes || payload bytes
 //!
-//! The caller is responsible for validating semantic sizes (e.g., AHDR length
-//! matches r*c) at a higher layer. This module only enforces basic length checks.
+//! Data packets are validated for basic semantic sizes at decode time.
+//! Setup packets are only checked for framing-level lengths here.
 
 use crate::types::{Ahdr, Chdr, Error, Packet, PacketType, PayloadLen, Result};
 use alloc::vec::Vec;
@@ -85,7 +85,7 @@ pub fn decode(buf: &[u8]) -> Result<Packet> {
         bytes: Vec::from(ah_bytes),
     };
     let payload = Vec::from(pl_bytes);
-    Ok(Packet::from_wire_parts(chdr, ahdr, payload))
+    Packet::from_wire_parts(chdr, ahdr, payload)
 }
 
 #[cfg(test)]
@@ -129,5 +129,16 @@ mod tests {
         buf[24..28].copy_from_slice(&1u32.to_be_bytes());
         // missing body
         assert!(decode(&buf).is_err());
+
+        // complete frame with invalid semantic AHDR length for data packets
+        let mut framed = alloc::vec![0u8; FIXED_HDR_LEN];
+        framed[0] = WIRE_VERSION;
+        framed[1] = 0x02; // data
+        framed[2] = 1; // hops
+        framed[20..24].copy_from_slice(&2u32.to_be_bytes()); // not a valid AHDR length
+        framed[24..28].copy_from_slice(&3u32.to_be_bytes());
+        framed.extend_from_slice(&[0xAA, 0xBB]); // ahdr bytes
+        framed.extend_from_slice(&[0x01, 0x02, 0x03]); // payload bytes
+        assert!(decode(&framed).is_err());
     }
 }
