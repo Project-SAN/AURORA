@@ -262,6 +262,7 @@ impl Engine {
             SeedDeriver::new(&proof.seed_reveals[2]),
         ];
         let mut branch_calc = vec![0u8; circuit.wire_count()];
+        let mut branch_calc_e1 = vec![0u8; circuit.wire_count()];
 
         for round in 0..rounds {
             let expected_e = derive_challenge(public_output, proof.commit_root, round);
@@ -303,33 +304,30 @@ impl Engine {
                 return Err(Error::Crypto);
             }
 
-            if opening.view_e.wires.len() != circuit.wire_count()
-                || opening.view_e1.wires.len() != circuit.wire_count()
-            {
-                return Err(Error::Length);
-            }
-            for (idx, &bit) in public_output.iter().enumerate() {
-                let wire = circuit.outputs[idx];
-                if wire >= opening.view_e.wires.len() {
-                    return Err(Error::Length);
-                }
-                let recombined =
-                    (opening.view_e.wires[wire] ^ opening.view_e1.wires[wire] ^ bit) & 1;
-                if recombined > 1 {
-                    return Err(Error::Crypto);
-                }
-            }
-
             if !check_branch(
                 circuit,
                 e,
+                e1,
                 &opening.view_e.wires,
                 &opening.view_e1.wires,
                 &seed_e,
                 &seed_e1,
                 &mut branch_calc,
+                &mut branch_calc_e1,
             )? {
                 return Err(Error::Crypto);
+            }
+
+            // Output relation check on reconstructed opened branches.
+            for (idx, &bit) in public_output.iter().enumerate() {
+                let wire = circuit.outputs[idx];
+                if wire >= branch_calc.len() {
+                    return Err(Error::Length);
+                }
+                let recombined = (branch_calc[wire] ^ branch_calc_e1[wire] ^ bit) & 1;
+                if recombined > 1 {
+                    return Err(Error::Crypto);
+                }
             }
         }
 
@@ -340,6 +338,32 @@ impl Engine {
 struct RoundState {
     views: [Vec<u8>; 3],
     commitments: [[u8; 32]; 3],
+}
+
+fn and_gate_count(circuit: &Circuit) -> usize {
+    circuit
+        .gates
+        .iter()
+        .filter(|g| matches!(g, Gate::And { .. }))
+        .count()
+}
+
+fn compact_view_len(circuit: &Circuit) -> usize {
+    circuit.n_inputs + and_gate_count(circuit)
+}
+
+fn compact_view_from_full(circuit: &Circuit, full: &[u8]) -> Result<Vec<u8>> {
+    if full.len() != circuit.wire_count() {
+        return Err(Error::Length);
+    }
+    let mut out = Vec::with_capacity(compact_view_len(circuit));
+    out.extend_from_slice(&full[..circuit.n_inputs]);
+    for (g_idx, gate) in circuit.gates.iter().enumerate() {
+        if matches!(gate, Gate::And { .. }) {
+            out.push(full[circuit.n_inputs + g_idx] & 1);
+        }
+    }
+    Ok(out)
 }
 
 fn simulate_round(
@@ -414,54 +438,92 @@ fn simulate_round(
     }
 
     let mut commitments = [[0u8; 32]; 3];
+    let compact_views = [
+        compact_view_from_full(circuit, &views[0])?,
+        compact_view_from_full(circuit, &views[1])?,
+        compact_view_from_full(circuit, &views[2])?,
+    ];
     for i in 0..3 {
-        commitments[i] = commit_view(&seeds[i], &views[i]);
+        commitments[i] = commit_view(&seeds[i], &compact_views[i]);
     }
 
-    Ok(RoundState { views, commitments })
+    Ok(RoundState {
+        views: compact_views,
+        commitments,
+    })
 }
 
 fn check_branch(
     circuit: &Circuit,
     branch: usize,
+    branch1: usize,
     view_i: &[u8],
     view_i1: &[u8],
     seed_i: &[u8; SEED_LEN],
     seed_i1: &[u8; SEED_LEN],
     calc: &mut [u8],
+    calc1: &mut [u8],
 ) -> Result<bool> {
     let n_wires = circuit.wire_count();
-    if view_i.len() != n_wires || view_i1.len() != n_wires || calc.len() != n_wires {
+    if calc.len() != n_wires || calc1.len() != n_wires {
         return Err(Error::Length);
     }
+
+    let compact_len = compact_view_len(circuit);
+    if view_i.len() != compact_len || view_i1.len() != compact_len {
+        return Err(Error::Length);
+    }
+
     let mut tape_i = Tape::new(*seed_i);
     let mut tape_i1 = Tape::new(*seed_i1);
     tape_i.skip_bits(circuit.n_inputs);
     tape_i1.skip_bits(circuit.n_inputs);
 
     calc[..circuit.n_inputs].copy_from_slice(&view_i[..circuit.n_inputs]);
+    calc1[..circuit.n_inputs].copy_from_slice(&view_i1[..circuit.n_inputs]);
+
+    let mut and_idx_i = circuit.n_inputs;
+    let mut and_idx_i1 = circuit.n_inputs;
 
     for (g_idx, gate) in circuit.gates.iter().enumerate() {
         let out = circuit.n_inputs + g_idx;
-        let expected = match *gate {
-            Gate::Xor { a, b } => calc[a] ^ calc[b],
+        match *gate {
+            Gate::Xor { a, b } => {
+                let expected = calc[a] ^ calc[b];
+                let expected1 = calc1[a] ^ calc1[b];
+                calc[out] = expected & 1;
+                calc1[out] = expected1 & 1;
+            }
             Gate::Not { a } => {
-                if branch == 0 {
-                    calc[a] ^ 1
-                } else {
-                    calc[a]
-                }
+                let expected = if branch == 0 { calc[a] ^ 1 } else { calc[a] };
+                let expected1 = if branch1 == 0 { calc1[a] ^ 1 } else { calc1[a] };
+                calc[out] = expected & 1;
+                calc1[out] = expected1 & 1;
             }
             Gate::And { a, b } => {
                 let r_i = tape_i.next_bit();
                 let r_i1 = tape_i1.next_bit();
-                (calc[a] & calc[b]) ^ (view_i1[a] & calc[b]) ^ (calc[a] & view_i1[b]) ^ r_i ^ r_i1
+                if and_idx_i >= view_i.len() || and_idx_i1 >= view_i1.len() {
+                    return Err(Error::Length);
+                }
+                let provided = view_i[and_idx_i] & 1;
+                and_idx_i += 1;
+                let provided1 = view_i1[and_idx_i1] & 1;
+                and_idx_i1 += 1;
+                let expected =
+                    (calc[a] & calc[b]) ^ (calc1[a] & calc[b]) ^ (calc[a] & calc1[b]) ^ r_i ^ r_i1;
+                if (provided & 1) != (expected & 1) {
+                    return Ok(false);
+                }
+                calc[out] = expected & 1;
+                // For branch+1, verifier keeps the committed/opened value; unknown branch is not needed.
+                calc1[out] = provided1 & 1;
             }
-        };
-        if (view_i[out] & 1) != (expected & 1) {
-            return Ok(false);
         }
-        calc[out] = expected & 1;
+    }
+
+    if and_idx_i != view_i.len() || and_idx_i1 != view_i1.len() {
+        return Err(Error::Length);
     }
 
     Ok(true)
@@ -643,8 +705,13 @@ impl Tape {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::{Engine, Proof, ProverConfig, VerifierConfig};
+    use crate::crypto::zkp::ascon_circuit;
     use crate::crypto::zkp::circuit::Circuit;
+    use crate::crypto::zkp::circuit::Gate;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
 
@@ -726,5 +793,64 @@ mod tests {
         engine
             .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
             .expect("verify");
+    }
+
+    #[test]
+    fn proof_openings_use_compact_views() {
+        let circuit = ascon_circuit::build_payload_hash_circuit(32);
+        let payload = vec![0xA5u8; 32];
+        let mut input = Vec::with_capacity(payload.len() * 8);
+        for &b in &payload {
+            for bit in 0..8u8 {
+                input.push((b >> bit) & 1);
+            }
+        }
+        let output = circuit.eval(&input).expect("eval");
+        let rounds = 4u16;
+        let mut rng = ChaCha20Rng::seed_from_u64(123);
+        let proof = Engine
+            .prove(&circuit, &input, &output, ProverConfig { rounds }, &mut rng)
+            .expect("prove");
+
+        let and_count = circuit
+            .gates
+            .iter()
+            .filter(|g| matches!(g, Gate::And { .. }))
+            .count();
+        let expected_view_len = circuit.n_inputs + and_count;
+
+        for opening in &proof.openings {
+            assert_eq!(opening.view_e.wires.len(), expected_view_len);
+            assert_eq!(opening.view_e1.wires.len(), expected_view_len);
+        }
+        Engine
+            .verify(&circuit, &output, &proof, VerifierConfig { rounds })
+            .expect("verify");
+    }
+
+    #[test]
+    fn verify_rejects_non_compact_view_length() {
+        let circuit = ascon_circuit::build_payload_hash_circuit(32);
+        let payload = vec![0xA5u8; 32];
+        let mut input = Vec::with_capacity(payload.len() * 8);
+        for &b in &payload {
+            for bit in 0..8u8 {
+                input.push((b >> bit) & 1);
+            }
+        }
+        let output = circuit.eval(&input).expect("eval");
+        let rounds = 4u16;
+        let mut rng = ChaCha20Rng::seed_from_u64(321);
+        let mut proof = Engine
+            .prove(&circuit, &input, &output, ProverConfig { rounds }, &mut rng)
+            .expect("prove");
+
+        proof.openings[0].view_e.wires.push(0);
+        assert!(
+            Engine
+                .verify(&circuit, &output, &proof, VerifierConfig { rounds })
+                .is_err(),
+            "must reject non-compact view"
+        );
     }
 }
