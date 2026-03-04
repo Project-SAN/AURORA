@@ -47,7 +47,7 @@ pub fn build_consistency_circuit(secret_len_bytes: usize, payload_len_bytes: usi
     outputs.extend_from_slice(&hkey_bits);
     outputs.extend_from_slice(&payload_hash_bits);
     circuit.set_outputs(&outputs);
-    circuit
+    circuit.optimized()
 }
 
 pub fn build_policy_allow_host_circuit(
@@ -88,7 +88,7 @@ pub fn build_policy_allow_host_circuit(
     outputs.extend_from_slice(&payload_hash_bits);
     outputs.push(allow);
     circuit.set_outputs(&outputs);
-    circuit
+    circuit.optimized()
 }
 
 fn build_mix_fold_circuit(payload_len_bytes: usize, domain: u64) -> Circuit {
@@ -98,7 +98,7 @@ fn build_mix_fold_circuit(payload_len_bytes: usize, domain: u64) -> Circuit {
     let bits = input_bits(0, payload_len_bytes);
     let out_bits = mix_fold_bits(&mut circuit, zero, one, domain, payload_len_bytes, &bits);
     circuit.set_outputs(&out_bits);
-    circuit
+    circuit.optimized()
 }
 
 fn const_zero_one(circuit: &mut Circuit) -> (WireId, WireId) {
