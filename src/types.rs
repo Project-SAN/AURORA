@@ -391,11 +391,16 @@ impl TryFrom<Chdr> for SetupChdr {
     }
 }
 
+#[derive(Debug)]
 pub struct Raw;
+#[derive(Debug)]
 pub struct LenChecked;
+#[derive(Debug)]
 pub struct PolicyChecked;
+#[derive(Debug)]
 pub struct OnionProcessed;
 
+#[derive(Debug)]
 pub struct DataPacket<S> {
     pub chdr: DataChdr,
     pub ahdr: Ahdr,

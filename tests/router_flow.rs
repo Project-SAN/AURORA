@@ -182,7 +182,14 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
 
     let body_plain = b"opaque-body::payload".to_vec();
 
-    let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
+    let PacketFixture {
+        sv,
+        packet: data_packet,
+        route,
+        capsule_len,
+        capsule,
+        body_plain,
+    } = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-exit");
@@ -195,24 +202,14 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
     let mut replay = aurora::node::NoReplay;
 
     router
-        .process_forward_data_packet(
-            packet.sv,
-            &time,
-            &mut forward,
-            None,
-            &mut replay,
-            &mut packet.packet,
-        )
+        .process_forward_data_packet(sv, &time, &mut forward, None, &mut replay, data_packet)
         .expect("forward packet");
 
     let (rseg, direction, forwarded) = forward.take().expect("payload forwarded");
     assert_eq!(direction, PacketDirection::Forward);
-    assert_eq!(rseg.0, packet.route.0);
-    assert_eq!(&forwarded[..packet.capsule_len], packet.capsule.as_slice());
-    assert_eq!(
-        &forwarded[packet.capsule_len..],
-        packet.body_plain.as_slice()
-    );
+    assert_eq!(rseg.0, route.0);
+    assert_eq!(&forwarded[..capsule_len], capsule.as_slice());
+    assert_eq!(&forwarded[capsule_len..], body_plain.as_slice());
 }
 
 #[test]
@@ -227,7 +224,11 @@ fn router_rejects_capsule_with_unknown_policy_id() {
     let mut capsule_bytes = encode_capsule(&capsule);
     capsule_bytes[4] ^= 0xFF; // flip a bit in the policy ID to break lookup
 
-    let mut packet = build_single_hop_packet(capsule_bytes, b"opaque-body".to_vec(), now);
+    let PacketFixture {
+        sv,
+        packet: data_packet,
+        ..
+    } = build_single_hop_packet(capsule_bytes, b"opaque-body".to_vec(), now);
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-exit");
@@ -240,14 +241,7 @@ fn router_rejects_capsule_with_unknown_policy_id() {
     let mut replay = aurora::node::NoReplay;
 
     let err = router
-        .process_forward_data_packet(
-            packet.sv,
-            &time,
-            &mut forward,
-            None,
-            &mut replay,
-            &mut packet.packet,
-        )
+        .process_forward_data_packet(sv, &time, &mut forward, None, &mut replay, data_packet)
         .expect_err("policy violation expected");
     assert!(matches!(err, aurora::types::Error::PolicyViolation));
     assert!(forward.take().is_none(), "forwarder should not run");
@@ -264,7 +258,11 @@ fn router_entry_rejects_capsule_without_keybinding_part() {
         .expect("prove zkboo");
 
     let body_plain = b"opaque-body".to_vec();
-    let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
+    let PacketFixture {
+        sv,
+        packet: data_packet,
+        ..
+    } = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-entry");
@@ -277,14 +275,7 @@ fn router_entry_rejects_capsule_without_keybinding_part() {
     let mut replay = aurora::node::NoReplay;
 
     let err = router
-        .process_forward_data_packet(
-            packet.sv,
-            &time,
-            &mut forward,
-            None,
-            &mut replay,
-            &mut packet.packet,
-        )
+        .process_forward_data_packet(sv, &time, &mut forward, None, &mut replay, data_packet)
         .expect_err("policy violation expected");
     assert!(matches!(err, aurora::types::Error::PolicyViolation));
     assert!(forward.take().is_none(), "forwarder should not run");
@@ -314,7 +305,11 @@ fn router_entry_rejects_invalid_zkboo_proof() {
     };
 
     let body_plain = b"opaque-body".to_vec();
-    let mut packet = build_single_hop_packet(encode_capsule(&bad_capsule), body_plain, now);
+    let PacketFixture {
+        sv,
+        packet: data_packet,
+        ..
+    } = build_single_hop_packet(encode_capsule(&bad_capsule), body_plain, now);
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-entry");
@@ -327,14 +322,7 @@ fn router_entry_rejects_invalid_zkboo_proof() {
     let mut replay = aurora::node::NoReplay;
 
     let err = router
-        .process_forward_data_packet(
-            packet.sv,
-            &time,
-            &mut forward,
-            None,
-            &mut replay,
-            &mut packet.packet,
-        )
+        .process_forward_data_packet(sv, &time, &mut forward, None, &mut replay, data_packet)
         .expect_err("policy violation expected");
     assert!(matches!(err, aurora::types::Error::PolicyViolation));
     assert!(forward.take().is_none(), "forwarder should not run");
@@ -390,7 +378,11 @@ fn router_entry_accepts_valid_keybinding_part() {
     };
 
     let body_plain = b"opaque-body".to_vec();
-    let mut packet = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
+    let PacketFixture {
+        sv,
+        packet: data_packet,
+        ..
+    } = build_single_hop_packet(encode_capsule(&capsule), body_plain.clone(), now);
 
     let mut router = Router::new();
     install_role_routes(&mut router, metadata.policy_id, "router-entry");
@@ -403,14 +395,7 @@ fn router_entry_accepts_valid_keybinding_part() {
     let mut replay = aurora::node::NoReplay;
 
     router
-        .process_forward_data_packet(
-            packet.sv,
-            &time,
-            &mut forward,
-            None,
-            &mut replay,
-            &mut packet.packet,
-        )
+        .process_forward_data_packet(sv, &time, &mut forward, None, &mut replay, data_packet)
         .expect("forward packet");
     assert!(forward.take().is_some(), "payload forwarded");
 }

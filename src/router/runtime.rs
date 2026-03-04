@@ -1,5 +1,5 @@
 use crate::router::Router;
-use crate::types::{DataPacket, LenChecked, PacketDirection, Result};
+use crate::types::{DataPacket, LenChecked, OnionProcessed, PacketDirection, Result};
 use crate::{
     forward::Forward,
     node::{ExitTransport, ReplayFilter},
@@ -40,8 +40,8 @@ impl<'a> RouterRuntime<'a> {
         &mut self,
         direction: PacketDirection,
         sv: crate::types::Sv,
-        packet: &mut DataPacket<LenChecked>,
-    ) -> Result<()> {
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<OnionProcessed>> {
         self.process_data_packet_with_exit(direction, sv, packet, None)
     }
 
@@ -49,9 +49,9 @@ impl<'a> RouterRuntime<'a> {
         &mut self,
         direction: PacketDirection,
         sv: crate::types::Sv,
-        packet: &mut DataPacket<LenChecked>,
+        packet: DataPacket<LenChecked>,
         exit: Option<&mut dyn ExitTransport>,
-    ) -> Result<()> {
+    ) -> Result<DataPacket<OnionProcessed>> {
         let mut forward = (self.forward_factory)();
         let mut replay = (self.replay_factory)();
         match direction {
