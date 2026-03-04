@@ -9,7 +9,8 @@ use aurora::router::Router;
 use aurora::routing::{self, IpAddr, RouteElem};
 use aurora::time::TimeProvider;
 use aurora::types::{
-    Ahdr, Chdr, Exp, HopCount, Nonce, PacketDirection, Result, RoutingSegment, Si, Sv, R_MAX,
+    Ahdr, Chdr, DataChdr, DataPacket, Exp, HopCount, LenChecked, Nonce, PacketDirection, Result,
+    RoutingSegment, Si, Sv, R_MAX,
 };
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
@@ -52,9 +53,7 @@ impl Forward for RecordingForward {
 
 struct PacketFixture {
     sv: Sv,
-    chdr: Chdr,
-    ahdr: Ahdr,
-    payload: Vec<u8>,
+    packet: DataPacket<LenChecked>,
     route: RoutingSegment,
     capsule_len: usize,
     capsule: Vec<u8>,
@@ -95,12 +94,11 @@ fn build_single_hop_packet(capsule: Vec<u8>, body_plain: Vec<u8>, now: u32) -> P
     aurora::packet::onion::add_layer_suffix(&si, &mut iv, &mut payload, capsule_len)
         .expect("encrypt body");
     chdr.set_nonce(Nonce(iv)).expect("set nonce");
+    let chdr = DataChdr::try_from(chdr).expect("data chdr");
 
     PacketFixture {
         sv,
-        chdr,
-        ahdr,
-        payload,
+        packet: DataPacket::<LenChecked>::new(chdr, ahdr, payload),
         route,
         capsule_len,
         capsule: capsule_bytes,
@@ -197,15 +195,13 @@ fn router_forwards_valid_capsule_and_decrypts_body() {
     let mut replay = aurora::node::NoReplay;
 
     router
-        .process_forward_packet(
+        .process_forward_data_packet(
             packet.sv,
             &time,
             &mut forward,
             None,
             &mut replay,
-            &mut packet.chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut packet.packet,
         )
         .expect("forward packet");
 
@@ -244,15 +240,13 @@ fn router_rejects_capsule_with_unknown_policy_id() {
     let mut replay = aurora::node::NoReplay;
 
     let err = router
-        .process_forward_packet(
+        .process_forward_data_packet(
             packet.sv,
             &time,
             &mut forward,
             None,
             &mut replay,
-            &mut packet.chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut packet.packet,
         )
         .expect_err("policy violation expected");
     assert!(matches!(err, aurora::types::Error::PolicyViolation));
@@ -283,15 +277,13 @@ fn router_entry_rejects_capsule_without_keybinding_part() {
     let mut replay = aurora::node::NoReplay;
 
     let err = router
-        .process_forward_packet(
+        .process_forward_data_packet(
             packet.sv,
             &time,
             &mut forward,
             None,
             &mut replay,
-            &mut packet.chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut packet.packet,
         )
         .expect_err("policy violation expected");
     assert!(matches!(err, aurora::types::Error::PolicyViolation));
@@ -335,15 +327,13 @@ fn router_entry_rejects_invalid_zkboo_proof() {
     let mut replay = aurora::node::NoReplay;
 
     let err = router
-        .process_forward_packet(
+        .process_forward_data_packet(
             packet.sv,
             &time,
             &mut forward,
             None,
             &mut replay,
-            &mut packet.chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut packet.packet,
         )
         .expect_err("policy violation expected");
     assert!(matches!(err, aurora::types::Error::PolicyViolation));
@@ -413,15 +403,13 @@ fn router_entry_accepts_valid_keybinding_part() {
     let mut replay = aurora::node::NoReplay;
 
     router
-        .process_forward_packet(
+        .process_forward_data_packet(
             packet.sv,
             &time,
             &mut forward,
             None,
             &mut replay,
-            &mut packet.chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut packet.packet,
         )
         .expect("forward packet");
     assert!(forward.take().is_some(), "payload forwarded");
