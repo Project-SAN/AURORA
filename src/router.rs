@@ -8,7 +8,7 @@ use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnno
 use crate::setup::pipeline::SetupPipeline;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
-use crate::types::{Ahdr, Chdr, DataPacket, LenChecked, Result};
+use crate::types::{Ahdr, Chdr, DataPacket, LenChecked, OnionProcessed, Result};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -267,9 +267,11 @@ impl Router {
         forward: &'io mut dyn crate::forward::Forward,
         exit: Option<&mut dyn crate::node::ExitTransport>,
         replay: &'io mut dyn crate::node::ReplayFilter,
-        packet: &mut DataPacket<LenChecked>,
-    ) -> Result<()> {
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<OnionProcessed>> {
         let mut chdr: Chdr = packet.chdr.into();
+        let mut ahdr = packet.ahdr;
+        let mut payload = packet.payload;
         self.process_forward_packet_raw(
             sv,
             now,
@@ -277,11 +279,12 @@ impl Router {
             exit,
             replay,
             &mut chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut ahdr,
+            &mut payload,
         )?;
-        packet.chdr = chdr.try_into()?;
-        Ok(())
+        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload)
+            .mark_policy_checked()
+            .mark_onion_processed())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -315,20 +318,23 @@ impl Router {
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,
         replay: &'io mut dyn crate::node::ReplayFilter,
-        packet: &mut DataPacket<LenChecked>,
-    ) -> Result<()> {
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<OnionProcessed>> {
         let mut chdr: Chdr = packet.chdr.into();
+        let mut ahdr = packet.ahdr;
+        let mut payload = packet.payload;
         self.process_backward_packet_raw(
             sv,
             now,
             forward,
             replay,
             &mut chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
+            &mut ahdr,
+            &mut payload,
         )?;
-        packet.chdr = chdr.try_into()?;
-        Ok(())
+        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload)
+            .mark_policy_checked()
+            .mark_onion_processed())
     }
 
     fn refresh_policy_roles(&mut self, routes: &[RouteAnnouncement]) {

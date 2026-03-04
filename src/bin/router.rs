@@ -65,7 +65,9 @@ fn main() {
                         continue;
                     }
                     Packet::Data(data_packet_raw) => {
-                        let mut data_packet = data_packet_raw;
+                        let hops = data_packet_raw.chdr.hops.get();
+                        let ahdr_len = data_packet_raw.ahdr.bytes.len();
+                        let payload_len = data_packet_raw.payload.len();
                         let mut runtime = RouterRuntime::new(
                             &mut router,
                             &time,
@@ -75,16 +77,13 @@ fn main() {
                         if let Err(err) = runtime.process_data_packet_with_exit(
                             direction,
                             sv,
-                            &mut data_packet,
+                            data_packet_raw,
                             Some(&mut exit),
                         ) {
                             eprintln!("packet processing failed: {:?}", err);
                             eprintln!(
                                 "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
-                                direction,
-                                data_packet.chdr.hops.get(),
-                                data_packet.ahdr.bytes.len(),
-                                data_packet.payload.len()
+                                direction, hops, ahdr_len, payload_len
                             );
                         } else if let Ok(actions) = runtime.handle_async_violations() {
                             for req in actions.resend {
