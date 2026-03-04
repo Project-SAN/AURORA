@@ -65,13 +65,7 @@ fn main() {
                         continue;
                     }
                     Packet::Data(data_packet_raw) => {
-                        let mut data_packet = match data_packet_raw.validate_lengths() {
-                            Ok(pkt) => pkt,
-                            Err(err) => {
-                                eprintln!("packet processing failed: {:?}", err);
-                                continue;
-                            }
-                        };
+                        let mut data_packet = data_packet_raw;
                         let mut runtime = RouterRuntime::new(
                             &mut router,
                             &time,
