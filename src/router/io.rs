@@ -1,13 +1,13 @@
-use crate::types::{Ahdr, Chdr, Error, PacketDirection, PacketType, Result, Sv};
+use crate::types::{
+    Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Result, Sv,
+};
 use alloc::vec;
 use alloc::vec::Vec;
 
 pub struct IncomingPacket {
     pub direction: PacketDirection,
     pub sv: Sv,
-    pub chdr: Chdr,
-    pub ahdr: Ahdr,
-    pub payload: Vec<u8>,
+    pub packet: Packet,
 }
 
 pub trait PacketListener {
@@ -54,12 +54,13 @@ pub fn encode_frame_bytes(
     ahdr: &Ahdr,
     payload: &[u8],
 ) -> Vec<u8> {
+    let (typ, hops, specific) = chdr.to_raw_parts();
     let mut frame = Vec::with_capacity(4 + 16 + 8 + ahdr.bytes.len() + payload.len());
     frame.push(direction_to_u8(direction));
-    frame.push(packet_type_to_u8(chdr.typ));
-    frame.push(chdr.hops);
+    frame.push(packet_type_to_u8(typ));
+    frame.push(hops);
     frame.push(0);
-    frame.extend_from_slice(&chdr.specific);
+    frame.extend_from_slice(&specific);
     frame.extend_from_slice(&(ahdr.bytes.len() as u32).to_le_bytes());
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(&ahdr.bytes);
@@ -77,9 +78,9 @@ pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<I
     reader.read_exact(&mut specific)?;
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
-    let ahdr_len = u32::from_le_bytes(len_buf) as usize;
+    let ahdr_len = PayloadLen::from_u32(u32::from_le_bytes(len_buf)).get();
     reader.read_exact(&mut len_buf)?;
-    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    let payload_len = PayloadLen::from_u32(u32::from_le_bytes(len_buf)).get();
     let mut ahdr_bytes = vec![0u8; ahdr_len];
     if ahdr_len > 0 {
         reader.read_exact(&mut ahdr_bytes)?;
@@ -91,13 +92,11 @@ pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<I
     Ok(IncomingPacket {
         direction,
         sv,
-        chdr: Chdr {
-            typ: pkt_type,
-            hops,
-            specific,
-        },
-        ahdr: Ahdr { bytes: ahdr_bytes },
-        payload,
+        packet: Packet::from_wire_parts(
+            Chdr::from_raw_parts(pkt_type, hops, specific)?,
+            Ahdr { bytes: ahdr_bytes },
+            payload,
+        )?,
     })
 }
 

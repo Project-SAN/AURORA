@@ -8,7 +8,9 @@ use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnno
 use crate::setup::pipeline::SetupPipeline;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
-use crate::types::{Ahdr, Chdr, Result};
+use crate::types::{
+    Ahdr, BackwardOnionProcessed, Chdr, DataPacket, ForwardOnionProcessed, LenChecked, Result,
+};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -208,7 +210,7 @@ impl Router {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn process_forward_packet<'io>(
+    fn process_forward_packet_raw<'io>(
         &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
@@ -222,11 +224,7 @@ impl Router {
         use crate::node;
         let policy = self.policy_runtime();
         #[cfg(feature = "localnet-debug")]
-        let orig_chdr = Chdr {
-            typ: chdr.typ,
-            hops: chdr.hops,
-            specific: chdr.specific,
-        };
+        let orig_chdr = *chdr;
         #[cfg(feature = "localnet-debug")]
         let orig_ahdr_bytes = ahdr.bytes.clone();
         #[cfg(feature = "localnet-debug")]
@@ -264,7 +262,35 @@ impl Router {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn process_backward_packet<'io>(
+    pub fn process_forward_data_packet<'io>(
+        &self,
+        sv: crate::types::Sv,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        exit: Option<&mut dyn crate::node::ExitTransport>,
+        replay: &'io mut dyn crate::node::ReplayFilter,
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<ForwardOnionProcessed>> {
+        let mut chdr: Chdr = packet.chdr.into();
+        let mut ahdr = packet.ahdr;
+        let mut payload = packet.payload;
+        self.process_forward_packet_raw(
+            sv,
+            now,
+            forward,
+            exit,
+            replay,
+            &mut chdr,
+            &mut ahdr,
+            &mut payload,
+        )?;
+        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload)
+            .mark_forward_policy_checked()
+            .mark_forward_onion_processed())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_backward_packet_raw<'io>(
         &self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
@@ -285,6 +311,30 @@ impl Router {
             exit: None,
         };
         node::backward::process_data(&mut ctx, chdr, ahdr, payload)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_backward_data_packet<'io>(
+        &self,
+        sv: crate::types::Sv,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        replay: &'io mut dyn crate::node::ReplayFilter,
+        packet: DataPacket<LenChecked>,
+    ) -> Result<DataPacket<BackwardOnionProcessed>> {
+        let mut chdr: Chdr = packet.chdr.into();
+        let mut ahdr = packet.ahdr;
+        let mut payload = packet.payload;
+        self.process_backward_packet_raw(
+            sv,
+            now,
+            forward,
+            replay,
+            &mut chdr,
+            &mut ahdr,
+            &mut payload,
+        )?;
+        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload).mark_backward_onion_processed())
     }
 
     fn refresh_policy_roles(&mut self, routes: &[RouteAnnouncement]) {

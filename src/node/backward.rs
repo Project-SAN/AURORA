@@ -25,9 +25,9 @@ pub fn process_data(
     // from the exit node. We just need to add our onion layer and forward.
     use crate::types::PacketDirection;
 
-    let mut iv = chdr.specific;
+    let mut iv = chdr.nonce().ok_or(Error::Length)?.0;
     onion::add_layer(&res.s, &mut iv, payload)?;
-    chdr.specific = iv;
+    chdr.set_nonce(crate::types::Nonce(iv))?;
     ctx.forward.send(
         &res.r,
         chdr,

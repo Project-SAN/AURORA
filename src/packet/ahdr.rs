@@ -3,7 +3,9 @@ use crate::crypto::{
     mac, prg,
 };
 use crate::packet::core::open;
-use crate::types::{Ahdr, Error, Exp, Fs, Result, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN};
+use crate::types::{
+    Ahdr, AhdrLen, Error, Exp, Fs, RMax, Result, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN,
+};
 use alloc::vec;
 use alloc::vec::Vec;
 use rand_core::RngCore;
@@ -16,10 +18,7 @@ pub struct ProcResult {
 
 // Algorithm 3: Process an AHDR at a hop
 pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
-    let rc = ahdr.bytes.len();
-    if !rc.is_multiple_of(C_BLOCK) {
-        return Err(Error::Length);
-    }
+    let rc = AhdrLen::new(ahdr.bytes.len())?.get();
     // number of blocks r = rc / C_BLOCK (not needed explicitly)
     // Parse head block
     let head = &ahdr.bytes[0..C_BLOCK];
@@ -64,7 +63,8 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
     if l == 0 || l != fses.len() {
         return Err(Error::Length);
     }
-    if rmax == 0 || l > rmax {
+    let rmax = RMax::from_usize(rmax)?.get();
+    if l > rmax {
         return Err(Error::Length);
     }
     let rc = rmax * C_BLOCK;
@@ -150,6 +150,7 @@ pub fn create_nested_ahdr(
     if l == 0 || l != fses.len() {
         return Err(Error::Length);
     }
+    let rmax = RMax::from_usize(rmax)?.get();
     let rc = rmax * C_BLOCK;
     if inner.bytes.len() != rc {
         return Err(Error::Length);

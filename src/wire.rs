@@ -10,10 +10,10 @@
 //! [24..28] : u32  payload_len (big-endian)
 //! [28..]   : ahdr bytes || payload bytes
 //!
-//! The caller is responsible for validating semantic sizes (e.g., AHDR length
-//! matches r*c) at a higher layer. This module only enforces basic length checks.
+//! Data packets are validated for basic semantic sizes at decode time.
+//! Setup packets are only checked for framing-level lengths here.
 
-use crate::types::{Ahdr, Chdr, Error, PacketType, Result};
+use crate::types::{Ahdr, Chdr, Error, Packet, PacketType, PayloadLen, Result};
 use alloc::vec::Vec;
 
 pub const WIRE_VERSION: u8 = 1;
@@ -46,12 +46,13 @@ fn read_be_u32(b: &[u8]) -> u32 {
 pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
     let ah_len = ahdr.bytes.len();
     let pl_len = payload.len();
+    let (typ, hops, specific) = chdr.to_raw_parts();
     let mut out = Vec::with_capacity(FIXED_HDR_LEN + ah_len + pl_len);
     out.push(WIRE_VERSION);
-    out.push(pkt_type_to_u8(chdr.typ));
-    out.push(chdr.hops);
+    out.push(pkt_type_to_u8(typ));
+    out.push(hops);
     out.push(0u8); // reserved
-    out.extend_from_slice(&chdr.specific);
+    out.extend_from_slice(&specific);
     out.extend_from_slice(&be_u32(ah_len as u32));
     out.extend_from_slice(&be_u32(pl_len as u32));
     out.extend_from_slice(&ahdr.bytes);
@@ -59,7 +60,7 @@ pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
+pub fn decode(buf: &[u8]) -> Result<Packet> {
     if buf.len() < FIXED_HDR_LEN {
         return Err(Error::Length);
     }
@@ -71,47 +72,40 @@ pub fn decode(buf: &[u8]) -> Result<(Chdr, Ahdr, Vec<u8>)> {
     let _reserved = buf[3];
     let mut specific = [0u8; 16];
     specific.copy_from_slice(&buf[4..20]);
-    let ah_len = read_be_u32(&buf[20..24]) as usize;
-    let pl_len = read_be_u32(&buf[24..28]) as usize;
+    let ah_len = PayloadLen::from(read_be_u32(&buf[20..24])).get();
+    let pl_len = PayloadLen::from(read_be_u32(&buf[24..28])).get();
     let need = FIXED_HDR_LEN + ah_len + pl_len;
     if buf.len() < need {
         return Err(Error::Length);
     }
     let ah_bytes = &buf[FIXED_HDR_LEN..FIXED_HDR_LEN + ah_len];
     let pl_bytes = &buf[FIXED_HDR_LEN + ah_len..need];
-    let chdr = Chdr {
-        typ,
-        hops,
-        specific,
-    };
+    let chdr = Chdr::from_raw_parts(typ, hops, specific)?;
     let ahdr = Ahdr {
         bytes: Vec::from(ah_bytes),
     };
     let payload = Vec::from(pl_bytes);
-    Ok((chdr, ahdr, payload))
+    Packet::from_wire_parts(chdr, ahdr, payload)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Nonce;
+    use crate::types::{HopCount, Nonce, PacketType};
 
     #[test]
     fn roundtrip_data_packet() {
-        let ch = Chdr {
-            typ: PacketType::Data,
-            hops: 3,
-            specific: Nonce([1u8; 16]).0,
-        };
+        let ch = Chdr::data(HopCount::new(3).expect("hop"), Nonce([1u8; 16]));
         let ah = Ahdr {
             bytes: alloc::vec![0xAA; 96],
         };
         let payload = alloc::vec![0x55; 80];
         let encoded = encode(&ch, &ah, &payload);
-        let (ch2, ah2, pl2) = decode(&encoded).expect("decode");
-        assert!(matches!(ch2.typ, PacketType::Data));
-        assert_eq!(ch2.hops, 3);
-        assert_eq!(ch2.specific, ch.specific);
+        let packet = decode(&encoded).expect("decode");
+        let (ch2, ah2, pl2) = packet.into_wire_parts();
+        assert!(matches!(ch2.packet_type(), PacketType::Data));
+        assert_eq!(ch2.hops().get(), 3);
+        assert_eq!(ch2.nonce(), ch.nonce());
         assert_eq!(ah2.bytes, ah.bytes);
         assert_eq!(pl2, payload);
     }
@@ -135,5 +129,16 @@ mod tests {
         buf[24..28].copy_from_slice(&1u32.to_be_bytes());
         // missing body
         assert!(decode(&buf).is_err());
+
+        // complete frame with invalid semantic AHDR length for data packets
+        let mut framed = alloc::vec![0u8; FIXED_HDR_LEN];
+        framed[0] = WIRE_VERSION;
+        framed[1] = 0x02; // data
+        framed[2] = 1; // hops
+        framed[20..24].copy_from_slice(&2u32.to_be_bytes()); // not a valid AHDR length
+        framed[24..28].copy_from_slice(&3u32.to_be_bytes());
+        framed.extend_from_slice(&[0xAA, 0xBB]); // ahdr bytes
+        framed.extend_from_slice(&[0x01, 0x02, 0x03]); // payload bytes
+        assert!(decode(&framed).is_err());
     }
 }
