@@ -257,9 +257,7 @@ impl PolicyCapsule {
 
     pub fn part(&self, kind: ProofKind) -> Option<&ProofPart> {
         let count = PolicyPartCount::new(self.part_count).ok()?.get();
-        self.parts[..count]
-            .iter()
-            .find(|part| part.kind == kind)
+        self.parts[..count].iter().find(|part| part.kind == kind)
     }
 }
 

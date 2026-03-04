@@ -98,17 +98,25 @@ impl<'a> RouterRuntime<'a> {
         packet: &mut DataPacket<LenChecked>,
         exit: Option<&mut dyn ExitTransport>,
     ) -> Result<()> {
-        let mut chdr: Chdr = packet.chdr.into();
-        self.process_with_exit(
-            direction,
-            sv,
-            &mut chdr,
-            &mut packet.ahdr,
-            &mut packet.payload,
-            exit,
-        )?;
-        packet.chdr = chdr.try_into()?;
-        Ok(())
+        let mut forward = (self.forward_factory)();
+        let mut replay = (self.replay_factory)();
+        match direction {
+            PacketDirection::Forward => self.router.process_forward_data_packet(
+                sv,
+                self.time,
+                forward.as_mut(),
+                exit,
+                replay.as_mut(),
+                packet,
+            ),
+            PacketDirection::Backward => self.router.process_backward_data_packet(
+                sv,
+                self.time,
+                forward.as_mut(),
+                replay.as_mut(),
+                packet,
+            ),
+        }
     }
 
     pub fn drain_pending(&mut self) -> Result<Vec<crate::policy::PolicyCapsule>> {

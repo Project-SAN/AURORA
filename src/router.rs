@@ -8,7 +8,7 @@ use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnno
 use crate::setup::pipeline::SetupPipeline;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
-use crate::types::{Ahdr, Chdr, Result};
+use crate::types::{Ahdr, Chdr, DataPacket, LenChecked, Result};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -260,6 +260,31 @@ impl Router {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn process_forward_data_packet<'io>(
+        &self,
+        sv: crate::types::Sv,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        exit: Option<&mut dyn crate::node::ExitTransport>,
+        replay: &'io mut dyn crate::node::ReplayFilter,
+        packet: &mut DataPacket<LenChecked>,
+    ) -> Result<()> {
+        let mut chdr: Chdr = packet.chdr.into();
+        self.process_forward_packet(
+            sv,
+            now,
+            forward,
+            exit,
+            replay,
+            &mut chdr,
+            &mut packet.ahdr,
+            &mut packet.payload,
+        )?;
+        packet.chdr = chdr.try_into()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn process_backward_packet<'io>(
         &self,
         sv: crate::types::Sv,
@@ -281,6 +306,29 @@ impl Router {
             exit: None,
         };
         node::backward::process_data(&mut ctx, chdr, ahdr, payload)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_backward_data_packet<'io>(
+        &self,
+        sv: crate::types::Sv,
+        now: &'io dyn crate::time::TimeProvider,
+        forward: &'io mut dyn crate::forward::Forward,
+        replay: &'io mut dyn crate::node::ReplayFilter,
+        packet: &mut DataPacket<LenChecked>,
+    ) -> Result<()> {
+        let mut chdr: Chdr = packet.chdr.into();
+        self.process_backward_packet(
+            sv,
+            now,
+            forward,
+            replay,
+            &mut chdr,
+            &mut packet.ahdr,
+            &mut packet.payload,
+        )?;
+        packet.chdr = chdr.try_into()?;
+        Ok(())
     }
 
     fn refresh_policy_roles(&mut self, routes: &[RouteAnnouncement]) {

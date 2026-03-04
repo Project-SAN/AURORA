@@ -460,11 +460,9 @@ impl Packet {
                 ahdr,
                 payload,
             }),
-            Chdr::Data { hops, nonce } => Self::Data(DataPacket::new(
-                DataChdr { hops, nonce },
-                ahdr,
-                payload,
-            )),
+            Chdr::Data { hops, nonce } => {
+                Self::Data(DataPacket::new(DataChdr { hops, nonce }, ahdr, payload))
+            }
         }
     }
 
