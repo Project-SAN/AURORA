@@ -74,12 +74,19 @@ fn main() {
                             move || Box::new(TcpForward::new()),
                             || Box::new(NoReplay),
                         );
-                        if let Err(err) = runtime.process_data_packet_with_exit(
-                            direction,
-                            sv,
-                            data_packet_raw,
-                            Some(&mut exit),
-                        ) {
+                        let result = match direction {
+                            types::PacketDirection::Forward => runtime
+                                .process_forward_data_packet_with_exit(
+                                    sv,
+                                    data_packet_raw,
+                                    Some(&mut exit),
+                                )
+                                .map(|_| ()),
+                            types::PacketDirection::Backward => runtime
+                                .process_backward_data_packet(sv, data_packet_raw)
+                                .map(|_| ()),
+                        };
+                        if let Err(err) = result {
                             eprintln!("packet processing failed: {:?}", err);
                             eprintln!(
                                 "  direction: {:?}, hops: {}, ahdr_len: {}, payload_len: {}",
