@@ -396,9 +396,11 @@ pub struct Raw;
 #[derive(Debug)]
 pub struct LenChecked;
 #[derive(Debug)]
-pub struct PolicyChecked;
+pub struct ForwardPolicyChecked;
 #[derive(Debug)]
-pub struct OnionProcessed;
+pub struct ForwardOnionProcessed;
+#[derive(Debug)]
+pub struct BackwardOnionProcessed;
 
 #[derive(Debug)]
 pub struct DataPacket<S> {
@@ -441,15 +443,25 @@ impl DataPacket<Raw> {
 }
 
 impl DataPacket<LenChecked> {
-    pub fn mark_policy_checked(self) -> DataPacket<PolicyChecked> {
+    pub fn mark_forward_policy_checked(self) -> DataPacket<ForwardPolicyChecked> {
+        self.transition()
+    }
+
+    pub fn mark_backward_onion_processed(self) -> DataPacket<BackwardOnionProcessed> {
         self.transition()
     }
 }
 
-impl DataPacket<PolicyChecked> {
-    pub fn mark_onion_processed(self) -> DataPacket<OnionProcessed> {
+impl DataPacket<ForwardPolicyChecked> {
+    pub fn mark_forward_onion_processed(self) -> DataPacket<ForwardOnionProcessed> {
         self.transition()
     }
+}
+
+#[derive(Debug)]
+pub enum ProcessedDataPacket {
+    Forward(DataPacket<ForwardOnionProcessed>),
+    Backward(DataPacket<BackwardOnionProcessed>),
 }
 
 pub enum Packet {

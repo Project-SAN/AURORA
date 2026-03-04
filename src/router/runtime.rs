@@ -1,5 +1,5 @@
 use crate::router::Router;
-use crate::types::{DataPacket, LenChecked, OnionProcessed, PacketDirection, Result};
+use crate::types::{DataPacket, LenChecked, PacketDirection, ProcessedDataPacket, Result};
 use crate::{
     forward::Forward,
     node::{ExitTransport, ReplayFilter},
@@ -41,7 +41,7 @@ impl<'a> RouterRuntime<'a> {
         direction: PacketDirection,
         sv: crate::types::Sv,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<OnionProcessed>> {
+    ) -> Result<ProcessedDataPacket> {
         self.process_data_packet_with_exit(direction, sv, packet, None)
     }
 
@@ -51,25 +51,31 @@ impl<'a> RouterRuntime<'a> {
         sv: crate::types::Sv,
         packet: DataPacket<LenChecked>,
         exit: Option<&mut dyn ExitTransport>,
-    ) -> Result<DataPacket<OnionProcessed>> {
+    ) -> Result<ProcessedDataPacket> {
         let mut forward = (self.forward_factory)();
         let mut replay = (self.replay_factory)();
         match direction {
-            PacketDirection::Forward => self.router.process_forward_data_packet(
-                sv,
-                self.time,
-                forward.as_mut(),
-                exit,
-                replay.as_mut(),
-                packet,
-            ),
-            PacketDirection::Backward => self.router.process_backward_data_packet(
-                sv,
-                self.time,
-                forward.as_mut(),
-                replay.as_mut(),
-                packet,
-            ),
+            PacketDirection::Forward => self
+                .router
+                .process_forward_data_packet(
+                    sv,
+                    self.time,
+                    forward.as_mut(),
+                    exit,
+                    replay.as_mut(),
+                    packet,
+                )
+                .map(ProcessedDataPacket::Forward),
+            PacketDirection::Backward => self
+                .router
+                .process_backward_data_packet(
+                    sv,
+                    self.time,
+                    forward.as_mut(),
+                    replay.as_mut(),
+                    packet,
+                )
+                .map(ProcessedDataPacket::Backward),
         }
     }
 
