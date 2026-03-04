@@ -458,12 +458,6 @@ impl DataPacket<ForwardPolicyChecked> {
     }
 }
 
-#[derive(Debug)]
-pub enum ProcessedDataPacket {
-    Forward(DataPacket<ForwardOnionProcessed>),
-    Backward(DataPacket<BackwardOnionProcessed>),
-}
-
 pub enum Packet {
     Setup(SetupPacket),
     Data(DataPacket<LenChecked>),
