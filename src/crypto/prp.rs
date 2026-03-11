@@ -26,23 +26,13 @@ pub fn prp_dec(key_src: &[u8], block: &mut [u8; 16]) {
 pub fn prp_enc_bytes(key_src: &[u8], data: &mut [u8]) {
     assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
-    for chunk in data.chunks_mut(16) {
-        let mut block = [0u8; 16];
-        block.copy_from_slice(chunk);
-        feistel_encrypt_block(&k, &mut block);
-        chunk.copy_from_slice(&block);
-    }
+    apply_blocks(data, |block| feistel_encrypt_block(&k, block));
 }
 
 pub fn prp_dec_bytes(key_src: &[u8], data: &mut [u8]) {
     assert!(data.len().is_multiple_of(16));
     let k = derive_prp_key(key_src);
-    for chunk in data.chunks_mut(16) {
-        let mut block = [0u8; 16];
-        block.copy_from_slice(chunk);
-        feistel_decrypt_block(&k, &mut block);
-        chunk.copy_from_slice(&block);
-    }
+    apply_blocks(data, |block| feistel_decrypt_block(&k, block));
 }
 
 fn pi_apply(key_src: &[u8], data: &mut [u8]) {
@@ -82,6 +72,36 @@ fn prg_with_tweak(key: &[u8; 16], tweak: &[u8; 16], out: &mut [u8]) {
         *s = key[i] ^ tweak[i];
     }
     prg::prg2(&seed, out);
+}
+
+fn apply_blocks(data: &mut [u8], mut f: impl FnMut(&mut [u8; 16])) {
+    for chunk in data.chunks_mut(16) {
+        let mut block = [0u8; 16];
+        block.copy_from_slice(chunk);
+        f(&mut block);
+        chunk.copy_from_slice(&block);
+    }
+}
+
+fn xor_in_place(data: &mut [u8], mask: &[u8]) {
+    for (b, m) in data.iter_mut().zip(mask.iter()) {
+        *b ^= *m;
+    }
+}
+
+fn xor_mac_into(block: &mut [u8; 16], key: &[u8; 16], data: &[u8]) {
+    let tag = mac::mac_trunc16(key, data);
+    xor_in_place(block, &tag.0);
+}
+
+fn xor_stream_with_tweak(key: &[u8; 16], tweak: &[u8; 16], data: &mut [u8]) {
+    if data.is_empty() {
+        return;
+    }
+
+    let mut ks = vec![0u8; data.len()];
+    prg_with_tweak(key, tweak, &mut ks);
+    xor_in_place(data, &ks);
 }
 
 fn feistel_encrypt_block(key: &[u8; 16], block: &mut [u8; 16]) {
@@ -148,31 +168,10 @@ pub fn lioness_encrypt(key_src: &[u8], data: &mut [u8]) {
     let mut l = [0u8; 16];
     l.copy_from_slice(l_slice);
 
-    if !r_slice.is_empty() {
-        let mut ks = vec![0u8; r_slice.len()];
-        prg_with_tweak(&k1, &l, &mut ks);
-        for (r, s) in r_slice.iter_mut().zip(ks.iter()) {
-            *r ^= *s;
-        }
-    }
-
-    let tag2 = mac::mac_trunc16(&k2, r_slice);
-    for (l_b, t) in l.iter_mut().zip(tag2.0.iter()) {
-        *l_b ^= *t;
-    }
-
-    if !r_slice.is_empty() {
-        let mut ks = vec![0u8; r_slice.len()];
-        prg_with_tweak(&k3, &l, &mut ks);
-        for (r, s) in r_slice.iter_mut().zip(ks.iter()) {
-            *r ^= *s;
-        }
-    }
-
-    let tag4 = mac::mac_trunc16(&k4, r_slice);
-    for (l_b, t) in l.iter_mut().zip(tag4.0.iter()) {
-        *l_b ^= *t;
-    }
+    xor_stream_with_tweak(&k1, &l, r_slice);
+    xor_mac_into(&mut l, &k2, r_slice);
+    xor_stream_with_tweak(&k3, &l, r_slice);
+    xor_mac_into(&mut l, &k4, r_slice);
 
     l_slice.copy_from_slice(&l);
 }
@@ -187,38 +186,17 @@ pub fn lioness_decrypt(key_src: &[u8], data: &mut [u8]) {
     let mut l = [0u8; 16];
     l.copy_from_slice(l_slice);
 
-    let tag4 = mac::mac_trunc16(&k4, r_slice);
-    for (l_b, t) in l.iter_mut().zip(tag4.0.iter()) {
-        *l_b ^= *t;
-    }
-
-    if !r_slice.is_empty() {
-        let mut ks = vec![0u8; r_slice.len()];
-        prg_with_tweak(&k3, &l, &mut ks);
-        for (r, s) in r_slice.iter_mut().zip(ks.iter()) {
-            *r ^= *s;
-        }
-    }
-
-    let tag2 = mac::mac_trunc16(&k2, r_slice);
-    for (l_b, t) in l.iter_mut().zip(tag2.0.iter()) {
-        *l_b ^= *t;
-    }
-
-    if !r_slice.is_empty() {
-        let mut ks = vec![0u8; r_slice.len()];
-        prg_with_tweak(&k1, &l, &mut ks);
-        for (r, s) in r_slice.iter_mut().zip(ks.iter()) {
-            *r ^= *s;
-        }
-    }
+    xor_mac_into(&mut l, &k4, r_slice);
+    xor_stream_with_tweak(&k3, &l, r_slice);
+    xor_mac_into(&mut l, &k2, r_slice);
+    xor_stream_with_tweak(&k1, &l, r_slice);
 
     l_slice.copy_from_slice(&l);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{prp_dec, prp_dec_bytes, prp_enc, prp_enc_bytes};
+    use super::{lioness_decrypt, lioness_encrypt, prp_dec, prp_dec_bytes, prp_enc, prp_enc_bytes};
     use alloc::vec;
     use rand_chacha::ChaCha20Rng;
     use rand_core::{RngCore, SeedableRng};
@@ -250,5 +228,21 @@ mod tests {
         assert_ne!(data, orig);
         prp_dec_bytes(&key, &mut data);
         assert_eq!(data, orig);
+    }
+
+    #[test]
+    fn lioness_roundtrip_randomized() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0x55AA_7711);
+        for len in [16usize, 17, 31, 64, 127] {
+            let mut key = [0u8; 16];
+            rng.fill_bytes(&mut key);
+            let mut data = vec![0u8; len];
+            rng.fill_bytes(&mut data);
+            let orig = data.clone();
+            lioness_encrypt(&key, &mut data);
+            assert_ne!(data, orig);
+            lioness_decrypt(&key, &mut data);
+            assert_eq!(data, orig);
+        }
     }
 }
