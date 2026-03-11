@@ -37,3 +37,9 @@ pub fn hop_key(input: &[u8], op: OpLabel, out: &mut [u8]) {
     let hk = Hkdf::<Sha256>::new(None, input);
     hk.expand(info, out).expect("HKDF expand");
 }
+
+pub fn mac_key(input: &[u8]) -> [u8; 16] {
+    let mut key = [0u8; 16];
+    hop_key(input, OpLabel::Mac, &mut key);
+    key
+}
