@@ -1,7 +1,4 @@
-use crate::crypto::{
-    kdf::{hop_key, OpLabel},
-    mac, prg,
-};
+use crate::crypto::{kdf::mac_key, mac, prg};
 use crate::packet::core::open;
 use crate::types::{
     Ahdr, AhdrLen, Error, Exp, Fs, RMax, Result, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN,
@@ -32,8 +29,7 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     }
 
     // Verify MAC: gamma == MAC(hMAC(s); FS || beta)
-    let mut mac_key = [0u8; 16];
-    hop_key(&s.0, OpLabel::Mac, &mut mac_key);
+    let mac_key = mac_key(&s.0);
     let mut mac_input = Vec::with_capacity(FS_LEN + beta.len());
     mac_input.extend_from_slice(&fs.0);
     mac_input.extend_from_slice(beta);
@@ -45,11 +41,7 @@ pub fn proc_ahdr(sv: &Sv, ahdr: &Ahdr, now: Exp) -> Result<ProcResult> {
     let mut next = Vec::with_capacity(rc);
     next.extend_from_slice(beta);
     next.resize(rc, 0u8);
-    let mut mask = vec![0u8; rc];
-    prg::prg2(&s.0, &mut mask);
-    for (b, m) in next.iter_mut().zip(mask.iter()) {
-        *b ^= *m;
-    }
+    prg::xor_prg2(&s.0, &mut next);
     Ok(ProcResult {
         s,
         r: rseg,
@@ -95,8 +87,7 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
     }
     beta.extend_from_slice(&phi);
     // gamma_{l-1}
-    let mut hkey = [0u8; 16];
-    hop_key(&keys[l - 1].0, OpLabel::Mac, &mut hkey);
+    let hkey = mac_key(&keys[l - 1].0);
     let mut mac_input = Vec::with_capacity(FS_LEN + beta.len());
     mac_input.extend_from_slice(&fses[l - 1].0);
     mac_input.extend_from_slice(&beta);
@@ -110,16 +101,10 @@ pub fn create_ahdr(keys: &[Si], fses: &[Fs], rmax: usize, rng: &mut dyn RngCore)
         let tail_len = (rmax - 2) * C_BLOCK;
         base.extend_from_slice(&beta[0..tail_len.min(beta.len())]);
         // mask = PRG2(s_i)[0..(r-1)c]
-        let mut mask = vec![0u8; (rmax - 1) * C_BLOCK];
-        prg::prg2(&key.0, &mut mask);
-        // beta_i = base XOR mask
-        for (b, m) in base.iter_mut().zip(mask.iter()) {
-            *b ^= *m;
-        }
+        prg::xor_prg2(&key.0, &mut base);
         beta = base;
         // gamma_i = MAC(hMAC(s_i); FS_i || beta_i)
-        let mut hkey_i = [0u8; 16];
-        hop_key(&key.0, OpLabel::Mac, &mut hkey_i);
+        let hkey_i = mac_key(&key.0);
         let mut mac_input_i = Vec::with_capacity(FS_LEN + beta.len());
         mac_input_i.extend_from_slice(&fses[i].0);
         mac_input_i.extend_from_slice(&beta);
@@ -180,17 +165,12 @@ pub fn create_nested_ahdr(
         beta_first.extend_from_slice(&rnd);
     }
     // Mask length c(2r - l)
-    let mut mask = vec![0u8; rc + (rmax - l) * C_BLOCK];
-    prg::prg0(&keys[l - 1].0, &mut mask);
-    for (b, m) in beta_first.iter_mut().zip(mask.iter()) {
-        *b ^= *m;
-    }
+    prg::xor_prg0(&keys[l - 1].0, &mut beta_first);
     let mut beta = Vec::with_capacity(2 * rc - C_BLOCK);
     beta.extend_from_slice(&beta_first);
     beta.extend_from_slice(&phi);
     // γ_{l-1}
-    let mut hkey = [0u8; 16];
-    hop_key(&keys[l - 1].0, OpLabel::Mac, &mut hkey);
+    let hkey = mac_key(&keys[l - 1].0);
     let mut mac_input = Vec::with_capacity(FS_LEN + beta.len());
     mac_input.extend_from_slice(&fses[l - 1].0);
     mac_input.extend_from_slice(&beta);
@@ -205,15 +185,10 @@ pub fn create_nested_ahdr(
         base.extend_from_slice(&beta[0..slice_len.min(beta.len())]);
         // XOR first c(2r - l) bytes with PRG0(s_i)
         let xor_len = rc + (rmax - l) * C_BLOCK; // c(2r - l)
-        let mut mask_i = vec![0u8; xor_len];
-        prg::prg0(&key.0, &mut mask_i);
-        for (b, m) in base.iter_mut().take(xor_len).zip(mask_i.iter()) {
-            *b ^= *m;
-        }
+        prg::xor_prg0(&key.0, &mut base[..xor_len]);
         beta = base;
         // gamma_i
-        let mut hkey_i = [0u8; 16];
-        hop_key(&key.0, OpLabel::Mac, &mut hkey_i);
+        let hkey_i = mac_key(&key.0);
         let mut mac_input_i = Vec::with_capacity(FS_LEN + beta.len());
         mac_input_i.extend_from_slice(&fses[i].0);
         mac_input_i.extend_from_slice(&beta);
