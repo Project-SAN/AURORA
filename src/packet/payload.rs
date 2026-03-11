@@ -1,7 +1,4 @@
-use crate::crypto::{
-    kdf::{hop_key, OpLabel},
-    mac, prg,
-};
+use crate::crypto::{kdf::mac_key, mac, prg};
 use crate::types::{Error, Fs, Mac, Result, Si, C_BLOCK};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -61,8 +58,7 @@ pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut Payload) -> Result<Mac
         *b ^= *m;
     }
     // α = MAC(hMAC(s); Ptmp)
-    let mut hkey = [0u8; 16];
-    hop_key(&s.0, OpLabel::Mac, &mut hkey);
+    let hkey = mac_key(&s.0);
     let alpha = mac::mac_trunc16(&hkey, &ptmp);
     // Pout = α || Ptmp
     payload.bytes.clear();
@@ -110,8 +106,7 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &Payload) -> Re
     let mut fses_rev: Vec<Fs> = Vec::with_capacity(l);
     for key in keys.iter().rev() {
         // check MAC on window [0..rc)
-        let mut hkey = [0u8; 16];
-        hop_key(&key.0, OpLabel::Mac, &mut hkey);
+        let hkey = mac_key(&key.0);
         let alpha = &pfull[0..crate::types::K_MAC];
         let rest = &pfull[crate::types::K_MAC..rc];
         let expected = mac::mac_trunc16(&hkey, rest);
@@ -119,11 +114,7 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &Payload) -> Re
             return Err(Error::InvalidMac);
         }
         // unmask: Pfull ^= PRG0(si) || 0^{(i+1)c}
-        let mut mask_rc = vec![0u8; rc];
-        prg::prg0(&key.0, &mut mask_rc);
-        for (dst, mask) in pfull.iter_mut().take(rc).zip(mask_rc.iter()) {
-            *dst ^= *mask;
-        }
+        prg::xor_prg0(&key.0, &mut pfull[..rc]);
         // extract FS_i
         let mut fs_bytes = [0u8; crate::types::FS_LEN];
         fs_bytes.copy_from_slice(
