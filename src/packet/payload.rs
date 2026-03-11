@@ -42,6 +42,12 @@ impl Payload {
     }
 }
 
+fn xor_in_place(data: &mut [u8], mask: &[u8]) {
+    for (byte, mask_byte) in data.iter_mut().zip(mask.iter()) {
+        *byte ^= *mask_byte;
+    }
+}
+
 // Alg.1: Add FS into FS payload
 pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut Payload) -> Result<Mac> {
     let rc = payload.bytes.len();
@@ -54,9 +60,7 @@ pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut Payload) -> Result<Mac
     // mask starting at offset k of an rc-long PRG stream
     let mut mask_full = vec![0u8; rc];
     prg::prg0(&s.0, &mut mask_full);
-    for (b, m) in ptmp.iter_mut().zip(mask_full[crate::types::K_MAC..].iter()) {
-        *b ^= *m;
-    }
+    xor_in_place(&mut ptmp, &mask_full[crate::types::K_MAC..]);
     // α = MAC(hMAC(s); Ptmp)
     let hkey = mac_key(&s.0);
     let alpha = mac::mac_trunc16(&hkey, &ptmp);
@@ -93,9 +97,7 @@ pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &Payload) -> Re
         let copy_len = core::cmp::min(slice.len(), psi_len.saturating_sub((t + 1) * C_BLOCK));
         // place slice at beginning, leaving (t+1)c zeros at the end
         m[0..copy_len].copy_from_slice(&slice[0..copy_len]);
-        for (a, b) in psi.iter_mut().zip(m.iter()) {
-            *a ^= *b;
-        }
+        xor_in_place(&mut psi, &m);
     }
 
     // Pfull = P || ψ (full length l*c)
