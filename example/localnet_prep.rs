@@ -53,10 +53,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(16);
 
-    // For the localnet demo, generate three ZKBoo verifier circuits:
-    // - KeyBinding: outputs hkey = mix_fold(secret)
-    // - Consistency: outputs (hkey, payload_hash) = (mix_fold(secret), mix_fold(payload))
-    // - Policy: outputs (payload_hash, allow_bit) where allow_bit==1 iff Host header matches.
     let keybinding_circuit = ascon_circuit::build_keybinding_circuit(secret_len_bytes);
     let consistency_circuit =
         ascon_circuit::build_consistency_circuit(secret_len_bytes, payload_len_bytes);
@@ -65,7 +61,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let policy = ZkBooPolicy::new(policy_circuit.clone());
     let mut metadata = policy.metadata(900, 0);
-    // ZKBoo-only: provide verifiers for each ProofKind so routers can enforce role-specific parts.
     metadata.verifiers = vec![
         VerifierEntry {
             kind: ProofKind::KeyBinding as u8,
@@ -147,8 +142,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     for spec in routers.iter() {
-        // Each router needs the full route list to determine its Entry/Middle/Exit role.
-        // Write the same signed directory to every node in this demo.
         write_directory(routers.as_slice(), &metadata, out_dir)?;
         write_router_config(spec, out_dir)?;
         if !qemu {
@@ -222,8 +215,6 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
 
     let local_info: PolicyInfo =
         serde_json::from_str(&fs::read_to_string("config/localnet/policy-info.json")?)?;
-    // Load the localnet directory (policies etc.) from a single file and reuse it for qemu.
-    // We then attach all qemu routes so each router can derive its role.
     let base_signed = fs::read_to_string("config/localnet/router-entry.directory.json")?;
     let base_announcement = from_signed_json(&base_signed, &local_public_key())
         .map_err(|err| format!("invalid localnet directory: {err:?}"))?;

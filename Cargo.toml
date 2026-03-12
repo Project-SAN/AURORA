@@ -60,24 +60,13 @@ harness = false
 name = "routing"
 path = "example/routing.rs"
 
+[[example]]
+name = "localnet_prep"
+path = "example/localnet_prep.rs"
+
 [[bin]]
 name = "aurora_router"
 path = "src/bin/router.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "aurora_data_sender"
-path = "src/bin/data_sender.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "aurora_sender"
-path = "src/bin/sender.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "localnet_prep"
-path = "src/bin/localnet_prep.rs"
 required-features = ["std"]
 
 [[bin]]

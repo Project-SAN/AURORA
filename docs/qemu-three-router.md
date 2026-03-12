@@ -16,7 +16,7 @@ scripts/qemu-localnet-up.sh
 
 このスクリプトは以下をまとめて行います。
 
-- `localnet_prep` と `localnet_prep -- --qemu-from-localnet`
+- `cargo run --example localnet_prep` と `cargo run --example localnet_prep -- --qemu-from-localnet`
 - ホスト側 `aurora_router` 3 プロセスで `target/qemu/router-*-state.json` を bootstrap
 - 既存の `target/qemu/router-*-state.json` を削除して stale route を持ち越さないようにする
 - `router_config.json` / `directory.json` / `router_state.json` を各 `qemu-img/virtio-fat-*.img` に注入
@@ -26,12 +26,6 @@ scripts/qemu-localnet-up.sh
 
 送信側が使う設定は [config/qemu/policy-info.host.json](/Users/hiro/workspace/project-san/AURORA/config/qemu/policy-info.host.json) です。QEMU ゲスト内では `10.0.2.2:*` を使いますが、ホスト CLI からは `127.0.0.1:*` に正規化した方を使います。
 
-## setup 送信
-
-```bash
-cargo run --features std --bin aurora_sender config/qemu/policy-info.host.json
-```
-
 ## データ送信
 
 送信者側は entry に直接投げず、必ずホスト側 proxy (`aurora_proxy`) を経由します。
@@ -40,7 +34,7 @@ cargo run --features std --bin aurora_sender config/qemu/policy-info.host.json
 scripts/qemu-localnet-send.sh
 ```
 
-デフォルトでは proxy に対して `GET / HTTP/1.0` を流し、proxy 配下の `aurora_data_sender` が policy capsule 付きの通常送信でターゲットへ送ります。レスポンスは `target/qemu-logs/http-response.bin` に保存されます。
+proxy は起動時に自動で `setup` を流します。デフォルトでは proxy に対して `GET / HTTP/1.0` を流し、proxy 自身が policy capsule 付きの通常送信でターゲットへ送ります。レスポンスは `target/qemu-logs/http-response.bin` に保存されます。
 
 `example.com` を確認する最短手順:
 
