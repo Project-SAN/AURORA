@@ -1,6 +1,6 @@
 # QEMU 3 ノード送信テスト
 
-`setup` から始めて、QEMU 上の 3 ノード `entry -> middle -> exit` を通し、policy 有効のまま HTTP リクエストを送る手順です。ホスト側で state を bootstrap し、その state / directory / router config を各 QEMU 用 FAT イメージへ注入してから起動します。
+`setup` から始めて、QEMU 上の 3 ノード `entry -> middle -> exit` を通し、policy 有効のまま HTTP リクエストを送る手順です。チェックイン済みの `config/qemu/` を使い、ホスト側で state を bootstrap し、その state / directory / router config を各 QEMU 用 FAT イメージへ注入してから起動します。
 
 ## 前提
 
@@ -16,7 +16,6 @@ scripts/qemu-localnet-up.sh
 
 このスクリプトは以下をまとめて行います。
 
-- `cargo run --example localnet_prep` と `cargo run --example localnet_prep -- --qemu-from-localnet`
 - ホスト側 `aurora_router` 3 プロセスで `target/qemu/router-*-state.json` を bootstrap
 - 既存の `target/qemu/router-*-state.json` を削除して stale route を持ち越さないようにする
 - `router_config.json` / `directory.json` / `router_state.json` を各 `qemu-img/virtio-fat-*.img` に注入
@@ -24,7 +23,7 @@ scripts/qemu-localnet-up.sh
 - ホスト HTTP proxy (`127.0.0.1:18080`) を通常送信モードで起動
 - QEMU ノード 3 台起動 (`127.0.0.1:18111`, `:18112`, `:18113` を hostfwd)
 
-送信側が使う設定は [config/qemu/policy-info.host.json](/Users/hiro/workspace/project-san/AURORA/config/qemu/policy-info.host.json) です。QEMU ゲスト内では `10.0.2.2:*` を使いますが、ホスト CLI からは `127.0.0.1:*` に正規化した方を使います。
+送信側が使う設定は [config/qemu/policy-info.host.json](/Users/hiro/workspace/project-san/AURORA/config/qemu/policy-info.host.json) です。QEMU ゲスト内では `10.0.2.2:*` を使いますが、ホスト CLI からは `127.0.0.1:*` に正規化した方を使います。`config/qemu/` は固定ファイルとして管理しています。
 
 ## データ送信
 

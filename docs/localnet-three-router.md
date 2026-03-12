@@ -1,6 +1,6 @@
 # ローカル 3 ルータ検証手順
 
-`example/localnet_prep.rs` が生成する設定ファイルを使うと、`aurora_router` を 3 プロセス起動して最小のローカル網を構築できます。各ルータは独立したディレクトリ JSON/状態ファイルを参照するため、エントリ → 中継 → エグジットの順に別ポートで待ち受けます。
+チェックイン済みの `config/localnet/` を使うと、`aurora_router` を 3 プロセス起動して最小のローカル網を構築できます。各ルータは独立したディレクトリ JSON/状態ファイルを参照するため、エントリ → 中継 → エグジットの順に別ポートで待ち受けます。
 
 ## 前提
 
@@ -8,17 +8,17 @@
 - `cargo run --bin aurora_router` を実行できること（`std` feature はデフォルト有効）。
 - `nc` や `ncat` 等、シンプルな TCP サーバ/クライアントが利用可能であること（エグジット側の出口確認用）。
 
-## 設定ファイル生成
+## 設定ファイル
 
 ```bash
-cargo run --example localnet_prep
+ls config/localnet
 ```
 
-- `config/localnet/` に以下が生成される:
-  - `router-entry|middle|exit.directory.json` – 各ルータ専用のディレクトリアナウンス。HMAC 共有鍵は `localnet-secret`。
-  - `router-*.env` – 上記ディレクトリを読み込むための環境変数セット。バインドアドレス（7101/7102/7103）と状態ファイルパスが含まれる。
+- `config/localnet/` には以下が含まれる:
+  - `router-entry|middle|exit.directory.json` – 各ルータ専用のディレクトリアナウンス。
+  - `router-*.env` – ディレクトリ/バインド/状態ファイルを指定する環境変数セット。
   - `policy-info.json` – ポリシー ID と各ルータのバインド設定をまとめたメタ情報。
-- `target/localnet/` 以下に状態ファイルが保存されるよう準備されます（初回起動時は存在しなくて OK）。
+- `target/localnet/` 以下の state は実行時に生成されます（初回起動時は存在しなくて OK）。
 
 ## エグジット先のダミーサーバ
 
@@ -45,7 +45,7 @@ env $(cat config/localnet/router-exit.env | xargs) cargo run --bin aurora_router
 ```
 
 - 各ルータは自分専用の `router-*.directory.json` を読み込み、`target/localnet/router-*-state.json` にポリシー/ルート/SV を永続化します。
-- ログに `directory sync failed` が出る場合は、`cargo run --example localnet_prep` を再実行してディレクトリを再生成してください。
+- ログに `directory sync failed` が出る場合は、`config/localnet/*.directory.json` と `policy-info.json` の整合を確認してください。
 
 ## スクリプトによる自動化
 
@@ -63,7 +63,7 @@ scripts/localnet_send.sh config/localnet/policy-info.json safe.example "custom m
 scripts/localnet_down.sh
 ```
 
-設定生成は `cargo run --example localnet_prep` で行います。`localnet_up.sh` を使う場合も同じ生成物を前提にしてください。
+`config/localnet/` は固定ファイルとして管理しています。通常の検証では追加の生成手順は不要です。
 
 ## HTTP プロキシ (`aurora_proxy`)
 
@@ -92,4 +92,4 @@ curl -x http://127.0.0.1:18080 http://example.com/
 3. `curl -x http://127.0.0.1:18080 http://safe.example/` 等でエラーが出ず、出口 (`nc -lk 7200` など) にフレームが到達すること。
 4. `cargo test tests::pipeline` などの既存パイプラインテストが green であること（ポリシーカプセルの検証ロジックをカバー）。
 
-**補足:** 将来的に送信デモを追加するときは、ここで生成した `policy-info.json` に含まれる `policy_id` と `localnet-secret` を利用してエンドツーエンド試験を行う想定です。
+**補足:** `policy-info.json` に含まれる `policy_id` を使ってエンドツーエンド試験を行います。値を更新する場合は `config/localnet/` 一式をまとめて更新してください。

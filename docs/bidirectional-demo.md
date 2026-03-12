@@ -23,15 +23,15 @@ Client → Entry Router → Middle Router → Exit Router → HTTP Server
 
 ## セットアップ手順
 
-### 1. 設定ファイルの生成
+### 1. 設定ファイルの確認
 
-ローカルネットワーク用の設定ファイルを生成します：
+ローカルネットワーク用の設定ファイルは `config/localnet/` に固定で入っています：
 
 ```bash
-cargo run --example localnet_prep
+ls config/localnet
 ```
 
-これにより、`config/localnet/` ディレクトリに以下のファイルが生成されます：
+`config/localnet/` には以下のファイルが含まれます：
 - `router-entry.directory.json` - Entryルータ用設定
 - `router-middle.directory.json` - Middleルータ用設定
 - `router-exit.directory.json` - Exitルータ用設定

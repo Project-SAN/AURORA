@@ -60,10 +60,6 @@ harness = false
 name = "routing"
 path = "example/routing.rs"
 
-[[example]]
-name = "localnet_prep"
-path = "example/localnet_prep.rs"
-
 [[bin]]
 name = "aurora_router"
 path = "src/bin/router.rs"
