@@ -6,7 +6,7 @@ use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
-use crate::types::{Error, Result};
+use crate::types::Error;
 use rand_core::{CryptoRng, RngCore};
 
 const SEED_LEN: usize = 32;
@@ -23,7 +23,7 @@ pub struct Proof {
 }
 
 impl Proof {
-    pub fn encoded_len(&self) -> Result<usize> {
+    pub fn encoded_len(&self) -> core::result::Result<usize, Error> {
         let mut total = 0usize;
         add_len(&mut total, 2 + 1 + 1 + 32 + 4)?;
         for opening in &self.openings {
@@ -41,7 +41,7 @@ impl Proof {
         Ok(total)
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> core::result::Result<Vec<u8>, Error> {
         let len = self.encoded_len()?;
         let mut out = Vec::with_capacity(len);
         encode_u16(&mut out, self.rounds);
@@ -68,7 +68,7 @@ impl Proof {
         Ok(out)
     }
 
-    pub fn decode(buf: &[u8]) -> Result<(Proof, usize)> {
+    pub fn decode(buf: &[u8]) -> core::result::Result<(Proof, usize), Error> {
         let mut cursor = 0usize;
         let rounds = read_u16(buf, &mut cursor)?;
         let _version = read_u8(buf, &mut cursor)?;
@@ -111,7 +111,7 @@ impl Proof {
         ))
     }
 
-    pub fn to_part(&self, kind: ProofKind) -> Result<ProofPart> {
+    pub fn to_part(&self, kind: ProofKind) -> core::result::Result<ProofPart, Error> {
         let encoded = self.encode()?;
         Ok(ProofPart {
             kind,
@@ -121,7 +121,7 @@ impl Proof {
         })
     }
 
-    pub fn from_part(part: &ProofPart) -> Result<Proof> {
+    pub fn from_part(part: &ProofPart) -> core::result::Result<Proof, Error> {
         let (proof, consumed) = Proof::decode(&part.proof)?;
         if consumed != part.proof.len() {
             return Err(Error::Length);
@@ -167,7 +167,7 @@ impl Engine {
         public_output: &[u8],
         cfg: ProverConfig,
         rng: &mut R,
-    ) -> Result<Proof> {
+    ) -> core::result::Result<Proof, Error> {
         if input_bits.len() != circuit.n_inputs || public_output.len() != circuit.outputs.len() {
             return Err(Error::Length);
         }
@@ -244,7 +244,7 @@ impl Engine {
         public_output: &[u8],
         proof: &Proof,
         cfg: VerifierConfig,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), Error> {
         if proof.rounds != cfg.rounds {
             return Err(Error::Length);
         }
@@ -347,7 +347,7 @@ fn simulate_round(
     input_bits: &[u8],
     public_output: &[u8],
     seeds: [[u8; SEED_LEN]; 3],
-) -> Result<RoundState> {
+) -> core::result::Result<RoundState, Error> {
     let n_wires = circuit.wire_count();
     let mut views = [vec![0u8; n_wires], vec![0u8; n_wires], vec![0u8; n_wires]];
     let mut tapes = [
@@ -429,7 +429,7 @@ fn check_branch(
     seed_i: &[u8; SEED_LEN],
     seed_i1: &[u8; SEED_LEN],
     calc: &mut [u8],
-) -> Result<bool> {
+) -> core::result::Result<bool, Error> {
     let n_wires = circuit.wire_count();
     if view_i.len() != n_wires || view_i1.len() != n_wires || calc.len() != n_wires {
         return Err(Error::Length);
@@ -486,7 +486,7 @@ fn commit_view(seed: &[u8; SEED_LEN], wires: &[u8]) -> [u8; 32] {
     hasher.finalize()
 }
 
-fn view_len(view: &ViewOpening) -> Result<usize> {
+fn view_len(view: &ViewOpening) -> core::result::Result<usize, Error> {
     if view.merkle_path.len() > u16::MAX as usize {
         return Err(Error::Length);
     }
@@ -498,7 +498,7 @@ fn view_len(view: &ViewOpening) -> Result<usize> {
     Ok(total)
 }
 
-fn encode_view(out: &mut Vec<u8>, view: &ViewOpening) -> Result<()> {
+fn encode_view(out: &mut Vec<u8>, view: &ViewOpening) -> core::result::Result<(), Error> {
     if view.merkle_path.len() > u16::MAX as usize {
         return Err(Error::Length);
     }
@@ -512,7 +512,7 @@ fn encode_view(out: &mut Vec<u8>, view: &ViewOpening) -> Result<()> {
     Ok(())
 }
 
-fn decode_view(buf: &[u8], cursor: &mut usize) -> Result<ViewOpening> {
+fn decode_view(buf: &[u8], cursor: &mut usize) -> core::result::Result<ViewOpening, Error> {
     let party = read_u8(buf, cursor)?;
     let wires_len = read_u32(buf, cursor)? as usize;
     let wires = read_bytes(buf, cursor, wires_len)?;
@@ -529,7 +529,7 @@ fn decode_view(buf: &[u8], cursor: &mut usize) -> Result<ViewOpening> {
     })
 }
 
-fn add_len(total: &mut usize, add: usize) -> Result<()> {
+fn add_len(total: &mut usize, add: usize) -> core::result::Result<(), Error> {
     *total = total.checked_add(add).ok_or(Error::Length)?;
     Ok(())
 }
@@ -542,7 +542,7 @@ fn encode_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
-fn read_u8(buf: &[u8], cursor: &mut usize) -> Result<u8> {
+fn read_u8(buf: &[u8], cursor: &mut usize) -> core::result::Result<u8, Error> {
     if *cursor + 1 > buf.len() {
         return Err(Error::Length);
     }
@@ -551,7 +551,7 @@ fn read_u8(buf: &[u8], cursor: &mut usize) -> Result<u8> {
     Ok(val)
 }
 
-fn read_u16(buf: &[u8], cursor: &mut usize) -> Result<u16> {
+fn read_u16(buf: &[u8], cursor: &mut usize) -> core::result::Result<u16, Error> {
     if *cursor + 2 > buf.len() {
         return Err(Error::Length);
     }
@@ -561,7 +561,7 @@ fn read_u16(buf: &[u8], cursor: &mut usize) -> Result<u16> {
     Ok(u16::from_be_bytes(tmp))
 }
 
-fn read_u32(buf: &[u8], cursor: &mut usize) -> Result<u32> {
+fn read_u32(buf: &[u8], cursor: &mut usize) -> core::result::Result<u32, Error> {
     if *cursor + 4 > buf.len() {
         return Err(Error::Length);
     }
@@ -571,7 +571,10 @@ fn read_u32(buf: &[u8], cursor: &mut usize) -> Result<u32> {
     Ok(u32::from_be_bytes(tmp))
 }
 
-fn read_fixed<const N: usize>(buf: &[u8], cursor: &mut usize) -> Result<[u8; N]> {
+fn read_fixed<const N: usize>(
+    buf: &[u8],
+    cursor: &mut usize,
+) -> core::result::Result<[u8; N], Error> {
     if *cursor + N > buf.len() {
         return Err(Error::Length);
     }
@@ -581,7 +584,11 @@ fn read_fixed<const N: usize>(buf: &[u8], cursor: &mut usize) -> Result<[u8; N]>
     Ok(out)
 }
 
-fn read_bytes(buf: &[u8], cursor: &mut usize, len: usize) -> Result<Vec<u8>> {
+fn read_bytes(
+    buf: &[u8],
+    cursor: &mut usize,
+    len: usize,
+) -> core::result::Result<Vec<u8>, Error> {
     if *cursor + len > buf.len() {
         return Err(Error::Length);
     }

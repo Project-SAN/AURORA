@@ -23,7 +23,7 @@ pub struct FixedBytes<const N: usize> {
 }
 
 impl<const N: usize> FixedBytes<N> {
-    pub fn new(data: &[u8]) -> crate::types::Result<Self> {
+    pub fn new(data: &[u8]) -> core::result::Result<Self, Error> {
         if data.len() > N || data.len() > u16::MAX as usize {
             return Err(Error::Crypto);
         }
@@ -58,7 +58,7 @@ impl<const N: usize> FixedBytes<N> {
         self.as_slice().to_vec()
     }
 
-    pub fn as_str(&self) -> crate::types::Result<&str> {
+    pub fn as_str(&self) -> core::result::Result<&str, Error> {
         str::from_utf8(self.as_slice()).map_err(|_| Error::Crypto)
     }
 }
@@ -252,7 +252,7 @@ pub struct Blocklist {
 }
 
 impl Blocklist {
-    pub fn new(mut entries: Vec<BlocklistEntry>) -> crate::types::Result<Self> {
+    pub fn new(mut entries: Vec<BlocklistEntry>) -> core::result::Result<Self, Error> {
         if entries.len() > MAX_BLOCKLIST_ENTRIES {
             return Err(Error::Crypto);
         }
@@ -261,7 +261,9 @@ impl Blocklist {
     }
 
     /// Construct from pre-encoded canonical leaves for backwards compatibility.
-    pub fn from_canonical_bytes(entries: Vec<LeafBytes>) -> crate::types::Result<Self> {
+    pub fn from_canonical_bytes(
+        entries: Vec<LeafBytes>,
+    ) -> core::result::Result<Self, Error> {
         let entries = entries.into_iter().map(BlocklistEntry::Raw).collect();
         Self::new(entries)
     }
@@ -278,7 +280,7 @@ impl Blocklist {
         self.entries.len()
     }
 
-    pub fn insertion_index(&self, leaf: &LeafBytes) -> crate::types::Result<usize> {
+    pub fn insertion_index(&self, leaf: &LeafBytes) -> core::result::Result<usize, Error> {
         let mut low = 0usize;
         let mut high = self.entries.len();
         while low < high {
@@ -294,7 +296,10 @@ impl Blocklist {
     }
 
     /// Return the canonical payload for each leaf (including type tags).
-    pub fn canonical_leaves_into(&self, out: &mut [LeafBytes]) -> crate::types::Result<usize> {
+    pub fn canonical_leaves_into(
+        &self,
+        out: &mut [LeafBytes],
+    ) -> core::result::Result<usize, Error> {
         let len = self.entries.len();
         if out.len() < len {
             return Err(Error::Crypto);
@@ -394,7 +399,10 @@ impl Blocklist {
     }
 
     /// Hash each entry with SHA-256 to produce fixed-length leaves.
-    pub fn leaf_hashes_into(&self, out: &mut [[u8; 32]]) -> crate::types::Result<usize> {
+    pub fn leaf_hashes_into(
+        &self,
+        out: &mut [[u8; 32]],
+    ) -> core::result::Result<usize, Error> {
         let len = self.entries.len();
         if out.len() < len {
             return Err(Error::Crypto);
@@ -462,7 +470,7 @@ impl Blocklist {
         self.merkle_root_with(level, next)
     }
 
-    pub fn from_json(json: &str) -> crate::types::Result<Self> {
+    pub fn from_json(json: &str) -> core::result::Result<Self, Error> {
         let parsed: BlocklistJson<'_> = serde_json::from_str(json).map_err(|_| Error::Crypto)?;
         let mut entries = Vec::with_capacity(parsed.entries.len());
         for rule in parsed.entries {
@@ -500,7 +508,9 @@ impl Blocklist {
 }
 
 /// Build a canonical blocklist entry from a target value extracted from payloads.
-pub fn entry_from_target(target: &TargetValue) -> crate::types::Result<BlocklistEntry> {
+pub fn entry_from_target(
+    target: &TargetValue,
+) -> core::result::Result<BlocklistEntry, Error> {
     match target {
         TargetValue::Domain(bytes) => {
             let value = str::from_utf8(bytes).map_err(|_| Error::Crypto)?;
@@ -567,7 +577,7 @@ fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     out
 }
 
-fn normalize_ascii(input: &str) -> crate::types::Result<ValueBytes> {
+fn normalize_ascii(input: &str) -> core::result::Result<ValueBytes, Error> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(Error::Crypto);
@@ -620,7 +630,7 @@ enum BlocklistJsonKind {
     Range,
 }
 
-fn parse_cidr(value: &str) -> crate::types::Result<CidrBlock> {
+fn parse_cidr(value: &str) -> core::result::Result<CidrBlock, Error> {
     let (addr_part, prefix_part) = value.split_once('/').ok_or(Error::Crypto)?;
     let prefix_len: u8 = prefix_part.parse().map_err(|_| Error::Crypto)?;
     if addr_part.contains(':') {

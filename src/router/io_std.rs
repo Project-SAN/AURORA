@@ -4,7 +4,7 @@ use core::fmt::Write as FmtWrite;
 
 use crate::forward::Forward;
 use crate::routing::{self, IpAddr, RouteElem};
-use crate::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
+use crate::types::{Ahdr, Chdr, Error, PacketDirection, RoutingSegment, Sv};
 
 use super::{
     encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
@@ -34,7 +34,7 @@ fn format_ip(addr: &IpAddr, port: u16) -> String {
 }
 
 impl<T: std::io::Read> PacketReader for T {
-    fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), Error> {
         std::io::Read::read_exact(self, buf).map_err(|_| Error::Crypto)
     }
 }
@@ -57,7 +57,7 @@ impl TcpPacketListener {
 }
 
 impl PacketListener for TcpPacketListener {
-    fn next(&mut self) -> Result<Option<IncomingPacket>> {
+    fn next(&mut self) -> core::result::Result<Option<IncomingPacket>, Error> {
         let (mut stream, _) = self.listener.accept().map_err(|_| Error::Crypto)?;
         let packet = read_incoming_packet(&mut stream, self.sv)?;
         Ok(Some(packet))
@@ -72,7 +72,7 @@ impl TcpForward {
     }
 
     #[cfg(test)]
-    fn resolve_next_hop(segment: &RoutingSegment) -> Result<String> {
+    fn resolve_next_hop(segment: &RoutingSegment) -> core::result::Result<String, Error> {
         let elems = routing::elems_from_segment(segment).map_err(|_| Error::Length)?;
         let hop = elems.first().ok_or(Error::Length)?;
         match hop {
@@ -90,7 +90,7 @@ impl Forward for TcpForward {
         ahdr: &Ahdr,
         payload: &mut Vec<u8>,
         direction: PacketDirection,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), Error> {
         let elems = routing::elems_from_segment(rseg).map_err(|_| Error::Length)?;
         let hop = elems.first().ok_or(Error::Length)?;
 

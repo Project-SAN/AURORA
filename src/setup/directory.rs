@@ -1,6 +1,6 @@
 use crate::policy::{decode_metadata_tlv, encode_metadata_tlv, PolicyId, PolicyMetadata};
 use crate::routing::{self, RouteElem};
-use crate::types::{Error, Result, RoutingSegment};
+use crate::types::{Error, RoutingSegment};
 use alloc::string::{String, ToString};
 use alloc::{vec, vec::Vec};
 use core::net::{Ipv4Addr, Ipv6Addr};
@@ -53,7 +53,7 @@ impl DirectoryAnnouncement {
             .collect()
     }
 
-    pub fn from_tlvs(tlvs: &[Vec<u8>]) -> Result<Self> {
+    pub fn from_tlvs(tlvs: &[Vec<u8>]) -> core::result::Result<Self, Error> {
         let mut metas = Vec::new();
         for tlv in tlvs {
             if tlv.first().copied() == Some(crate::policy::POLICY_METADATA_TLV) {
@@ -96,7 +96,7 @@ pub fn to_signed_json(
     announcement: &DirectoryAnnouncement,
     private_key: &[u8],
     issued_at: u64,
-) -> Result<String> {
+) -> core::result::Result<String, Error> {
     let unsigned = DirectoryMessage {
         version: 1,
         issued_at,
@@ -105,7 +105,7 @@ pub fn to_signed_json(
             .route_entries
             .iter()
             .map(RouteMessage::from_announcement)
-            .collect::<Result<Vec<_>>>()?,
+            .collect::<core::result::Result<Vec<_>, Error>>()?,
         signature: String::new(),
     };
     let serialized = serde_json::to_string(&unsigned).map_err(|_| Error::Crypto)?;
@@ -118,7 +118,10 @@ pub fn to_signed_json(
     serde_json::to_string(&signed).map_err(|_| Error::Crypto)
 }
 
-pub fn from_signed_json(body: &str, public_key: &[u8]) -> Result<DirectoryAnnouncement> {
+pub fn from_signed_json(
+    body: &str,
+    public_key: &[u8],
+) -> core::result::Result<DirectoryAnnouncement, Error> {
     let signed: DirectoryMessage = serde_json::from_str(body).map_err(|_| Error::Crypto)?;
     let expected_sig = signed.signature.clone();
     let unsigned = DirectoryMessage {
@@ -131,7 +134,7 @@ pub fn from_signed_json(body: &str, public_key: &[u8]) -> Result<DirectoryAnnoun
         .routes
         .iter()
         .map(RouteMessage::to_announcement)
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<core::result::Result<Vec<_>, Error>>()?;
     Ok(DirectoryAnnouncement {
         policy_entries: signed.policies,
         route_entries: routes,
@@ -154,12 +157,12 @@ struct RouteMessage {
 }
 
 impl RouteMessage {
-    fn from_announcement(route: &RouteAnnouncement) -> Result<Self> {
+    fn from_announcement(route: &RouteAnnouncement) -> core::result::Result<Self, Error> {
         let elems = routing::elems_from_segment(&route.segment).map_err(|_| Error::Length)?;
         let segments = elems
             .into_iter()
             .map(RouteElemMessage::from_route_elem)
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<core::result::Result<Vec<_>, Error>>()?;
         Ok(Self {
             policy_id: hex_encode(&route.policy_id),
             interface: route.interface.clone(),
@@ -167,7 +170,7 @@ impl RouteMessage {
         })
     }
 
-    fn to_announcement(&self) -> Result<RouteAnnouncement> {
+    fn to_announcement(&self) -> core::result::Result<RouteAnnouncement, Error> {
         let policy_id = hex_decode(&self.policy_id)?;
         if policy_id.len() != 32 {
             return Err(Error::Length);
@@ -178,7 +181,7 @@ impl RouteMessage {
             .segments
             .iter()
             .map(RouteElemMessage::to_route_elem)
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<core::result::Result<Vec<_>, Error>>()?;
         Ok(RouteAnnouncement {
             policy_id: id,
             segment: routing::segment_from_elems(&elems),
@@ -197,7 +200,7 @@ enum RouteElemMessage {
 }
 
 impl RouteElemMessage {
-    fn from_route_elem(elem: RouteElem) -> Result<Self> {
+    fn from_route_elem(elem: RouteElem) -> core::result::Result<Self, Error> {
         match elem {
             RouteElem::NextHop {
                 addr: routing::IpAddr::V4(ip),
@@ -230,7 +233,7 @@ impl RouteElemMessage {
         }
     }
 
-    fn to_route_elem(&self) -> Result<RouteElem> {
+    fn to_route_elem(&self) -> core::result::Result<RouteElem, Error> {
         match self {
             RouteElemMessage::NextHop4 { ip, port } => {
                 let addr = parse_ipv4(ip)?;
@@ -264,15 +267,19 @@ impl RouteElemMessage {
     }
 }
 
-fn parse_ipv4(input: &str) -> Result<Ipv4Addr> {
+fn parse_ipv4(input: &str) -> core::result::Result<Ipv4Addr, Error> {
     input.parse().map_err(|_| Error::Length)
 }
 
-fn parse_ipv6(input: &str) -> Result<Ipv6Addr> {
+fn parse_ipv6(input: &str) -> core::result::Result<Ipv6Addr, Error> {
     input.parse().map_err(|_| Error::Length)
 }
 
-fn verify_signature(public_key: &[u8], data: &[u8], signature: &str) -> Result<()> {
+fn verify_signature(
+    public_key: &[u8],
+    data: &[u8],
+    signature: &str,
+) -> core::result::Result<(), Error> {
     let key_bytes = key32(public_key)?;
     let sig_bytes = hex_decode(signature)?;
     if sig_bytes.len() != 64 {
@@ -287,7 +294,7 @@ fn verify_signature(public_key: &[u8], data: &[u8], signature: &str) -> Result<(
     }
 }
 
-fn key32(input: &[u8]) -> Result<[u8; 32]> {
+fn key32(input: &[u8]) -> core::result::Result<[u8; 32], Error> {
     if input.len() != 32 {
         return Err(Error::Length);
     }
@@ -384,7 +391,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn hex_decode(input: &str) -> Result<Vec<u8>> {
+fn hex_decode(input: &str) -> core::result::Result<Vec<u8>, Error> {
     if !input.len().is_multiple_of(2) {
         return Err(Error::Length);
     }
@@ -399,7 +406,7 @@ fn hex_decode(input: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn decode_nibble(c: char) -> Result<u8> {
+fn decode_nibble(c: char) -> core::result::Result<u8, Error> {
     match c {
         '0'..='9' => Ok((c as u8) - b'0'),
         'a'..='f' => Ok((c as u8) - b'a' + 10),

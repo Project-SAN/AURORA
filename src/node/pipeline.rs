@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 
 use crate::core::policy::{PolicyCapsule, PolicyId, PolicyRegistry, PolicyRole};
 use crate::policy::CapsuleValidator;
-use crate::types::Result;
 
 pub trait ForwardPipeline {
     fn enforce(
@@ -14,7 +13,7 @@ pub trait ForwardPipeline {
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
         role: PolicyRole,
-    ) -> Result<Option<(PolicyCapsule, usize)>>;
+    ) -> core::result::Result<Option<(PolicyCapsule, usize)>, crate::types::Error>;
 
     fn enforce_batch(
         &self,
@@ -22,7 +21,7 @@ pub trait ForwardPipeline {
         payloads: &mut [Vec<u8>],
         validator: &dyn CapsuleValidator,
         role: PolicyRole,
-    ) -> Result<Vec<Option<(PolicyCapsule, usize)>>> {
+    ) -> core::result::Result<Vec<Option<(PolicyCapsule, usize)>>, crate::types::Error> {
         let mut out = Vec::with_capacity(payloads.len());
         for payload in payloads.iter_mut() {
             out.push(self.enforce(registry, payload, validator, role)?);
@@ -35,7 +34,7 @@ pub trait ForwardPipeline {
         _registry: &PolicyRegistry,
         _validator: &dyn CapsuleValidator,
         _roles: &BTreeMap<PolicyId, PolicyRole>,
-    ) -> Result<Vec<PolicyCapsule>> {
+    ) -> core::result::Result<Vec<PolicyCapsule>, crate::types::Error> {
         Ok(Vec::new())
     }
 

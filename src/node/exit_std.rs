@@ -7,7 +7,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use crate::routing::IpAddr;
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 use super::{ExitMode, ExitTransport};
 
@@ -32,7 +32,7 @@ impl ExitTransport for TcpExitTransport {
         port: u16,
         _mode: ExitMode,
         request: &[u8],
-    ) -> Result<Vec<u8>> {
+    ) -> core::result::Result<Vec<u8>, Error> {
         // _mode is reserved for future TLS support; currently only plain TCP is implemented.
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
@@ -57,7 +57,7 @@ impl TcpExitTransport {
         addr: &IpAddr,
         port: u16,
         frame: StreamFrame<'_>,
-    ) -> Result<Vec<u8>> {
+    ) -> core::result::Result<Vec<u8>, Error> {
         match frame.op {
             StreamOp::Open => {
                 let key = frame.session_id;
@@ -147,7 +147,7 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
 /// early exit could cause the caller to silently discard the tail of a frame.
 /// Looping until `WouldBlock` is the correct termination condition for a
 /// non-blocking / timeout-configured socket.
-fn read_available(stream: &mut TcpStream) -> Result<Vec<u8>> {
+fn read_available(stream: &mut TcpStream) -> core::result::Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
     loop {

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use crate::core::policy::metadata::POLICY_FLAG_ZKBOO;
 use crate::core::policy::{PolicyCapsule, PolicyId, PolicyMetadata, ProofKind, ProofPart};
 use crate::crypto::zkp::{Circuit, Engine, ProverConfig};
-use crate::types::{Error, Result};
+use crate::types::Error;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use rand_core::{CryptoRng, RngCore};
@@ -59,7 +59,7 @@ impl ZkBooPolicy {
         input_bits: &[u8],
         rounds: u16,
         rng: &mut R,
-    ) -> Result<PolicyCapsule> {
+    ) -> core::result::Result<PolicyCapsule, Error> {
         let outputs = self.circuit.eval(input_bits)?;
         let engine = Engine;
         let proof = engine.prove(
@@ -118,7 +118,11 @@ impl ZkBooProofService {
         self.policy.metadata(expiry, flags)
     }
 
-    pub fn prove_payload_lsb_first(&self, payload: &[u8], aux: &[u8]) -> Result<PolicyCapsule> {
+    pub fn prove_payload_lsb_first(
+        &self,
+        payload: &[u8],
+        aux: &[u8],
+    ) -> core::result::Result<PolicyCapsule, Error> {
         let input_bits = payload_bits_lsb_first(payload);
         if input_bits.len() != self.policy.circuit.n_inputs {
             return Err(Error::Length);

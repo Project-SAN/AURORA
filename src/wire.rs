@@ -13,7 +13,7 @@
 //! Data packets are validated for basic semantic sizes at decode time.
 //! Setup packets are only checked for framing-level lengths here.
 
-use crate::types::{Ahdr, Chdr, Error, Packet, PacketType, PayloadLen, Result};
+use crate::types::{Ahdr, Chdr, Error, Packet, PacketType, PayloadLen};
 use alloc::vec::Vec;
 
 pub const WIRE_VERSION: u8 = 1;
@@ -60,7 +60,7 @@ pub fn encode(chdr: &Chdr, ahdr: &Ahdr, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn decode(buf: &[u8]) -> Result<Packet> {
+pub fn decode(buf: &[u8]) -> core::result::Result<Packet, Error> {
     if buf.len() < FIXED_HDR_LEN {
         return Err(Error::Length);
     }

@@ -2,17 +2,21 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::core::policy::{PolicyCapsule, PolicyId, PolicyMetadata, ProofKind};
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 pub trait CapsuleValidator {
-    fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()>;
+    fn validate(
+        &self,
+        capsule: &PolicyCapsule,
+        metadata: &PolicyMetadata,
+    ) -> core::result::Result<(), Error>;
 
     fn validate_with_role(
         &self,
         capsule: &PolicyCapsule,
         metadata: &PolicyMetadata,
         _role: PolicyRole,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), Error> {
         self.validate(capsule, metadata)
     }
 }
@@ -60,7 +64,7 @@ impl PolicyRegistry {
         }
     }
 
-    pub fn register(&mut self, meta: PolicyMetadata) -> Result<()> {
+    pub fn register(&mut self, meta: PolicyMetadata) -> core::result::Result<(), Error> {
         self.entries.insert(meta.policy_id, meta);
         Ok(())
     }
@@ -73,7 +77,7 @@ impl PolicyRegistry {
         &self,
         payload: &mut Vec<u8>,
         validator: &V,
-    ) -> Result<(PolicyCapsule, usize)> {
+    ) -> core::result::Result<(PolicyCapsule, usize), Error> {
         self.enforce_with_role(payload, validator, PolicyRole::All)
     }
 
@@ -81,7 +85,7 @@ impl PolicyRegistry {
         &self,
         payloads: &mut [Vec<u8>],
         validator: &V,
-    ) -> Result<Vec<(PolicyCapsule, usize)>> {
+    ) -> core::result::Result<Vec<(PolicyCapsule, usize)>, Error> {
         self.enforce_batch_with_role(payloads, validator, PolicyRole::All)
     }
 
@@ -90,7 +94,7 @@ impl PolicyRegistry {
         payload: &mut Vec<u8>,
         validator: &V,
         role: PolicyRole,
-    ) -> Result<(PolicyCapsule, usize)> {
+    ) -> core::result::Result<(PolicyCapsule, usize), Error> {
         let (capsule, consumed) = PolicyCapsule::decode(payload.as_slice())?;
         let metadata = self
             .entries
@@ -113,7 +117,7 @@ impl PolicyRegistry {
         payloads: &mut [Vec<u8>],
         validator: &V,
         role: PolicyRole,
-    ) -> Result<Vec<(PolicyCapsule, usize)>> {
+    ) -> core::result::Result<Vec<(PolicyCapsule, usize)>, Error> {
         let mut results = Vec::with_capacity(payloads.len());
         for payload in payloads.iter_mut() {
             results.push(self.enforce_with_role(payload, validator, role)?);

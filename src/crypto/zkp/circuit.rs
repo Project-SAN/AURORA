@@ -1,7 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 pub type WireId = usize;
 
@@ -58,7 +58,7 @@ impl Circuit {
         self.n_inputs + self.gates.len()
     }
 
-    pub fn eval(&self, inputs: &[u8]) -> Result<Vec<u8>> {
+    pub fn eval(&self, inputs: &[u8]) -> core::result::Result<Vec<u8>, Error> {
         if inputs.len() != self.n_inputs {
             return Err(Error::Length);
         }
@@ -120,7 +120,7 @@ impl Circuit {
         out
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> core::result::Result<Self, Error> {
         let mut cursor = 0usize;
         if bytes.len() < 5 {
             return Err(Error::Length);
@@ -175,7 +175,7 @@ impl Circuit {
     }
 }
 
-fn read_u32(buf: &[u8], cursor: &mut usize) -> Result<u32> {
+fn read_u32(buf: &[u8], cursor: &mut usize) -> core::result::Result<u32, Error> {
     if *cursor + 4 > buf.len() {
         return Err(Error::Length);
     }

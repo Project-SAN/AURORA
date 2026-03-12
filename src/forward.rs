@@ -1,4 +1,4 @@
-use crate::types::{Ahdr, Chdr, PacketDirection, Result, RoutingSegment};
+use crate::types::{Ahdr, Chdr, PacketDirection, RoutingSegment};
 use alloc::vec::Vec;
 
 // Minimal forwarding abstraction for no_std environments.
@@ -11,7 +11,7 @@ pub trait Forward {
         ahdr: &Ahdr,
         payload: &mut Vec<u8>,
         direction: PacketDirection,
-    ) -> Result<()>;
+    ) -> core::result::Result<(), crate::types::Error>;
 }
 
 // Minimal no-op forwarder useful for testing pipelines without I/O.
@@ -24,7 +24,7 @@ impl Forward for NoopForward {
         _ahdr: &Ahdr,
         _payload: &mut Vec<u8>,
         _direction: PacketDirection,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), crate::types::Error> {
         Ok(())
     }
 }

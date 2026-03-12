@@ -1,6 +1,6 @@
 //! Routing TLV encoding/decoding for no_std environments.
 //! Provides a typed representation and conversion to/from `types::RoutingSegment` bytes.
-use crate::types::{Error, Result, RoutingSegment};
+use crate::types::{Error, RoutingSegment};
 use alloc::vec::Vec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,7 +75,7 @@ pub fn encode_elems(elems: &[RouteElem]) -> Vec<u8> {
     out
 }
 
-pub fn decode_elems(mut bytes: &[u8]) -> Result<Vec<RouteElem>> {
+pub fn decode_elems(mut bytes: &[u8]) -> core::result::Result<Vec<RouteElem>, Error> {
     let mut out = Vec::new();
     while !bytes.is_empty() {
         if bytes.len() < 2 {
@@ -145,7 +145,7 @@ pub fn segment_from_elems(elems: &[RouteElem]) -> RoutingSegment {
     RoutingSegment(encode_elems(elems))
 }
 
-pub fn elems_from_segment(seg: &RoutingSegment) -> Result<Vec<RouteElem>> {
+pub fn elems_from_segment(seg: &RoutingSegment) -> core::result::Result<Vec<RouteElem>, Error> {
     decode_elems(&seg.0)
 }
 

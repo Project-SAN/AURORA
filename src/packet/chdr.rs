@@ -1,4 +1,4 @@
-use crate::types::{Chdr, Exp, HopCount, Nonce, Result};
+use crate::types::{Chdr, Exp, HopCount, Nonce};
 
 // Utilities to build and manipulate the common header (CHDR)
 
@@ -18,7 +18,10 @@ pub fn chdr_nonce(chdr: &Chdr) -> Option<Nonce> {
     chdr.nonce()
 }
 
-pub fn set_chdr_nonce(chdr: &mut Chdr, nonce: &Nonce) -> Result<()> {
+pub fn set_chdr_nonce(
+    chdr: &mut Chdr,
+    nonce: &Nonce,
+) -> core::result::Result<(), crate::types::Error> {
     chdr.set_nonce(*nonce)
 }
 

@@ -7,7 +7,7 @@ use spin::Mutex;
 use crate::core::policy::{PolicyCapsule, PolicyId, PolicyRegistry, PolicyRole};
 use crate::node::pipeline::ForwardPipeline;
 use crate::policy::CapsuleValidator;
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 #[derive(Clone)]
 pub struct PendingEntry {
@@ -28,7 +28,7 @@ impl PendingQueue {
         }
     }
 
-    fn push(&self, entry: PendingEntry) -> Result<()> {
+    fn push(&self, entry: PendingEntry) -> core::result::Result<(), Error> {
         let mut queue = self.inner.lock();
         if queue.len() >= self.max_len {
             return Err(Error::PolicyViolation);
@@ -68,7 +68,7 @@ impl ForwardPipeline for AsyncForwardPipeline {
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
         role: PolicyRole,
-    ) -> Result<Option<(PolicyCapsule, usize)>> {
+    ) -> core::result::Result<Option<(PolicyCapsule, usize)>, Error> {
         if registry.is_empty() {
             return Ok(None);
         }
@@ -99,7 +99,7 @@ impl ForwardPipeline for AsyncForwardPipeline {
         registry: &PolicyRegistry,
         validator: &dyn CapsuleValidator,
         roles: &BTreeMap<PolicyId, PolicyRole>,
-    ) -> Result<Vec<PolicyCapsule>> {
+    ) -> core::result::Result<Vec<PolicyCapsule>, Error> {
         let entries = self.pending.drain();
         let mut violations = Vec::new();
         for entry in entries {

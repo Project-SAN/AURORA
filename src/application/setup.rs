@@ -3,7 +3,6 @@
 use crate::core::policy::PolicyMetadata;
 use crate::policy::PolicyRegistry;
 use crate::setup::pipeline::SetupPipeline;
-use crate::types::Result;
 
 pub struct RegistrySetupPipeline<'a> {
     registry: &'a mut PolicyRegistry,
@@ -16,7 +15,10 @@ impl<'a> RegistrySetupPipeline<'a> {
 }
 
 impl<'a> SetupPipeline for RegistrySetupPipeline<'a> {
-    fn install(&mut self, metadata: PolicyMetadata) -> Result<()> {
+    fn install(
+        &mut self,
+        metadata: PolicyMetadata,
+    ) -> core::result::Result<(), crate::types::Error> {
         // ZKBoo-only: registry stores metadata; no Plonk-specific verifier cache.
         self.registry.register(metadata)
     }

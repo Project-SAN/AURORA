@@ -4,7 +4,7 @@
 //! segment and validate TLS record boundaries when producing one proof per
 //! TLS record.
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 pub const TLS_RECORD_HEADER_LEN: usize = 5;
 
@@ -16,7 +16,7 @@ pub struct TlsRecordHeader {
 }
 
 impl TlsRecordHeader {
-    pub fn parse(buf: &[u8]) -> Result<Self> {
+    pub fn parse(buf: &[u8]) -> core::result::Result<Self, Error> {
         if buf.len() < TLS_RECORD_HEADER_LEN {
             return Err(Error::Length);
         }
@@ -33,7 +33,7 @@ impl TlsRecordHeader {
 }
 
 /// Returns the first TLS record and the remaining tail.
-pub fn split_first_record(buf: &[u8]) -> Result<(&[u8], &[u8])> {
+pub fn split_first_record(buf: &[u8]) -> core::result::Result<(&[u8], &[u8]), Error> {
     let header = TlsRecordHeader::parse(buf)?;
     let total = header.total_len();
     if total > buf.len() {
@@ -43,7 +43,7 @@ pub fn split_first_record(buf: &[u8]) -> Result<(&[u8], &[u8])> {
 }
 
 /// Requires that `buf` contains exactly one complete TLS record.
-pub fn take_single_record_exact(buf: &[u8]) -> Result<&[u8]> {
+pub fn take_single_record_exact(buf: &[u8]) -> core::result::Result<&[u8], Error> {
     let (record, rest) = split_first_record(buf)?;
     if !rest.is_empty() {
         return Err(Error::Length);

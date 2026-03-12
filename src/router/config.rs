@@ -1,4 +1,3 @@
-use crate::types::Result;
 use alloc::string::String;
 use core::time::Duration;
 
@@ -22,7 +21,7 @@ impl RouterConfig {
         }
     }
 
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> core::result::Result<(), crate::types::Error> {
         if self.directory_url.is_empty() || self.directory_public_key.is_empty() {
             return Err(crate::types::Error::Length);
         }
@@ -30,7 +29,7 @@ impl RouterConfig {
     }
 
     #[cfg(feature = "std")]
-    pub fn from_env() -> Result<Self> {
+    pub fn from_env() -> core::result::Result<Self, crate::types::Error> {
         config_std::from_env()
     }
 }

@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::types::{Error, Result};
+use crate::types::{Error};
 
 const MAGIC: &[u8; 4] = b"CTRL";
 const VERSION: u8 = 1;
@@ -38,7 +38,7 @@ pub fn encode(msg: &ControlMessage) -> Vec<u8> {
     out
 }
 
-pub fn decode(buf: &[u8]) -> Result<ControlMessage> {
+pub fn decode(buf: &[u8]) -> core::result::Result<ControlMessage, Error> {
     if buf.len() < 6 {
         return Err(Error::Length);
     }

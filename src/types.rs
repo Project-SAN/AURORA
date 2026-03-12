@@ -49,7 +49,7 @@ impl HopCount {
     pub const MIN: u8 = 1;
     pub const MAX: u8 = R_MAX as u8;
 
-    pub fn new(value: u8) -> Result<Self> {
+    pub fn new(value: u8) -> core::result::Result<Self, Error> {
         if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
         } else {
@@ -61,7 +61,7 @@ impl HopCount {
         self.0
     }
 
-    pub fn from_usize(value: usize) -> Result<Self> {
+    pub fn from_usize(value: usize) -> core::result::Result<Self, Error> {
         if value > u8::MAX as usize {
             return Err(Error::Length);
         }
@@ -72,7 +72,7 @@ impl HopCount {
 impl TryFrom<u8> for HopCount {
     type Error = Error;
 
-    fn try_from(value: u8) -> Result<Self> {
+    fn try_from(value: u8) -> core::result::Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -80,7 +80,7 @@ impl TryFrom<u8> for HopCount {
 impl TryFrom<usize> for HopCount {
     type Error = Error;
 
-    fn try_from(value: usize) -> Result<Self> {
+    fn try_from(value: usize) -> core::result::Result<Self, Error> {
         Self::from_usize(value)
     }
 }
@@ -92,7 +92,7 @@ impl RMax {
     pub const MIN: u8 = 1;
     pub const MAX: u8 = R_MAX as u8;
 
-    pub fn new(value: u8) -> Result<Self> {
+    pub fn new(value: u8) -> core::result::Result<Self, Error> {
         if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
         } else {
@@ -104,7 +104,7 @@ impl RMax {
         self.0 as usize
     }
 
-    pub fn from_usize(value: usize) -> Result<Self> {
+    pub fn from_usize(value: usize) -> core::result::Result<Self, Error> {
         if value > u8::MAX as usize {
             return Err(Error::Length);
         }
@@ -115,7 +115,7 @@ impl RMax {
 impl TryFrom<u8> for RMax {
     type Error = Error;
 
-    fn try_from(value: u8) -> Result<Self> {
+    fn try_from(value: u8) -> core::result::Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -123,7 +123,7 @@ impl TryFrom<u8> for RMax {
 impl TryFrom<usize> for RMax {
     type Error = Error;
 
-    fn try_from(value: usize) -> Result<Self> {
+    fn try_from(value: usize) -> core::result::Result<Self, Error> {
         Self::from_usize(value)
     }
 }
@@ -132,7 +132,7 @@ impl TryFrom<usize> for RMax {
 pub struct Stage(u8);
 
 impl Stage {
-    pub fn new(value: u8) -> Result<Self> {
+    pub fn new(value: u8) -> core::result::Result<Self, Error> {
         if value <= R_MAX as u8 {
             Ok(Self(value))
         } else {
@@ -144,7 +144,7 @@ impl Stage {
         self.0 as usize
     }
 
-    pub fn from_usize(value: usize) -> Result<Self> {
+    pub fn from_usize(value: usize) -> core::result::Result<Self, Error> {
         if value > u8::MAX as usize {
             return Err(Error::Length);
         }
@@ -155,7 +155,7 @@ impl Stage {
 impl TryFrom<u8> for Stage {
     type Error = Error;
 
-    fn try_from(value: u8) -> Result<Self> {
+    fn try_from(value: u8) -> core::result::Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -163,7 +163,7 @@ impl TryFrom<u8> for Stage {
 impl TryFrom<usize> for Stage {
     type Error = Error;
 
-    fn try_from(value: usize) -> Result<Self> {
+    fn try_from(value: usize) -> core::result::Result<Self, Error> {
         Self::from_usize(value)
     }
 }
@@ -175,7 +175,7 @@ impl AhdrLen {
     pub const MIN: usize = C_BLOCK;
     pub const MAX: usize = 2 * R_MAX * C_BLOCK;
 
-    pub fn new(bytes: usize) -> Result<Self> {
+    pub fn new(bytes: usize) -> core::result::Result<Self, Error> {
         if !(Self::MIN..=Self::MAX).contains(&bytes) || bytes % C_BLOCK != 0 {
             return Err(Error::Length);
         }
@@ -194,7 +194,7 @@ impl AhdrLen {
 impl TryFrom<usize> for AhdrLen {
     type Error = Error;
 
-    fn try_from(value: usize) -> Result<Self> {
+    fn try_from(value: usize) -> core::result::Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -203,7 +203,7 @@ impl TryFrom<usize> for AhdrLen {
 pub struct PayloadLen(u32);
 
 impl PayloadLen {
-    pub fn new(bytes: usize) -> Result<Self> {
+    pub fn new(bytes: usize) -> core::result::Result<Self, Error> {
         let value = u32::try_from(bytes).map_err(|_| Error::Length)?;
         Ok(Self(value))
     }
@@ -224,7 +224,7 @@ impl PayloadLen {
 impl TryFrom<usize> for PayloadLen {
     type Error = Error;
 
-    fn try_from(value: usize) -> Result<Self> {
+    fn try_from(value: usize) -> core::result::Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -241,7 +241,7 @@ pub struct PolicyPartCount(u8);
 impl PolicyPartCount {
     pub const MAX: u8 = 4;
 
-    pub fn new(value: u8) -> Result<Self> {
+    pub fn new(value: u8) -> core::result::Result<Self, Error> {
         if value <= Self::MAX {
             Ok(Self(value))
         } else {
@@ -261,7 +261,7 @@ impl PolicyPartCount {
 impl TryFrom<u8> for PolicyPartCount {
     type Error = Error;
 
-    fn try_from(value: u8) -> Result<Self> {
+    fn try_from(value: u8) -> core::result::Result<Self, Error> {
         Self::new(value)
     }
 }
@@ -308,7 +308,7 @@ impl Chdr {
         }
     }
 
-    pub fn set_nonce(&mut self, nonce: Nonce) -> Result<()> {
+    pub fn set_nonce(&mut self, nonce: Nonce) -> core::result::Result<(), Error> {
         match self {
             Self::Data {
                 nonce: current_nonce,
@@ -332,7 +332,7 @@ impl Chdr {
         }
     }
 
-    pub fn from_raw_parts(typ: PacketType, hops: u8, specific: [u8; 16]) -> Result<Self> {
+    pub fn from_raw_parts(typ: PacketType, hops: u8, specific: [u8; 16]) -> core::result::Result<Self, Error> {
         let hops = HopCount::new(hops)?;
         match typ {
             PacketType::Setup => {
@@ -372,7 +372,7 @@ impl From<SetupChdr> for Chdr {
 impl TryFrom<Chdr> for DataChdr {
     type Error = Error;
 
-    fn try_from(value: Chdr) -> Result<Self> {
+    fn try_from(value: Chdr) -> core::result::Result<Self, Error> {
         match value {
             Chdr::Data { hops, nonce } => Ok(Self { hops, nonce }),
             Chdr::Setup { .. } => Err(Error::Length),
@@ -383,7 +383,7 @@ impl TryFrom<Chdr> for DataChdr {
 impl TryFrom<Chdr> for SetupChdr {
     type Error = Error;
 
-    fn try_from(value: Chdr) -> Result<Self> {
+    fn try_from(value: Chdr) -> core::result::Result<Self, Error> {
         match value {
             Chdr::Setup { hops, exp } => Ok(Self { hops, exp }),
             Chdr::Data { .. } => Err(Error::Length),
@@ -435,7 +435,7 @@ impl<S> DataPacket<S> {
 }
 
 impl DataPacket<Raw> {
-    pub fn validate_lengths(self) -> Result<DataPacket<LenChecked>> {
+    pub fn validate_lengths(self) -> core::result::Result<DataPacket<LenChecked>, Error> {
         AhdrLen::new(self.ahdr.bytes.len())?;
         let _ = PayloadLen::new(self.payload.len())?;
         Ok(self.transition())
@@ -443,18 +443,18 @@ impl DataPacket<Raw> {
 }
 
 impl DataPacket<LenChecked> {
-    pub fn mark_forward_policy_checked(self) -> DataPacket<ForwardPolicyChecked> {
-        self.transition()
+    pub fn mark_forward_policy_checked(self) -> core::result::Result<DataPacket<ForwardPolicyChecked>, Error> {
+        Ok(self.transition())
     }
 
-    pub fn mark_backward_onion_processed(self) -> DataPacket<BackwardOnionProcessed> {
-        self.transition()
+    pub fn mark_backward_onion_processed(self) -> core::result::Result<DataPacket<BackwardOnionProcessed>, Error> {
+        Ok(self.transition())
     }
 }
 
 impl DataPacket<ForwardPolicyChecked> {
-    pub fn mark_forward_onion_processed(self) -> DataPacket<ForwardOnionProcessed> {
-        self.transition()
+    pub fn mark_forward_onion_processed(self) -> core::result::Result<DataPacket<ForwardOnionProcessed>, Error> {
+        Ok(self.transition())
     }
 }
 
@@ -464,7 +464,7 @@ pub enum Packet {
 }
 
 impl Packet {
-    pub fn from_wire_parts(chdr: Chdr, ahdr: Ahdr, payload: Vec<u8>) -> Result<Self> {
+    pub fn from_wire_parts(chdr: Chdr, ahdr: Ahdr, payload: Vec<u8>) -> core::result::Result<Self, Error> {
         match chdr {
             Chdr::Setup { hops, exp } => Ok(Self::Setup(SetupPacket {
                 chdr: SetupChdr { hops, exp },
@@ -496,8 +496,6 @@ pub struct Ahdr {
     // Fixed-size anonymous header: r blocks of c bytes
     pub bytes: Vec<u8>,
 }
-
-pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

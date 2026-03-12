@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 use super::{RouterStorage, StoredState};
 
@@ -16,13 +16,13 @@ impl FileRouterStorage {
 }
 
 impl RouterStorage for FileRouterStorage {
-    fn load(&self) -> Result<StoredState> {
+    fn load(&self) -> core::result::Result<StoredState, Error> {
         let data = fs::read(&self.path).map_err(|_| Error::Crypto)?;
         let state: StoredState = serde_json::from_slice(&data).map_err(|_| Error::Crypto)?;
         Ok(state)
     }
 
-    fn save(&self, state: &StoredState) -> Result<()> {
+    fn save(&self, state: &StoredState) -> core::result::Result<(), Error> {
         let data = serde_json::to_vec_pretty(state).map_err(|_| Error::Crypto)?;
         fs::write(&self.path, data).map_err(|_| Error::Crypto)
     }

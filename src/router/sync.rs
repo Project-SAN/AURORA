@@ -1,15 +1,21 @@
 use crate::router::Router;
 use crate::setup::directory::{self, DirectoryAnnouncement};
-use crate::types::Result;
 
 /// Applies a directory JSON string (already verified) to the router.
-pub fn apply_announcement(router: &mut Router, announcement: &DirectoryAnnouncement) -> Result<()> {
+pub fn apply_announcement(
+    router: &mut Router,
+    announcement: &DirectoryAnnouncement,
+) -> core::result::Result<(), crate::types::Error> {
     router.install_directory(announcement)
 }
 
 /// Convenience helper: verify a signed JSON body with the public key
 /// and install the contained policies into the router.
-pub fn apply_signed_announcement(router: &mut Router, body: &str, public_key: &[u8]) -> Result<()> {
+pub fn apply_signed_announcement(
+    router: &mut Router,
+    body: &str,
+    public_key: &[u8],
+) -> core::result::Result<(), crate::types::Error> {
     let announcement = directory::from_signed_json(body, public_key)?;
     apply_announcement(router, &announcement)
 }
@@ -19,11 +25,10 @@ pub mod client {
     use super::apply_signed_announcement;
     use crate::router::{config::RouterConfig, Router};
     use crate::types::Error;
-    use crate::types::Result;
     use crate::utils::decode_hex;
 
     pub trait DirectoryClient {
-        fn fetch_signed(&self) -> Result<String>;
+        fn fetch_signed(&self) -> core::result::Result<String, crate::types::Error>;
     }
 
     #[cfg(feature = "http-client")]
@@ -40,7 +45,7 @@ pub mod client {
 
     #[cfg(feature = "http-client")]
     impl<'a> DirectoryClient for HttpDirectoryClient<'a> {
-        fn fetch_signed(&self) -> Result<String> {
+        fn fetch_signed(&self) -> core::result::Result<String, crate::types::Error> {
             let response = ureq::get(&self.config.directory_url)
                 .call()
                 .map_err(|_| crate::types::Error::Crypto)?;
@@ -55,7 +60,7 @@ pub mod client {
         router: &mut Router,
         config: &RouterConfig,
         client: &dyn DirectoryClient,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), crate::types::Error> {
         let body = client.fetch_signed()?;
         let key_bytes = decode_hex(&config.directory_public_key).map_err(|_| Error::Crypto)?;
         if key_bytes.len() != 32 {

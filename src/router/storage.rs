@@ -1,6 +1,6 @@
 use crate::policy::PolicyMetadata;
 use crate::setup::directory::RouteAnnouncement;
-use crate::types::{Result, RoutingSegment, Sv};
+use crate::types::{RoutingSegment, Sv};
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
@@ -21,8 +21,8 @@ struct StoredRoute {
 }
 
 pub trait RouterStorage {
-    fn load(&self) -> Result<StoredState>;
-    fn save(&self, state: &StoredState) -> Result<()>;
+    fn load(&self) -> core::result::Result<StoredState, crate::types::Error>;
+    fn save(&self, state: &StoredState) -> core::result::Result<(), crate::types::Error>;
 }
 
 #[cfg(feature = "std")]
