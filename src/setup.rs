@@ -2,7 +2,7 @@ use crate::packet::{core, payload};
 use crate::policy::PolicyMetadata;
 use crate::setup::pipeline::SetupPipeline;
 use crate::sphinx;
-use crate::types::{Chdr, Exp, HopCount, Result, RoutingSegment, Si, Sv};
+use crate::types::{Chdr, Exp, HopCount, RoutingSegment, Si, Sv};
 use rand_core::RngCore;
 
 pub mod directory;
@@ -70,7 +70,7 @@ pub fn node_process(
     node_secret: &[u8; 32],
     sv: &Sv,
     rseg: &RoutingSegment,
-) -> Result<Si> {
+) -> ::core::result::Result<Si, crate::types::Error> {
     node_process_with_policy(pkt, node_secret, sv, rseg, None)
 }
 
@@ -80,7 +80,7 @@ pub fn node_process_with_policy(
     sv: &Sv,
     rseg: &RoutingSegment,
     policy: Option<&mut dyn SetupPipeline>,
-) -> Result<Si> {
+) -> ::core::result::Result<Si, crate::types::Error> {
     let si = sphinx::node_process_forward(&mut pkt.shdr, node_secret)?;
     let fs = core::create_from_chdr(sv, &si, rseg, &pkt.chdr)?;
     let _alpha = payload::add_fs_into_payload(&si, &fs, &mut pkt.payload)?;
@@ -90,7 +90,10 @@ pub fn node_process_with_policy(
     Ok(si)
 }
 
-pub fn install_policy_metadata(pkt: &SetupPacket, installer: &mut dyn SetupPipeline) -> Result<()> {
+pub fn install_policy_metadata(
+    pkt: &SetupPacket,
+    installer: &mut dyn SetupPipeline,
+) -> ::core::result::Result<(), crate::types::Error> {
     for tlv in &pkt.tlvs {
         if tlv.first().copied() == Some(crate::policy::POLICY_METADATA_TLV) {
             let meta = crate::policy::decode_metadata_tlv(tlv)?;

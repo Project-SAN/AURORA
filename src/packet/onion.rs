@@ -1,13 +1,17 @@
 use alloc::vec::Vec;
 
 use crate::crypto::aegis::core::{open, seal, TAG128_LEN};
-use crate::types::{Error, Result, Si};
+use crate::types::{Error, Si};
 
 const ONION_AD: &[u8] = b"AURORA-ONION-LAYER";
 
 // {O', IV} = ADD_LAYER(s, IV, O)
 // IV is used as the AEAD nonce for this packet and is carried unchanged.
-pub fn add_layer(s: &Si, iv: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()> {
+pub fn add_layer(
+    s: &Si,
+    iv: &mut [u8; 16],
+    payload: &mut Vec<u8>,
+) -> core::result::Result<(), Error> {
     let sealed = seal(&s.0, iv, ONION_AD, payload.as_slice(), TAG128_LEN)?;
     payload.clear();
     payload.extend_from_slice(&sealed);
@@ -15,7 +19,11 @@ pub fn add_layer(s: &Si, iv: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()>
 }
 
 // {O, IV} = REMOVE_LAYER(s, IV, O')
-pub fn remove_layer(s: &Si, iv: &mut [u8; 16], payload: &mut Vec<u8>) -> Result<()> {
+pub fn remove_layer(
+    s: &Si,
+    iv: &mut [u8; 16],
+    payload: &mut Vec<u8>,
+) -> core::result::Result<(), Error> {
     let opened = open(&s.0, iv, ONION_AD, payload.as_slice(), TAG128_LEN)?;
     payload.clear();
     payload.extend_from_slice(&opened);
@@ -27,7 +35,7 @@ pub fn add_layer_suffix(
     iv: &mut [u8; 16],
     payload: &mut Vec<u8>,
     suffix_offset: usize,
-) -> Result<()> {
+) -> core::result::Result<(), Error> {
     if suffix_offset > payload.len() {
         return Err(Error::Length);
     }
@@ -43,7 +51,7 @@ pub fn remove_layer_suffix(
     iv: &mut [u8; 16],
     payload: &mut Vec<u8>,
     suffix_offset: usize,
-) -> Result<()> {
+) -> core::result::Result<(), Error> {
     if suffix_offset > payload.len() {
         return Err(Error::Length);
     }

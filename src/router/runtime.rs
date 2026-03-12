@@ -1,5 +1,5 @@
 use crate::router::Router;
-use crate::types::{BackwardOnionProcessed, DataPacket, ForwardOnionProcessed, LenChecked, Result};
+use crate::types::{BackwardOnionProcessed, DataPacket, ForwardOnionProcessed, LenChecked};
 use crate::{
     forward::Forward,
     node::{ExitTransport, ReplayFilter},
@@ -40,7 +40,7 @@ impl<'a> RouterRuntime<'a> {
         &mut self,
         sv: crate::types::Sv,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<ForwardOnionProcessed>> {
+    ) -> core::result::Result<DataPacket<ForwardOnionProcessed>, crate::types::Error> {
         self.process_forward_data_packet_with_exit(sv, packet, None)
     }
 
@@ -49,7 +49,7 @@ impl<'a> RouterRuntime<'a> {
         sv: crate::types::Sv,
         packet: DataPacket<LenChecked>,
         exit: Option<&mut dyn ExitTransport>,
-    ) -> Result<DataPacket<ForwardOnionProcessed>> {
+    ) -> core::result::Result<DataPacket<ForwardOnionProcessed>, crate::types::Error> {
         let mut forward = (self.forward_factory)();
         let mut replay = (self.replay_factory)();
         self.router.process_forward_data_packet(
@@ -66,7 +66,7 @@ impl<'a> RouterRuntime<'a> {
         &mut self,
         sv: crate::types::Sv,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<BackwardOnionProcessed>> {
+    ) -> core::result::Result<DataPacket<BackwardOnionProcessed>, crate::types::Error> {
         let mut forward = (self.forward_factory)();
         let mut replay = (self.replay_factory)();
         self.router.process_backward_data_packet(
@@ -78,18 +78,22 @@ impl<'a> RouterRuntime<'a> {
         )
     }
 
-    pub fn drain_pending(&mut self) -> Result<Vec<crate::policy::PolicyCapsule>> {
+    pub fn drain_pending(
+        &mut self,
+    ) -> core::result::Result<Vec<crate::policy::PolicyCapsule>, crate::types::Error> {
         self.router.drain_pending()
     }
 
-    pub fn handle_async_violations(&mut self) -> Result<crate::router::penalty::AsyncActions> {
+    pub fn handle_async_violations(
+        &mut self,
+    ) -> core::result::Result<crate::router::penalty::AsyncActions, crate::types::Error> {
         self.router.handle_async_violations()
     }
 }
 
 pub mod forward {
     use super::Forward;
-    use crate::types::{Ahdr, Chdr, Result, RoutingSegment};
+    use crate::types::{Ahdr, Chdr, RoutingSegment};
     use alloc::collections::VecDeque;
     use alloc::vec::Vec;
 
@@ -124,7 +128,7 @@ pub mod forward {
             _ahdr: &Ahdr,
             payload: &mut Vec<u8>,
             _direction: crate::types::PacketDirection,
-        ) -> Result<()> {
+        ) -> core::result::Result<(), crate::types::Error> {
             let mut owned = Vec::with_capacity(payload.len());
             owned.extend_from_slice(payload);
             self.queue.push_back(owned);

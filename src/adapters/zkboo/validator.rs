@@ -7,7 +7,7 @@ use crate::core::policy::{
     EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH,
 };
 use crate::crypto::zkp::{Circuit, Engine, Proof, VerifierConfig};
-use crate::types::{Error, Result};
+use crate::types::Error;
 use spin::Mutex;
 
 pub struct ZkBooCapsuleValidator {
@@ -25,7 +25,7 @@ impl ZkBooCapsuleValidator {
         &self,
         metadata: &PolicyMetadata,
         kind: ProofKind,
-    ) -> Result<Option<Arc<Circuit>>> {
+    ) -> core::result::Result<Option<Arc<Circuit>>, Error> {
         let Some(entry) = metadata
             .verifiers
             .iter()
@@ -47,7 +47,11 @@ impl ZkBooCapsuleValidator {
         Ok(Some(circuit))
     }
 
-    fn output_bits_for_part(&self, part_kind: ProofKind, part_aux: &[u8]) -> Result<Vec<u8>> {
+    fn output_bits_for_part(
+        &self,
+        part_kind: ProofKind,
+        part_aux: &[u8],
+    ) -> core::result::Result<Vec<u8>, Error> {
         match part_kind {
             ProofKind::KeyBinding => {
                 let hkey = find_32(part_aux, EXT_TAG_PCD_KEY_HASH)?;
@@ -95,7 +99,11 @@ impl Default for ZkBooCapsuleValidator {
 }
 
 impl CapsuleValidator for ZkBooCapsuleValidator {
-    fn validate(&self, capsule: &PolicyCapsule, metadata: &PolicyMetadata) -> Result<()> {
+    fn validate(
+        &self,
+        capsule: &PolicyCapsule,
+        metadata: &PolicyMetadata,
+    ) -> core::result::Result<(), Error> {
         self.validate_with_role(capsule, metadata, PolicyRole::All)
     }
 
@@ -104,7 +112,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         capsule: &PolicyCapsule,
         metadata: &PolicyMetadata,
         role: PolicyRole,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), Error> {
         if !metadata.supports_zkboo() {
             // ZKBoo-only build: reject non-ZKBoo policies explicitly.
             return Err(Error::PolicyViolation);
@@ -171,7 +179,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
     }
 }
 
-fn find_32(aux: &[u8], tag: u8) -> Result<[u8; 32]> {
+fn find_32(aux: &[u8], tag: u8) -> core::result::Result<[u8; 32], Error> {
     let Some(bytes) = find_extension(aux, tag)? else {
         return Err(Error::PolicyViolation);
     };

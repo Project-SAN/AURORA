@@ -1,10 +1,8 @@
 use std::env;
 
-use crate::types::Result;
-
 use super::RouterConfig;
 
-pub fn from_env() -> Result<RouterConfig> {
+pub fn from_env() -> core::result::Result<RouterConfig, crate::types::Error> {
     let url = env::var("HORNET_DIR_URL").unwrap_or_else(|_| "https://example.com/directory".into());
     let public_key = env::var("HORNET_DIR_PUBKEY").unwrap_or_default();
     let router_id = env::var("HORNET_ROUTER_ID").ok().filter(|s| !s.is_empty());

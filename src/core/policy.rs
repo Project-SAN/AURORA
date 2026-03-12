@@ -17,7 +17,7 @@ pub use extensions::{
 pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
 pub use registry::{CapsuleValidator, PolicyRegistry, PolicyRole};
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 use alloc::vec::Vec;
 
 pub const POLICY_METADATA_TLV: u8 = 0xA1;
@@ -32,7 +32,7 @@ pub fn encode_metadata_tlv(meta: &PolicyMetadata) -> Vec<u8> {
     out
 }
 
-pub fn decode_metadata_tlv(buf: &[u8]) -> Result<PolicyMetadata> {
+pub fn decode_metadata_tlv(buf: &[u8]) -> core::result::Result<PolicyMetadata, Error> {
     if buf.len() < 3 {
         return Err(Error::Length);
     }

@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::types::{Ahdr, Chdr, Error, Nonce, Result, Si};
+use crate::types::{Ahdr, Chdr, Error, Nonce, Si};
 
 // Build a forward data packet payload per Alg.19:
 // - Input: CHDR (Data), AHDR (forward), random nonce IV0, and plaintext payload.
@@ -16,7 +16,7 @@ pub fn build(
     keys_f: &[Si],
     iv0: &mut Nonce,
     payload: &mut Vec<u8>,
-) -> Result<()> {
+) -> core::result::Result<(), Error> {
     // CHDR must be a data header
     if chdr.nonce().is_none() {
         return Err(Error::Length);
@@ -42,7 +42,7 @@ pub fn encrypt_forward_payload(
     keys: &[Si],
     iv0: &mut [u8; 16],
     payload: &mut Vec<u8>,
-) -> Result<()> {
+) -> core::result::Result<(), Error> {
     let mut iv = *iv0;
     for key in keys.iter().rev() {
         crate::packet::onion::add_layer(key, &mut iv, payload)?;
@@ -56,7 +56,7 @@ pub fn decrypt_backward_payload(
     keys: &[Si],
     iv0: &mut [u8; 16],
     payload: &mut Vec<u8>,
-) -> Result<()> {
+) -> core::result::Result<(), Error> {
     let mut iv = *iv0;
     for key in keys {
         crate::packet::onion::remove_layer(key, &mut iv, payload)?;

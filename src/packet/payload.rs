@@ -1,5 +1,5 @@
 use crate::crypto::{kdf::mac_key, mac, prg};
-use crate::types::{Error, Fs, Mac, Result, Si, C_BLOCK};
+use crate::types::{Error, Fs, Mac, Si, C_BLOCK};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -18,7 +18,7 @@ impl Payload {
         Self { bytes, rmax }
     }
 
-    pub fn from_bytes(bytes: Vec<u8>, rmax: usize) -> Result<Self> {
+    pub fn from_bytes(bytes: Vec<u8>, rmax: usize) -> core::result::Result<Self, Error> {
         if bytes.len() != rmax * C_BLOCK {
             return Err(Error::Length);
         }
@@ -49,7 +49,11 @@ fn xor_in_place(data: &mut [u8], mask: &[u8]) {
 }
 
 // Alg.1: Add FS into FS payload
-pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut Payload) -> Result<Mac> {
+pub fn add_fs_into_payload(
+    s: &Si,
+    fs: &Fs,
+    payload: &mut Payload,
+) -> core::result::Result<Mac, Error> {
     let rc = payload.bytes.len();
     // Ptmp = FS || Pin[0 .. (r-1)c] XOR PRG0(hPRG0(s))[k .. end]
     let ptmp_len = rc - crate::types::K_MAC; // |FS| + (r-1)c
@@ -72,7 +76,11 @@ pub fn add_fs_into_payload(s: &Si, fs: &Fs, payload: &mut Payload) -> Result<Mac
 }
 
 // Alg.2: Retrieve FSes from FS payload
-pub fn retrieve_fses(keys: &[Si], init_seed: &[u8; 16], payload: &Payload) -> Result<Vec<Fs>> {
+pub fn retrieve_fses(
+    keys: &[Si],
+    init_seed: &[u8; 16],
+    payload: &Payload,
+) -> core::result::Result<Vec<Fs>, Error> {
     let rc = payload.bytes.len();
     let l = keys.len();
     if l == 0 {

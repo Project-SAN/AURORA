@@ -1,9 +1,14 @@
 use crate::crypto::prp;
-use crate::types::{Chdr, Error, Exp, Fs, Result, RoutingSegment, Si, Sv, FS_LEN};
+use crate::types::{Chdr, Error, Exp, Fs, RoutingSegment, Si, Sv, FS_LEN};
 use alloc::vec::Vec;
 
 // Encode {s || EXP || R[0..12]} into 32 bytes, then PRP-enc with key from SV
-pub fn create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> Result<Fs> {
+pub fn create(
+    sv: &Sv,
+    s: &Si,
+    r: &RoutingSegment,
+    exp: Exp,
+) -> core::result::Result<Fs, Error> {
     if r.0.len() > 12 {
         return Err(Error::Length);
     }
@@ -16,7 +21,7 @@ pub fn create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> Result<Fs> {
     Ok(Fs(buf))
 }
 
-pub fn open(sv: &Sv, fs: &Fs) -> Result<(Si, RoutingSegment, Exp)> {
+pub fn open(sv: &Sv, fs: &Fs) -> core::result::Result<(Si, RoutingSegment, Exp), Error> {
     let mut buf = fs.0;
     prp::prp_dec_bytes(&sv.0, &mut buf);
     let mut k = [0u8; 16];
@@ -29,7 +34,12 @@ pub fn open(sv: &Sv, fs: &Fs) -> Result<(Si, RoutingSegment, Exp)> {
 }
 
 // Convenience: derive EXP from a setup CHDR, validate type, and create FS
-pub fn create_from_chdr(sv: &Sv, s: &Si, r: &RoutingSegment, chdr: &Chdr) -> Result<Fs> {
+pub fn create_from_chdr(
+    sv: &Sv,
+    s: &Si,
+    r: &RoutingSegment,
+    chdr: &Chdr,
+) -> core::result::Result<Fs, Error> {
     let exp = chdr.exp().ok_or(Error::Length)?;
     create(sv, s, r, exp)
 }

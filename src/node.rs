@@ -8,7 +8,7 @@ use alloc::collections::BTreeSet;
 use crate::node::pipeline::ForwardPipeline;
 use crate::policy::{PolicyId, PolicyRole};
 use crate::sphinx::*;
-use crate::types::{Chdr, Result, RoutingSegment, Sv};
+use crate::types::{Chdr, RoutingSegment, Sv};
 use alloc::collections::BTreeMap;
 pub use exit::ExitMode;
 pub use exit::ExitTransport;
@@ -74,6 +74,6 @@ pub fn create_fs_from_setup(
     sv: &Sv,
     s: &crate::types::Si,
     r: &RoutingSegment,
-) -> Result<crate::types::Fs> {
+) -> core::result::Result<crate::types::Fs, crate::types::Error> {
     crate::packet::core::create_from_chdr(sv, s, r, chdr)
 }

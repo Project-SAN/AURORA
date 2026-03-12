@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 use serde::{Deserialize, Serialize};
 
@@ -69,7 +69,7 @@ impl PolicyMetadata {
         out
     }
 
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
+    pub fn parse(bytes: &[u8]) -> core::result::Result<Self, Error> {
         if bytes.len() < HEADER_LEN {
             return Err(Error::Length);
         }

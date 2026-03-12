@@ -1,4 +1,4 @@
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 const EXT_MAGIC: &[u8; 4] = b"ZEXT";
 const EXT_VERSION: u8 = 1;
@@ -24,7 +24,10 @@ pub struct CapsuleExtensionRef<'a> {
     pub data: &'a [u8],
 }
 
-pub fn encode_extensions_into(exts: &[CapsuleExtensionRef<'_>], out: &mut [u8]) -> Result<usize> {
+pub fn encode_extensions_into(
+    exts: &[CapsuleExtensionRef<'_>],
+    out: &mut [u8],
+) -> core::result::Result<usize, Error> {
     let mut cursor = 0usize;
     if out.len() < 6 {
         return Err(Error::Length);
@@ -52,7 +55,7 @@ pub fn encode_extensions_into(exts: &[CapsuleExtensionRef<'_>], out: &mut [u8]) 
     Ok(cursor)
 }
 
-pub fn extension_iter(aux: &[u8]) -> Result<Option<ExtensionIter<'_>>> {
+pub fn extension_iter(aux: &[u8]) -> core::result::Result<Option<ExtensionIter<'_>>, Error> {
     if aux.len() < 6 || &aux[..4] != EXT_MAGIC {
         return Ok(None);
     }
@@ -74,7 +77,7 @@ pub struct ExtensionIter<'a> {
 }
 
 impl<'a> ExtensionIter<'a> {
-    pub fn find_tag(self, tag: u8) -> Result<Option<&'a [u8]>> {
+    pub fn find_tag(self, tag: u8) -> core::result::Result<Option<&'a [u8]>, Error> {
         for entry in self {
             let (entry_tag, value) = entry?;
             if entry_tag == tag {
@@ -86,7 +89,7 @@ impl<'a> ExtensionIter<'a> {
 }
 
 impl<'a> Iterator for ExtensionIter<'a> {
-    type Item = Result<(u8, &'a [u8])>;
+    type Item = core::result::Result<(u8, &'a [u8]), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -111,7 +114,7 @@ impl<'a> Iterator for ExtensionIter<'a> {
     }
 }
 
-pub fn find_extension(aux: &[u8], tag: u8) -> Result<Option<&[u8]>> {
+pub fn find_extension(aux: &[u8], tag: u8) -> core::result::Result<Option<&[u8]>, Error> {
     let iter = match extension_iter(aux)? {
         Some(iter) => iter,
         None => return Ok(None),

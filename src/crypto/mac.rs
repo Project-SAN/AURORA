@@ -1,4 +1,4 @@
-use crate::types::{Error, Mac, Result};
+use crate::types::{Error, Mac};
 use hmac::digest::KeyInit;
 use hmac::Hmac;
 use sha2::Sha256;
@@ -14,7 +14,11 @@ pub fn mac_trunc16(key: &[u8], data: &[u8]) -> Mac {
     Mac(out)
 }
 
-pub fn verify_trunc16(key: &[u8], data: &[u8], mac16: &Mac) -> Result<()> {
+pub fn verify_trunc16(
+    key: &[u8],
+    data: &[u8],
+    mac16: &Mac,
+) -> core::result::Result<(), Error> {
     let expected = mac_trunc16(key, data);
     if subtle::ConstantTimeEq::ct_eq(&expected.0[..], &mac16.0[..]).unwrap_u8() == 1 {
         Ok(())

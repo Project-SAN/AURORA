@@ -1,7 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 use subtle::ConstantTimeEq;
 
 pub const KEY_LEN: usize = 16;
@@ -38,7 +38,7 @@ const SBOX: [u8; 256] = [
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
 
-fn check_tag_len(tag_len: usize) -> Result<()> {
+fn check_tag_len(tag_len: usize) -> core::result::Result<(), Error> {
     match tag_len {
         TAG128_LEN | TAG256_LEN => Ok(()),
         _ => Err(Error::Length),
@@ -51,7 +51,7 @@ pub fn seal(
     ad: &[u8],
     msg: &[u8],
     tag_len: usize,
-) -> Result<Vec<u8>> {
+) -> core::result::Result<Vec<u8>, Error> {
     let (mut ct, tag) = encrypt_detached(key, nonce, ad, msg, tag_len)?;
     ct.extend_from_slice(&tag);
     Ok(ct)
@@ -63,7 +63,7 @@ pub fn open(
     ad: &[u8],
     data: &[u8],
     tag_len: usize,
-) -> Result<Vec<u8>> {
+) -> core::result::Result<Vec<u8>, Error> {
     check_tag_len(tag_len)?;
     if data.len() < tag_len {
         return Err(Error::Length);
@@ -78,7 +78,7 @@ pub fn encrypt_detached(
     ad: &[u8],
     msg: &[u8],
     tag_len: usize,
-) -> Result<(Vec<u8>, Vec<u8>)> {
+) -> core::result::Result<(Vec<u8>, Vec<u8>), Error> {
     check_tag_len(tag_len)?;
     let mut state = init(*key, *nonce);
     absorb_data(&mut state, ad);
@@ -93,7 +93,7 @@ pub fn decrypt_detached(
     ad: &[u8],
     ct: &[u8],
     tag: &[u8],
-) -> Result<Vec<u8>> {
+) -> core::result::Result<Vec<u8>, Error> {
     check_tag_len(tag.len())?;
     let mut state = init(*key, *nonce);
     absorb_data(&mut state, ad);

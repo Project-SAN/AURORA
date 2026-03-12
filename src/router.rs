@@ -9,7 +9,7 @@ use crate::setup::pipeline::SetupPipeline;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
 use crate::types::{
-    Ahdr, BackwardOnionProcessed, Chdr, DataPacket, ForwardOnionProcessed, LenChecked, Result,
+    Ahdr, BackwardOnionProcessed, Chdr, DataPacket, ForwardOnionProcessed, LenChecked,
 };
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -92,12 +92,18 @@ impl Router {
 
     /// Install all policy metadata entries contained in a directory announcement.
     /// This is typically called after verifying the announcement signature.
-    pub fn install_directory(&mut self, directory: &DirectoryAnnouncement) -> Result<()> {
+    pub fn install_directory(
+        &mut self,
+        directory: &DirectoryAnnouncement,
+    ) -> core::result::Result<(), crate::types::Error> {
         self.install_policies(directory.policies())?;
         self.install_routes(directory.routes())
     }
 
-    pub fn install_policies(&mut self, policies: &[crate::policy::PolicyMetadata]) -> Result<()> {
+    pub fn install_policies(
+        &mut self,
+        policies: &[crate::policy::PolicyMetadata],
+    ) -> core::result::Result<(), crate::types::Error> {
         for policy in policies {
             let mut pipeline = RegistrySetupPipeline::new(&mut self.registry);
             pipeline.install(policy.clone())?;
@@ -105,7 +111,10 @@ impl Router {
         Ok(())
     }
 
-    pub fn install_routes(&mut self, routes: &[RouteAnnouncement]) -> Result<()> {
+    pub fn install_routes(
+        &mut self,
+        routes: &[RouteAnnouncement],
+    ) -> core::result::Result<(), crate::types::Error> {
         self.refresh_policy_roles(routes);
         if let Some(node_id) = self.node_id.as_deref() {
             self.routes.clear();
@@ -125,7 +134,11 @@ impl Router {
 
     /// Verifies a signed directory announcement (Ed25519) and installs
     /// all contained policy metadata entries on success.
-    pub fn install_signed_directory(&mut self, body: &str, public_key: &[u8]) -> Result<()> {
+    pub fn install_signed_directory(
+        &mut self,
+        body: &str,
+        public_key: &[u8],
+    ) -> core::result::Result<(), crate::types::Error> {
         let directory = from_signed_json(body, public_key)?;
         self.install_directory(&directory)
     }
@@ -168,7 +181,9 @@ impl Router {
         self.policy_roles.get(policy).copied()
     }
 
-    pub fn drain_pending(&self) -> Result<Vec<crate::policy::PolicyCapsule>> {
+    pub fn drain_pending(
+        &self,
+    ) -> core::result::Result<Vec<crate::policy::PolicyCapsule>, crate::types::Error> {
         let Some(policy) = self.policy_runtime() else {
             return Ok(Vec::new());
         };
@@ -177,7 +192,9 @@ impl Router {
             .drain_pending(policy.registry, policy.validator, &self.policy_roles)
     }
 
-    pub fn handle_async_violations(&mut self) -> Result<penalty::AsyncActions> {
+    pub fn handle_async_violations(
+        &mut self,
+    ) -> core::result::Result<penalty::AsyncActions, crate::types::Error> {
         let violations = self.drain_pending()?;
         let mut resend = Vec::new();
         for capsule in &violations {
@@ -220,7 +237,7 @@ impl Router {
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), crate::types::Error> {
         use crate::node;
         let policy = self.policy_runtime();
         #[cfg(feature = "localnet-debug")]
@@ -270,7 +287,7 @@ impl Router {
         exit: Option<&mut dyn crate::node::ExitTransport>,
         replay: &'io mut dyn crate::node::ReplayFilter,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<ForwardOnionProcessed>> {
+    ) -> core::result::Result<DataPacket<ForwardOnionProcessed>, crate::types::Error> {
         let mut chdr: Chdr = packet.chdr.into();
         let mut ahdr = packet.ahdr;
         let mut payload = packet.payload;
@@ -285,8 +302,8 @@ impl Router {
             &mut payload,
         )?;
         Ok(DataPacket::new(chdr.try_into()?, ahdr, payload)
-            .mark_forward_policy_checked()
-            .mark_forward_onion_processed())
+            .mark_forward_policy_checked()?
+            .mark_forward_onion_processed()?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -299,7 +316,7 @@ impl Router {
         chdr: &mut Chdr,
         ahdr: &mut Ahdr,
         payload: &mut Vec<u8>,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), crate::types::Error> {
         use crate::node;
         let policy = self.policy_runtime();
         let mut ctx = node::NodeCtx {
@@ -321,7 +338,7 @@ impl Router {
         forward: &'io mut dyn crate::forward::Forward,
         replay: &'io mut dyn crate::node::ReplayFilter,
         packet: DataPacket<LenChecked>,
-    ) -> Result<DataPacket<BackwardOnionProcessed>> {
+    ) -> core::result::Result<DataPacket<BackwardOnionProcessed>, crate::types::Error> {
         let mut chdr: Chdr = packet.chdr.into();
         let mut ahdr = packet.ahdr;
         let mut payload = packet.payload;
@@ -334,7 +351,7 @@ impl Router {
             &mut ahdr,
             &mut payload,
         )?;
-        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload).mark_backward_onion_processed())
+        Ok(DataPacket::new(chdr.try_into()?, ahdr, payload).mark_backward_onion_processed()?)
     }
 
     fn refresh_policy_roles(&mut self, routes: &[RouteAnnouncement]) {

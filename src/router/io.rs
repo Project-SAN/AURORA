@@ -1,5 +1,5 @@
 use crate::types::{
-    Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Result, Sv,
+    Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Sv,
 };
 use alloc::vec;
 use alloc::vec::Vec;
@@ -11,11 +11,11 @@ pub struct IncomingPacket {
 }
 
 pub trait PacketListener {
-    fn next(&mut self) -> Result<Option<IncomingPacket>>;
+    fn next(&mut self) -> core::result::Result<Option<IncomingPacket>, Error>;
 }
 
 pub trait PacketReader {
-    fn read_exact(&mut self, buf: &mut [u8]) -> Result<()>;
+    fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), Error>;
 }
 
 fn packet_type_to_u8(pt: PacketType) -> u8 {
@@ -25,7 +25,7 @@ fn packet_type_to_u8(pt: PacketType) -> u8 {
     }
 }
 
-fn packet_type_from_u8(value: u8) -> Result<PacketType> {
+fn packet_type_from_u8(value: u8) -> core::result::Result<PacketType, Error> {
     match value {
         0 => Ok(PacketType::Setup),
         1 => Ok(PacketType::Data),
@@ -33,7 +33,7 @@ fn packet_type_from_u8(value: u8) -> Result<PacketType> {
     }
 }
 
-fn direction_from_u8(value: u8) -> Result<PacketDirection> {
+fn direction_from_u8(value: u8) -> core::result::Result<PacketDirection, Error> {
     match value {
         0 => Ok(PacketDirection::Forward),
         1 => Ok(PacketDirection::Backward),
@@ -68,7 +68,10 @@ pub fn encode_frame_bytes(
     frame
 }
 
-pub fn read_incoming_packet<R: PacketReader>(reader: &mut R, sv: Sv) -> Result<IncomingPacket> {
+pub fn read_incoming_packet<R: PacketReader>(
+    reader: &mut R,
+    sv: Sv,
+) -> core::result::Result<IncomingPacket, Error> {
     let mut header = [0u8; 4];
     reader.read_exact(&mut header)?;
     let direction = direction_from_u8(header[0])?;

@@ -8,7 +8,7 @@
 //! Caller chooses a per-path `cap` (maximum on-wire payload) and a `msg_id`.
 //! The produced fragment payloads are suitable to place directly into `wire::encode`'s payload.
 
-use crate::types::{Error, Result};
+use crate::types::Error;
 use alloc::vec::Vec;
 
 pub const HDR_LEN: usize = 8;
@@ -43,7 +43,7 @@ impl FragHeader {
         out[4..6].copy_from_slice(&be_u16(self.index));
         out[6..8].copy_from_slice(&be_u16(self.total));
     }
-    pub fn decode(buf: &[u8]) -> Result<(Self, &[u8])> {
+    pub fn decode(buf: &[u8]) -> core::result::Result<(Self, &[u8]), Error> {
         if buf.len() < HDR_LEN {
             return Err(Error::Length);
         }
@@ -66,7 +66,7 @@ impl FragHeader {
 
 /// Split message into fragments with header, each fragment length <= cap.
 /// cap must be > HDR_LEN.
-pub fn split(msg: &[u8], cap: usize, msg_id: u32) -> Result<Vec<Vec<u8>>> {
+pub fn split(msg: &[u8], cap: usize, msg_id: u32) -> core::result::Result<Vec<Vec<u8>>, Error> {
     if cap <= HDR_LEN {
         return Err(Error::Length);
     }
@@ -112,7 +112,7 @@ impl Reassembler {
     }
 
     /// Accept a fragment (with header) and return the reassembled message when complete.
-    pub fn accept(&mut self, frag: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn accept(&mut self, frag: &[u8]) -> core::result::Result<Option<Vec<u8>>, Error> {
         let (hdr, body) = FragHeader::decode(frag)?;
         // find or create entry
         let mut idx = None;

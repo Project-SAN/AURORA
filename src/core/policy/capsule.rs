@@ -1,4 +1,4 @@
-use crate::types::{Error, PolicyPartCount, Result};
+use crate::types::{Error, PolicyPartCount};
 
 use super::metadata::PolicyId;
 
@@ -42,7 +42,7 @@ impl ProofPart {
         &self.aux
     }
 
-    pub fn set_aux(&mut self, aux: &[u8]) -> Result<()> {
+    pub fn set_aux(&mut self, aux: &[u8]) -> core::result::Result<(), Error> {
         self.aux.clear();
         self.aux.extend_from_slice(aux);
         Ok(())
@@ -131,7 +131,7 @@ mod tests {
 }
 
 impl PolicyCapsule {
-    pub fn decode(payload: &[u8]) -> Result<(Self, usize)> {
+    pub fn decode(payload: &[u8]) -> core::result::Result<(Self, usize), Error> {
         if payload.len() < HEADER_LEN {
             return Err(Error::Length);
         }
@@ -193,7 +193,7 @@ impl PolicyCapsule {
         Ok((capsule, cursor))
     }
 
-    pub fn encoded_len(&self) -> Result<usize> {
+    pub fn encoded_len(&self) -> core::result::Result<usize, Error> {
         let part_count = PolicyPartCount::new(self.part_count)?.get();
         let mut total = HEADER_LEN;
         for part in self.parts[..part_count].iter() {
@@ -210,14 +210,14 @@ impl PolicyCapsule {
         Ok(total)
     }
 
-    pub fn encode(&self) -> Result<alloc::vec::Vec<u8>> {
+    pub fn encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, Error> {
         let len = self.encoded_len()?;
         let mut out = alloc::vec![0u8; len];
         self.encode_into(&mut out)?;
         Ok(out)
     }
 
-    pub fn encode_into(&self, out: &mut [u8]) -> Result<usize> {
+    pub fn encode_into(&self, out: &mut [u8]) -> core::result::Result<usize, Error> {
         let part_count = PolicyPartCount::new(self.part_count)?;
         let part_count_len = part_count.get();
         let needed = self.encoded_len()?;
@@ -261,7 +261,7 @@ impl PolicyCapsule {
     }
 }
 
-fn read_u32(buf: &[u8], cursor: &mut usize) -> Result<u32> {
+fn read_u32(buf: &[u8], cursor: &mut usize) -> core::result::Result<u32, Error> {
     if *cursor + 4 > buf.len() {
         return Err(Error::Length);
     }

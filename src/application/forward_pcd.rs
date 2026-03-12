@@ -9,7 +9,7 @@ use crate::core::policy::{
 use crate::node::pipeline::ForwardPipeline;
 use crate::pcd::{PcdBackend, PcdState};
 use crate::policy::CapsuleValidator;
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 pub struct PcdForwardPipeline {
     backend: Box<dyn PcdBackend>,
@@ -40,7 +40,7 @@ impl ForwardPipeline for PcdForwardPipeline {
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
         role: PolicyRole,
-    ) -> Result<Option<(PolicyCapsule, usize)>> {
+    ) -> core::result::Result<Option<(PolicyCapsule, usize)>, Error> {
         if registry.is_empty() {
             return Ok(None);
         }
@@ -192,7 +192,7 @@ mod tests {
             &self,
             _capsule: &PolicyCapsule,
             _metadata: &PolicyMetadata,
-        ) -> crate::types::Result<()> {
+        ) -> core::result::Result<(), crate::types::Error> {
             Ok(())
         }
     }

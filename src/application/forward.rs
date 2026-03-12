@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::core::policy::{PolicyCapsule, PolicyRegistry, PolicyRole};
 use crate::node::pipeline::ForwardPipeline;
 use crate::policy::CapsuleValidator;
-use crate::types::{Error, Result};
+use crate::types::Error;
 
 #[derive(Clone, Copy, Default)]
 pub struct RegistryForwardPipeline;
@@ -23,7 +23,7 @@ impl ForwardPipeline for RegistryForwardPipeline {
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
         role: PolicyRole,
-    ) -> Result<Option<(PolicyCapsule, usize)>> {
+    ) -> core::result::Result<Option<(PolicyCapsule, usize)>, Error> {
         if registry.is_empty() {
             return Ok(None);
         }

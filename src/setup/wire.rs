@@ -1,7 +1,7 @@
 use crate::packet::payload::Payload;
 use crate::setup::SetupPacket;
 use crate::sphinx;
-use crate::types::{Chdr, Error, Result, C_BLOCK};
+use crate::types::{Chdr, Error, C_BLOCK};
 use alloc::vec::Vec;
 
 /// Encoded representation of a setup packet, suitable for sending on the wire.
@@ -13,7 +13,7 @@ pub struct EncodedSetup {
 /// Serialize a `SetupPacket` into `(header_bytes, payload_bytes)` where
 /// the payload consists of the FS payload followed by TLVs, each prefixed
 /// with a u16 length.
-pub fn encode(packet: &SetupPacket) -> Result<EncodedSetup> {
+pub fn encode(packet: &SetupPacket) -> core::result::Result<EncodedSetup, Error> {
     let header = sphinx::encode_header(&packet.shdr)?;
     let tlv_stream = encode_tlv_stream(&packet.tlvs)?;
     let mut payload = packet.payload.bytes.clone();
@@ -23,7 +23,11 @@ pub fn encode(packet: &SetupPacket) -> Result<EncodedSetup> {
 
 /// Deserialize a `SetupPacket` from the raw header/payload byte slices
 /// provided by the transport.
-pub fn decode(chdr: Chdr, header: &[u8], payload: &[u8]) -> Result<SetupPacket> {
+pub fn decode(
+    chdr: Chdr,
+    header: &[u8],
+    payload: &[u8],
+) -> core::result::Result<SetupPacket, Error> {
     let shdr = sphinx::decode_header(header)?;
     let rmax = shdr.rmax;
     let fs_len = expected_payload_len(rmax);
@@ -42,7 +46,7 @@ pub fn decode(chdr: Chdr, header: &[u8], payload: &[u8]) -> Result<SetupPacket> 
     })
 }
 
-fn encode_tlv_stream(tlvs: &[Vec<u8>]) -> Result<Vec<u8>> {
+fn encode_tlv_stream(tlvs: &[Vec<u8>]) -> core::result::Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     for tlv in tlvs {
         let len = tlv.len();
@@ -55,7 +59,7 @@ fn encode_tlv_stream(tlvs: &[Vec<u8>]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn decode_tlv_stream(bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+fn decode_tlv_stream(bytes: &[u8]) -> core::result::Result<Vec<Vec<u8>>, Error> {
     let mut cursor = 0usize;
     let mut out = Vec::new();
     while cursor < bytes.len() {
