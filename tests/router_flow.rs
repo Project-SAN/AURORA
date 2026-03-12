@@ -1,5 +1,5 @@
 use aurora::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PCD_KEY_HASH,
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_KEY_HASH,
 };
 use aurora::core::policy::{PolicyMetadata, ProofKind, VerifierEntry};
 use aurora::forward::Forward;
@@ -338,7 +338,7 @@ fn router_entry_accepts_valid_keybinding_part() {
     let hkey = payload;
     let aux = {
         let exts = [CapsuleExtensionRef {
-            tag: EXT_TAG_PCD_KEY_HASH,
+            tag: EXT_TAG_KEY_HASH,
             data: &hkey,
         }];
         let mut buf = [0u8; AUX_MAX];

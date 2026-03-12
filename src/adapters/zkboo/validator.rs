@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::core::policy::{
     find_extension, CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRole, ProofKind,
-    EXT_TAG_PAYLOAD_HASH, EXT_TAG_PCD_KEY_HASH,
+    EXT_TAG_KEY_HASH, EXT_TAG_PAYLOAD_HASH,
 };
 use crate::crypto::zkp::{Circuit, Engine, Proof, VerifierConfig};
 use crate::types::Error;
@@ -54,11 +54,11 @@ impl ZkBooCapsuleValidator {
     ) -> core::result::Result<Vec<u8>, Error> {
         match part_kind {
             ProofKind::KeyBinding => {
-                let hkey = find_32(part_aux, EXT_TAG_PCD_KEY_HASH)?;
+                let hkey = find_32(part_aux, EXT_TAG_KEY_HASH)?;
                 Ok(bytes_to_bits_lsb_first(&hkey))
             }
             ProofKind::Consistency => {
-                let hkey = find_32(part_aux, EXT_TAG_PCD_KEY_HASH)?;
+                let hkey = find_32(part_aux, EXT_TAG_KEY_HASH)?;
                 let payload = find_32(part_aux, EXT_TAG_PAYLOAD_HASH)?;
                 let mut out = Vec::with_capacity(32 * 8 * 2);
                 out.extend_from_slice(&bytes_to_bits_lsb_first(&hkey));
@@ -147,7 +147,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         // KeyBinding(hkey) <-> Consistency(hkey, payload_hash) <-> Policy(payload_hash, allow=1)
         match role {
             PolicyRole::Middle => {
-                let cons_hkey = find_32(part.aux(), EXT_TAG_PCD_KEY_HASH)?;
+                let cons_hkey = find_32(part.aux(), EXT_TAG_KEY_HASH)?;
                 let cons_payload = find_32(part.aux(), EXT_TAG_PAYLOAD_HASH)?;
                 let kb = capsule
                     .part(ProofKind::KeyBinding)
@@ -155,7 +155,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
                 let pol = capsule
                     .part(ProofKind::Policy)
                     .ok_or(Error::PolicyViolation)?;
-                let kb_hkey = find_32(kb.aux(), EXT_TAG_PCD_KEY_HASH)?;
+                let kb_hkey = find_32(kb.aux(), EXT_TAG_KEY_HASH)?;
                 let pol_payload = find_32(pol.aux(), EXT_TAG_PAYLOAD_HASH)?;
                 if kb_hkey != cons_hkey || pol_payload != cons_payload {
                     return Err(Error::PolicyViolation);
@@ -228,7 +228,7 @@ mod tests {
                     data: &sequence,
                 },
                 CapsuleExtensionRef {
-                    tag: EXT_TAG_PCD_KEY_HASH,
+                    tag: EXT_TAG_KEY_HASH,
                     data: &hkey,
                 },
             ],
