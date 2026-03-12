@@ -1,7 +1,5 @@
 pub mod blocklist;
 pub mod extract;
-#[cfg(feature = "regex-policy")]
-pub mod regex;
 pub mod tls;
 pub mod zkboo;
 pub mod registry {
@@ -20,8 +18,6 @@ pub use blocklist::Blocklist;
 pub use capsule::{PolicyCapsule, ProofKind, ProofPart};
 pub use extract::{ExtractionError, Extractor, TargetValue};
 pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
-#[cfg(feature = "regex-policy")]
-pub use regex::RegexPolicy;
 pub use registry::PolicyRegistry;
 
 pub use crate::core::policy::{

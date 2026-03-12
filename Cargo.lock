@@ -45,7 +45,6 @@ dependencies = [
  "libc",
  "rand_chacha",
  "rand_core 0.6.4",
- "regex",
  "rustls",
  "rustls-pki-types",
  "serde",

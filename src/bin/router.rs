@@ -1,4 +1,3 @@
-use aurora::application::forward_pcd::PcdForwardPipeline;
 use aurora::application::setup::RegistrySetupPipeline;
 use aurora::control::{self, ControlMessage};
 use aurora::node::exit::TcpExitTransport;
@@ -26,14 +25,7 @@ fn main() {
         std::process::exit(1);
     }
     let storage = FileRouterStorage::new(&config.storage_path);
-    let mut router = if env::var("HORNET_PCD").ok().as_deref() == Some("1") {
-        Router::with_forward_pipeline_and_node_id(
-            Box::new(pcd_forward_pipeline()),
-            config.router_id.clone(),
-        )
-    } else {
-        Router::with_node_id(config.router_id.clone())
-    };
+    let mut router = Router::with_node_id(config.router_id.clone());
     let secrets = load_state(&storage, &mut router);
     let directory_path =
         env::var("HORNET_DIRECTORY_PATH").unwrap_or_else(|_| "directory.json".into());
@@ -144,10 +136,6 @@ impl aurora::time::TimeProvider for StdTimeProvider {
             .unwrap_or_else(|_| Duration::from_secs(0));
         now.as_secs() as u32
     }
-}
-
-fn pcd_forward_pipeline() -> PcdForwardPipeline {
-    PcdForwardPipeline::new()
 }
 
 struct RouterSecrets {

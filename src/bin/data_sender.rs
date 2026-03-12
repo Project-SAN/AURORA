@@ -1,7 +1,7 @@
 use aurora::core::policy::ProofKind;
 use aurora::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_PAYLOAD_HASH,
-    EXT_TAG_PCD_KEY_HASH, EXT_TAG_SEQUENCE,
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_KEY_HASH,
+    EXT_TAG_PAYLOAD_HASH, EXT_TAG_SEQUENCE,
 };
 use aurora::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use aurora::crypto::zkp::Circuit;
@@ -172,7 +172,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
                 data: &seq_buf,
             },
             CapsuleExtensionRef {
-                tag: EXT_TAG_PCD_KEY_HASH,
+                tag: EXT_TAG_KEY_HASH,
                 data: &hkey,
             },
         ])?;
@@ -182,7 +182,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
                 data: &seq_buf,
             },
             CapsuleExtensionRef {
-                tag: EXT_TAG_PCD_KEY_HASH,
+                tag: EXT_TAG_KEY_HASH,
                 data: &hkey,
             },
             CapsuleExtensionRef {
