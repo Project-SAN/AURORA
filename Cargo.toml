@@ -14,7 +14,6 @@ name = "aurora"
 default = []
 std = ["dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots"]
 http-client = ["std", "dep:ureq"]
-regex-policy = ["std", "dep:regex"]
 localnet-debug = []
 
 [dependencies]
@@ -32,7 +31,6 @@ spin = { version = "0.9", default-features = false, features = ["mutex", "spin_m
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 ureq = { version = "2.9", default-features = false, features = ["json", "tls"], optional = true }
-regex = { version = "1.10", optional = true }
 ff = { version = "0.13" }
 libc = { version = "0.2" }
 rustls = { version = "0.23.32", default-features = false, features = ["std", "ring"], optional = true }
