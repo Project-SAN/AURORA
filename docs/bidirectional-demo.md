@@ -28,7 +28,7 @@ Client → Entry Router → Middle Router → Exit Router → HTTP Server
 ローカルネットワーク用の設定ファイルを生成します：
 
 ```bash
-cargo run --bin localnet_prep
+cargo run --example localnet_prep
 ```
 
 これにより、`config/localnet/` ディレクトリに以下のファイルが生成されます：
@@ -82,7 +82,7 @@ python3 -m http.server 8080
 データセンダーを実行して、双方向通信をテストします：
 
 ```bash
-cargo run --bin aurora_data_sender config/localnet/policy-info.json 127.0.0.1:8080
+cargo run --features std --bin aurora_proxy
 ```
 
 ### 期待される出力
@@ -117,13 +117,13 @@ Content-Length: 872
 #### ブロックされたドメインへのアクセス（blocked.example）
 
 ```bash
-cargo run --bin aurora_data_sender config/localnet/policy-info.json blocked.example:8080
+curl -x http://127.0.0.1:18080 http://blocked.example:8080/
 ```
 
 **期待される出力:**
 ```
 Resolved blocked.example:8080 to ...
-aurora_data_sender error: failed to prove payload: PolicyViolation
+aurora_proxy error: failed to prove payload: PolicyViolation
 ```
 
 ポリシー証明の生成段階で `Error::PolicyViolation` が発生し、パケットは送信されません。
@@ -131,13 +131,13 @@ aurora_data_sender error: failed to prove payload: PolicyViolation
 #### 実際のブロックされたドメインへのアクセス（lp.sejuku.ne）
 
 ```bash
-cargo run --bin aurora_data_sender config/localnet/policy-info.json lp.sejuku.ne:443
+curl -x http://127.0.0.1:18080 https://lp.sejuku.ne/
 ```
 
 **期待される出力:**
 ```
 Resolved lp.sejuku.ne to V4([...]):443
-aurora_data_sender error: failed to prove payload: PolicyViolation
+aurora_proxy error: failed to prove payload: PolicyViolation
 ```
 
 同様に、ポリシー違反により証明生成が失敗します。
@@ -150,7 +150,7 @@ aurora_data_sender error: failed to prove payload: PolicyViolation
 ブロックリストに含まれないドメインへのアクセスは成功することを確認：
 
 ```bash
-cargo run --bin aurora_data_sender config/localnet/policy-info.json 127.0.0.1:8080
+curl -x http://127.0.0.1:18080 http://127.0.0.1:8080/
 ```
 
 正常にHTTPレスポンスを受信できるはずです。
@@ -187,7 +187,7 @@ cargo run --bin aurora_data_sender config/localnet/policy-info.json 127.0.0.1:80
 ### レスポンスが暗号化されたまま
 
 これは修正済みですが、もし発生した場合は：
-- `src/bin/aurora_data_sender.rs` で鍵の順序が正しくreverse()されているか確認
+- `src/bin/proxy.rs` で backward 鍵の順序が正しく `reverse()` されているか確認
 - `src/node/backward.rs` でポリシーカプセルの処理が削除されているか確認
 
 ## ログの確認

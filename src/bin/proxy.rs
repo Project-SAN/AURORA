@@ -2,8 +2,6 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,17 +14,19 @@ use aurora::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use aurora::crypto::zkp::Circuit;
 use aurora::policy::blocklist;
 use aurora::policy::zkboo::ZkBooProofService;
-use aurora::policy::PolicyMetadata;
+use aurora::policy::{PolicyMetadata, POLICY_ID_TLV};
 use aurora::policy::TargetValue;
 use aurora::router::storage::StoredState;
 use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::setup::wire;
 use aurora::setup::directory::RouteAnnouncement;
 use aurora::tunnel::{TunnelOp, TunnelPrefix};
-use aurora::types::{Nonce, PacketType, Si};
+use aurora::types::{Chdr, Nonce, PacketType, Si};
 use aurora::utils::decode_hex;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use serde::Deserialize;
+use x25519_dalek::x25519;
 
 const STREAM_MAGIC: &[u8; 4] = b"HRS1";
 const STREAM_OP_OPEN: u8 = 1;
@@ -36,7 +36,6 @@ const STREAM_DATA_OFFSET: usize = 64;
 
 struct SenderConfig {
     policy_info: String,
-    sender_bin: String,
     route_only: String,
     rounds: String,
     payload_len: usize,
@@ -79,8 +78,6 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
     let cfg = SenderConfig {
         policy_info: env::var("HORNET_POLICY_INFO")
             .unwrap_or_else(|_| "config/localnet/policy-info.json".to_string()),
-        sender_bin: env::var("HORNET_DATA_SENDER_BIN")
-            .unwrap_or_else(|_| "target/debug/aurora_data_sender".into()),
         route_only,
         rounds: env::var("HORNET_PROXY_ZKBOO_ROUNDS").unwrap_or_else(|_| "8".to_string()),
         payload_len: env::var("HORNET_PROXY_PAYLOAD_LEN")
@@ -96,6 +93,7 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(16),
     };
+    maybe_send_setup(&cfg)?;
     let target = format!("{target_host}:{target_port}");
 
     if method.eq_ignore_ascii_case("CONNECT") {
@@ -109,7 +107,13 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
             req.len(),
             outbound.len()
         );
-        let response = run_sender(&cfg, &target, &outbound, false, None, None)?;
+        let response = if cfg.route_only == "1" {
+            let mut session = RouteOnlyTunnelSession::new(&cfg, &target)?;
+            session.send(&outbound, 20)?
+        } else {
+            let mut session = PolicyTunnelSession::new(&cfg, &target)?;
+            session.send_request(&outbound, 20)?
+        };
         eprintln!("[proxy] got response bytes={}", response.len());
         stream
             .write_all(&response)
@@ -134,9 +138,7 @@ fn handle_connect_tunnel(
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
     let session_id = fresh_session_id()?;
-    let internal_route_only =
-        env::var("HORNET_PROXY_INTERNAL_ROUTE_ONLY").ok().as_deref() == Some("1");
-    let mut route_only_session = if cfg.route_only == "1" && internal_route_only {
+    let mut route_only_session = if cfg.route_only == "1" {
         Some(RouteOnlyTunnelSession::new(cfg, target)?)
     } else {
         None
@@ -393,13 +395,13 @@ fn handle_connect_tunnel(
     } else if let Some(session) = policy_session.as_mut() {
         let _ = session.send(TunnelOp::Close, session_id, &close_payload, 1);
     } else {
-        let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), None)?;
+        return Err("proxy tunnel session unavailable".into());
     }
     Ok(())
 }
 
 fn send_connect_payload(
-    cfg: &SenderConfig,
+    _cfg: &SenderConfig,
     target: &str,
     route_only_session: &mut Option<RouteOnlyTunnelSession>,
     payload: &[u8],
@@ -414,25 +416,19 @@ fn send_connect_payload(
             == Some("1");
         let allow_internal_fallback =
             env::var("HORNET_PROXY_INTERNAL_FALLBACK").ok().as_deref() == Some("1");
-        if fallback_on_empty && response.is_empty() && degrade_on_empty {
-            eprintln!(
-                "[proxy] route-only internal empty response, switching to sender mode for remaining tunnel"
-            );
-            *route_only_session = None;
-            return Ok(response);
-        }
-        if fallback_on_empty && response.is_empty() && allow_internal_fallback {
-            eprintln!("[proxy] route-only internal empty response, fallback to sender process");
-            return run_sender_tunnel(cfg, target, payload, Some(timeout_secs), None);
+        if fallback_on_empty && response.is_empty() && (degrade_on_empty || allow_internal_fallback) {
+            eprintln!("[proxy] route-only internal empty response tolerated");
         }
         return Ok(response);
     }
-    run_sender_tunnel(cfg, target, payload, Some(timeout_secs), None)
+    Err(format!("route-only tunnel session unavailable for target={target}"))
 }
 
 #[derive(Clone, Deserialize)]
 struct PolicyInfo {
     policy_id: String,
+    #[serde(default)]
+    directory_public_key: String,
     routers: Vec<RouterInfo>,
 }
 
@@ -793,6 +789,119 @@ impl PolicyTunnelSession {
             .encode()
             .map_err(|_| "failed to encode capsule".to_string())
     }
+
+    fn send_request(&mut self, request_payload: &[u8], timeout_secs: u64) -> Result<Vec<u8>, String> {
+        let request_payload = normalize_payload_len(request_payload, policy_payload_len(&self.policy_meta)?)?;
+        let capsule_buf = self.build_capsule(&request_payload)?;
+        self.send_inner(&request_payload, &capsule_buf, timeout_secs)
+    }
+
+    fn send_inner(
+        &mut self,
+        request_payload: &[u8],
+        capsule_buf: &[u8],
+        timeout_secs: u64,
+    ) -> Result<Vec<u8>, String> {
+        let hops = self.routers.len();
+        let rmax = hops;
+        let exp = compute_expiry(600);
+
+        let mut keys = Vec::with_capacity(hops);
+        for _ in 0..hops {
+            let mut si = [0u8; 16];
+            self.rng.fill_bytes(&mut si);
+            keys.push(Si(si));
+        }
+        let mut fses = Vec::with_capacity(hops);
+        for (hop, (state, route_info)) in self.routers.iter().enumerate() {
+            let segment = if hop == hops - 1 {
+                routing::segment_from_elems(&[RouteElem::ExitTcp {
+                    addr: self.target_ip.clone(),
+                    port: self.target_port,
+                }])
+            } else {
+                select_live_segment(route_info, &self.policy_id)
+                    .or_else(|_| select_route(state, &self.policy_id).map(|route| route.segment))?
+            };
+            let fs = aurora::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
+                .map_err(|err| format!("failed to build FS for hop {}: {err:?}", hop))?;
+            fses.push(fs);
+        }
+        let mut ahdr_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xA55A_A55A);
+        let ahdr = aurora::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut ahdr_rng)
+            .map_err(|err| format!("failed to build AHDR: {err:?}"))?;
+
+        let mut iv = {
+            let mut buf = [0u8; 16];
+            self.rng.fill_bytes(&mut buf);
+            Nonce(buf)
+        };
+        let mut chdr = aurora::packet::chdr::data_header(
+            aurora::types::HopCount::new(hops as u8).map_err(|_| "invalid hop count")?,
+            iv,
+        );
+
+        let canonical_bytes = canonical_target_leaf(&self.target_host)?;
+        let mut full_payload = Vec::new();
+        full_payload.extend_from_slice(&(self.backward_ahdr_bytes.len() as u32).to_le_bytes());
+        full_payload.extend_from_slice(&self.backward_ahdr_bytes);
+        full_payload.extend_from_slice(request_payload);
+
+        let mut encrypted_tail = Vec::new();
+        encrypted_tail.extend_from_slice(&canonical_bytes);
+        encrypted_tail.extend_from_slice(&full_payload);
+        aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
+            .map_err(|err| format!("failed to build payload: {err:?}"))?;
+        let mut payload = Vec::with_capacity(capsule_buf.len() + encrypted_tail.len());
+        payload.extend_from_slice(capsule_buf);
+        payload.extend_from_slice(&encrypted_tail);
+        let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
+        send_frame_to(&self.entry_addr, &frame)?;
+        eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
+
+        if timeout_secs == 0 {
+            return Ok(Vec::new());
+        }
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        loop {
+            if Instant::now() >= deadline {
+                return Ok(Vec::new());
+            }
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .map_err(|e| format!("set blocking response stream: {e}"))?;
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
+                    stream
+                        .set_read_timeout(Some(read_timeout))
+                        .map_err(|e| format!("set read timeout response stream: {e}"))?;
+                    let frame = match read_backward_frame(&mut stream) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let mut payload = frame.payload;
+                    let mut iv_resp = frame.specific;
+                    if aurora::source::decrypt_backward_payload(
+                        &self.backward_keys_reversed,
+                        &mut iv_resp,
+                        &mut payload,
+                    )
+                    .is_ok()
+                    {
+                        eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
+                        return Ok(payload);
+                    }
+                    eprintln!("[proxy][policy] stale/unmatched response ignored");
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(e) => return Err(format!("accept response failed: {e}")),
+            }
+        }
+    }
 }
 
 struct RouteOnlyTunnelSession {
@@ -1054,128 +1163,6 @@ fn read_backward_frame(stream: &mut TcpStream) -> Result<BackwardFrame, String> 
     Ok(BackwardFrame { specific, payload })
 }
 
-fn run_sender_tunnel(
-    cfg: &SenderConfig,
-    target: &str,
-    request: &[u8],
-    response_timeout_secs: Option<u64>,
-    response_bind: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    match run_sender(
-        cfg,
-        target,
-        request,
-        true,
-        response_timeout_secs,
-        response_bind,
-    ) {
-        Ok(bytes) => Ok(bytes),
-        Err(err) if err.contains("Broken pipe") || err.contains("Connection reset") => {
-            eprintln!("[proxy] sender transient tunnel error tolerated: {}", err);
-            Ok(Vec::new())
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn run_sender(
-    cfg: &SenderConfig,
-    target: &str,
-    request: &[u8],
-    allow_response_timeout: bool,
-    response_timeout_secs: Option<u64>,
-    response_bind: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let req_path = write_temp_request(request)?;
-    let rsp_path = temp_path("hornet-proxy-rsp")?;
-    let mut cmd = Command::new(&cfg.sender_bin);
-    cmd.arg(&cfg.policy_info)
-        .arg(target)
-        .arg("00")
-        .env("HORNET_REQUEST_PATH", &req_path)
-        .env("HORNET_RESPONSE_OUTPUT_PATH", &rsp_path)
-        .env("HORNET_ZKBOO_ROUNDS", &cfg.rounds);
-    if let Ok(return_host) = env::var("HORNET_PROXY_RETURN_HOST") {
-        if !return_host.is_empty() {
-            cmd.env("HORNET_RETURN_HOST", return_host);
-        }
-    } else if cfg.policy_info.contains("config/qemu/") {
-        // QEMU hostfwd topology: guest routers reach host via 10.0.2.2.
-        cmd.env("HORNET_RETURN_HOST", "10.0.2.2");
-    }
-    if let Ok(entry_addr) = env::var("HORNET_PROXY_ENTRY_ADDR") {
-        if !entry_addr.is_empty() {
-            cmd.env("HORNET_ENTRY_ADDR", entry_addr);
-        }
-    } else if cfg.policy_info.contains("config/qemu/") {
-        let entry_addr = default_entry_addr_for_policy(&cfg.policy_info)
-            .unwrap_or_else(|| "127.0.0.1:17011".to_string());
-        cmd.env("HORNET_ENTRY_ADDR", entry_addr);
-    }
-    if !cfg.route_only.is_empty() {
-        cmd.env("HORNET_ROUTE_ONLY", &cfg.route_only);
-    }
-    if let Some(secs) = response_timeout_secs {
-        cmd.env("HORNET_RESPONSE_TIMEOUT_SECS", secs.to_string());
-    }
-    if let Some(bind) = response_bind {
-        if !bind.is_empty() {
-            cmd.env("HORNET_RESPONSE_BIND", bind);
-        }
-    } else if let Ok(bind) = env::var("HORNET_PROXY_RESPONSE_BIND") {
-        if !bind.is_empty() {
-            cmd.env("HORNET_RESPONSE_BIND", bind);
-        }
-    } else if cfg.policy_info.contains("config/qemu/") {
-        // QEMU guest routers must connect back to the host via 10.0.2.2, so
-        // the sender's response listener cannot stay on 127.0.0.1.
-        cmd.env("HORNET_RESPONSE_BIND", "0.0.0.0:0");
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("spawn aurora_data_sender: {e}"))?;
-    let _ = fs::remove_file(&req_path);
-
-    if !output.status.success() {
-        let _ = fs::remove_file(&rsp_path);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if allow_response_timeout
-            && (stderr.contains("response timeout after")
-                || stdout.contains("response timeout after"))
-        {
-            if !stdout.trim().is_empty() {
-                eprintln!(
-                    "[proxy] sender timeout stdout: {}",
-                    stdout.replace('\n', " | ")
-                );
-            }
-            eprintln!("[proxy] sender timeout tolerated target={}", target);
-            return Ok(Vec::new());
-        }
-        return Err(format!(
-            "aurora_data_sender failed (status={}): {} {}",
-            output.status,
-            stderr.trim(),
-            stdout.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.trim().is_empty() {
-        eprintln!("[proxy] sender stdout: {}", stdout.replace('\n', " | "));
-    }
-    let bytes = fs::read(&rsp_path).map_err(|e| format!("read sender response output: {e}"))?;
-    eprintln!(
-        "[proxy] sender ok target={} req_bytes={} rsp_bytes={}",
-        target,
-        request.len(),
-        bytes.len()
-    );
-    let _ = fs::remove_file(&rsp_path);
-    Ok(bytes)
-}
-
 fn decode_policy_id(hex: &str) -> Result<[u8; 32], String> {
     let bytes = decode_hex(hex).map_err(|err| format!("invalid policy_id hex: {err}"))?;
     if bytes.len() != 32 {
@@ -1335,13 +1322,6 @@ fn normalize_entry_addr(policy_info_path: &str, bind: &str) -> String {
     } else {
         bind.to_string()
     }
-}
-
-fn default_entry_addr_for_policy(policy_info_path: &str) -> Option<String> {
-    let json = fs::read_to_string(policy_info_path).ok()?;
-    let info: PolicyInfo = serde_json::from_str(&json).ok()?;
-    let first = info.routers.first()?;
-    Some(normalize_entry_addr(policy_info_path, &first.bind))
 }
 
 fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
@@ -1676,20 +1656,6 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
 }
 
-fn write_temp_request(req: &[u8]) -> Result<PathBuf, String> {
-    let path = temp_path("hornet-proxy-req")?;
-    fs::write(&path, req).map_err(|e| format!("write temp request: {e}"))?;
-    Ok(path)
-}
-
-fn temp_path(prefix: &str) -> Result<PathBuf, String> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "clock error")?
-        .as_nanos();
-    Ok(PathBuf::from(format!("/tmp/{prefix}-{now}.bin")))
-}
-
 fn send_http_error(
     stream: &mut TcpStream,
     code: u16,
@@ -1743,6 +1709,109 @@ fn make_part(
     part.set_aux(aux)
         .map_err(|_| "failed to set policy extensions".to_string())?;
     Ok(part)
+}
+
+fn maybe_send_setup(cfg: &SenderConfig) -> Result<(), String> {
+    if env::var("HORNET_PROXY_SKIP_SETUP").ok().as_deref() == Some("1") {
+        return Ok(());
+    }
+    send_setup(&cfg.policy_info)
+}
+
+fn send_setup(info_path: &str) -> Result<(), String> {
+    let info_json = fs::read_to_string(info_path)
+        .map_err(|err| format!("failed to read {info_path}: {err}"))?;
+    let info: PolicyInfo = serde_json::from_str(&info_json)
+        .map_err(|err| format!("invalid policy-info JSON: {err}"))?;
+    if info.routers.is_empty() {
+        return Err("policy-info has no routers".into());
+    }
+    let entry = &info.routers[0];
+    let node_pubs = load_node_pubs(&info.routers)?;
+    let directory_body = fs::read_to_string(&entry.directory_path)
+        .map_err(|err| format!("failed to read {}: {err}", entry.directory_path))?;
+    let public_key = decode_hex(&info.directory_public_key)
+        .map_err(|err| format!("invalid directory_public_key hex: {err}"))?;
+    if public_key.len() != 32 {
+        return Err("directory_public_key must be 32 bytes".into());
+    }
+    let _announcement = aurora::setup::directory::from_signed_json(&directory_body, &public_key)
+        .map_err(|err| format!("failed to verify directory: {err:?}"))?;
+    let policy_id = decode_policy_id(&info.policy_id)?;
+
+    let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
+    let mut source_secret = [0u8; 32];
+    rng.fill_bytes(&mut source_secret);
+    clamp_scalar(&mut source_secret);
+
+    let exp = compute_expiry(600);
+    let mut state =
+        aurora::setup::source_init(&source_secret, &node_pubs, node_pubs.len(), exp, &mut rng);
+    state.packet.tlvs.clear();
+    let mut policy_tlv = Vec::with_capacity(1 + policy_id.len());
+    policy_tlv.push(POLICY_ID_TLV);
+    policy_tlv.extend_from_slice(&policy_id);
+    state.packet.tlvs.push(policy_tlv);
+    let encoded = wire::encode(&state.packet)
+        .map_err(|err| format!("failed to encode setup packet: {err:?}"))?;
+    let frame = encode_setup_frame(&state.packet.chdr, &encoded.header, &encoded.payload)?;
+    let entry_addr = env::var("HORNET_ENTRY_ADDR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| normalize_entry_addr(info_path, &entry.bind));
+    send_frame_to(&entry_addr, &frame)?;
+    eprintln!(
+        "[proxy] setup sent: {} hops={} target={}",
+        entry_addr,
+        state.packet.chdr.hops().get(),
+        info_path
+    );
+    Ok(())
+}
+
+fn load_node_pubs(routers: &[RouterInfo]) -> Result<Vec<[u8; 32]>, String> {
+    let mut pubs = Vec::new();
+    for router in routers {
+        let data = fs::read(&router.storage_path).map_err(|err| {
+            format!(
+                "failed to read {} (router {} state): {err}",
+                router.storage_path, router.name
+            )
+        })?;
+        let state: StoredState =
+            serde_json::from_slice(&data).map_err(|err| format!("invalid state JSON: {err}"))?;
+        let node_secret = state.node_secret();
+        let pubkey = x25519(node_secret, x25519_dalek::X25519_BASEPOINT_BYTES);
+        pubs.push(pubkey);
+    }
+    Ok(pubs)
+}
+
+fn clamp_scalar(bytes: &mut [u8; 32]) {
+    bytes[0] &= 248;
+    bytes[31] &= 127;
+    bytes[31] |= 64;
+}
+
+fn encode_setup_frame(chdr: &Chdr, header: &[u8], payload: &[u8]) -> Result<Vec<u8>, String> {
+    if header.len() > u32::MAX as usize || payload.len() > u32::MAX as usize {
+        return Err("setup frame too large".into());
+    }
+    let (typ, hops, specific) = chdr.to_raw_parts();
+    let mut frame = Vec::with_capacity(4 + 16 + 8 + header.len() + payload.len());
+    frame.push(0);
+    frame.push(match typ {
+        PacketType::Setup => 0,
+        PacketType::Data => 1,
+    });
+    frame.push(hops);
+    frame.push(0);
+    frame.extend_from_slice(&specific);
+    frame.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(header);
+    frame.extend_from_slice(payload);
+    Ok(frame)
 }
 
 #[cfg(test)]
