@@ -97,6 +97,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                             replay: &mut replay,
                             policy: None,
                             exit: None,
+                            tunnels: None,
                         };
                         aurora::node::forward::process_data(
                             &mut ctx,
@@ -480,6 +481,7 @@ fn run_forward_chain(
             replay: &mut replay,
             policy: None,
             exit: None,
+            tunnels: None,
         };
         aurora::node::forward::process_data(&mut ctx, chdr, ahdr, payload)
             .expect("process forward hop");
@@ -510,6 +512,7 @@ fn run_backward_chain(
             replay: &mut replay,
             policy: None,
             exit: None,
+            tunnels: None,
         };
         process_backward_silent(&mut ctx, chdr, ahdr, payload).expect("process backward hop");
         if let Some(next) = slot.borrow_mut().take() {

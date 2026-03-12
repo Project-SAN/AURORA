@@ -1,19 +1,21 @@
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
 use aurora::application::setup::RegistrySetupPipeline;
-use aurora::node::ReplayCache;
+use aurora::node::NoReplay;
 use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
 use aurora::router::io::PacketListener;
+use aurora::router::runtime::RouterRuntime;
 use aurora::router::storage::RouterStorage;
 use aurora::router::Router;
 use aurora::setup::directory::from_signed_json;
 use aurora::setup::wire;
-use aurora::types::{self, PacketDirection, PacketType, Result};
+use aurora::types::{self, Packet};
 use aurora::utils::decode_hex;
 
 use crate::fs;
@@ -69,9 +71,7 @@ pub fn run_router() -> ! {
     let mut cli = CliServer::listen(config.cli_port);
     log_line("router: cli ready");
     let time = time_provider();
-    let mut forward = UserlandForward::new();
     let mut exit = UserlandExitTransport::new();
-    let mut replay = ReplayCache::new();
     log_line("router: event loop start");
 
     loop {
@@ -79,55 +79,56 @@ pub fn run_router() -> ! {
             server.poll(&mut router, &mut config);
         }
         match listener.next() {
-            Ok(Some(mut packet)) => {
-                if packet.chdr.typ == PacketType::Setup {
-                    if let Err(err) = handle_setup_packet(packet, &mut router, &storage, &secrets) {
-                        let mut msg = String::new();
-                        let _ = core::fmt::Write::write_fmt(
-                            &mut msg,
-                            format_args!("router: setup error {:?}", err),
-                        );
-                        log_line(&msg);
+            Ok(Some(packet)) => {
+                let aurora::router::io::IncomingPacket {
+                    direction,
+                    sv,
+                    packet,
+                } = packet;
+                match packet {
+                    Packet::Setup(setup_frame) => {
+                        if let Err(err) =
+                            handle_setup_packet(setup_frame, &mut router, &storage, &secrets)
+                        {
+                            let mut msg = String::new();
+                            let _ = core::fmt::Write::write_fmt(
+                                &mut msg,
+                                format_args!("router: setup error {:?}", err),
+                            );
+                            log_line(&msg);
+                        }
+                        continue;
                     }
-                    continue;
+                    Packet::Data(data_packet_raw) => {
+                        let mut runtime = RouterRuntime::new(
+                            &mut router,
+                            &time,
+                            || Box::new(UserlandForward::new()),
+                            || Box::new(NoReplay),
+                        );
+                        let res = match direction {
+                            types::PacketDirection::Forward => runtime
+                                .process_forward_data_packet_with_exit(
+                                    sv,
+                                    data_packet_raw,
+                                    Some(&mut exit),
+                                )
+                                .map(|_| ()),
+                            types::PacketDirection::Backward => runtime
+                                .process_backward_data_packet(sv, data_packet_raw)
+                                .map(|_| ()),
+                        };
+                        if let Err(err) = res {
+                            let mut msg = String::new();
+                            let _ = core::fmt::Write::write_fmt(
+                                &mut msg,
+                                format_args!("router: packet error {:?} dir={:?}", err, direction),
+                            );
+                            log_line(&msg);
+                        }
+                        let _ = runtime.handle_async_violations();
+                    }
                 }
-                let res = match packet.direction {
-                    PacketDirection::Forward => router.process_forward_packet(
-                        packet.sv,
-                        &time,
-                        &mut forward,
-                        Some(&mut exit),
-                        &mut replay,
-                        &mut packet.chdr,
-                        &mut packet.ahdr,
-                        &mut packet.payload,
-                    ),
-                    PacketDirection::Backward => router.process_backward_packet(
-                        packet.sv,
-                        &time,
-                        &mut forward,
-                        &mut replay,
-                        &mut packet.chdr,
-                        &mut packet.ahdr,
-                        &mut packet.payload,
-                    ),
-                };
-                if let Err(err) = res {
-                    let mut msg = String::new();
-                    let _ = core::fmt::Write::write_fmt(
-                        &mut msg,
-                        format_args!(
-                            "router: packet error {:?} dir={:?} typ={} hops={} payload_len={}",
-                            err,
-                            packet.direction,
-                            packet_type_label(packet.chdr.typ),
-                            packet.chdr.hops,
-                            packet.payload.len()
-                        ),
-                    );
-                    log_line(&msg);
-                }
-                let _ = router.handle_async_violations();
             }
             Ok(None) => {
                 sys::sleep(1);
@@ -136,13 +137,6 @@ pub fn run_router() -> ! {
                 sys::sleep(10);
             }
         }
-    }
-}
-
-fn packet_type_label(typ: PacketType) -> &'static str {
-    match typ {
-        PacketType::Setup => "Setup",
-        PacketType::Data => "Data",
     }
 }
 
@@ -225,7 +219,7 @@ fn load_config() -> RouterConfig {
     }
 }
 
-fn read_all_any(paths: &[&str]) -> Result<Vec<u8>> {
+fn read_all_any(paths: &[&str]) -> core::result::Result<Vec<u8>, types::Error> {
     let mut last_err = None;
     for path in paths {
         match read_all(path) {
@@ -236,7 +230,7 @@ fn read_all_any(paths: &[&str]) -> Result<Vec<u8>> {
     Err(last_err.unwrap_or(types::Error::Crypto))
 }
 
-fn read_all(path: &str) -> Result<Vec<u8>> {
+fn read_all(path: &str) -> core::result::Result<Vec<u8>, types::Error> {
     let handle = fs::open(path, fs::O_READ).ok_or(types::Error::Crypto)?;
     let mut out = Vec::new();
     let mut buf = [0u8; 512];
@@ -256,7 +250,7 @@ fn read_all(path: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn write_all(path: &str, data: &[u8]) -> Result<()> {
+fn write_all(path: &str, data: &[u8]) -> core::result::Result<(), types::Error> {
     let handle =
         fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC).ok_or(types::Error::Crypto)?;
     let mut offset = 0usize;
@@ -278,7 +272,7 @@ fn write_all(path: &str, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn save_config(config: &RouterConfig) -> Result<()> {
+fn save_config(config: &RouterConfig) -> core::result::Result<(), types::Error> {
     let file = RouterConfigFile {
         listen_port: Some(config.listen_port),
         storage_path: Some(config.storage_path.clone()),
@@ -598,16 +592,25 @@ fn send_kv_str(socket: &crate::socket::TcpSocket, key: &str, value: &str) -> boo
     send_line(socket, &line).is_ok()
 }
 
-fn send_line(socket: &crate::socket::TcpSocket, line: &str) -> Result<()> {
+fn send_line(
+    socket: &crate::socket::TcpSocket,
+    line: &str,
+) -> core::result::Result<(), types::Error> {
     send_bytes(socket, line.as_bytes())?;
     send_bytes(socket, b"\n")
 }
 
-fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> Result<()> {
+fn send_str(
+    socket: &crate::socket::TcpSocket,
+    s: &str,
+) -> core::result::Result<(), types::Error> {
     send_bytes(socket, s.as_bytes())
 }
 
-fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> Result<()> {
+fn send_bytes(
+    socket: &crate::socket::TcpSocket,
+    buf: &[u8],
+) -> core::result::Result<(), types::Error> {
     let mut offset = 0usize;
     let mut retries = 0u16;
     const MAX_SEND_RETRIES: u16 = 200;
@@ -636,7 +639,10 @@ fn send_bytes(socket: &crate::socket::TcpSocket, buf: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_line(socket: &crate::socket::TcpSocket, out: &mut Vec<u8>) -> Result<bool> {
+fn read_line(
+    socket: &crate::socket::TcpSocket,
+    out: &mut Vec<u8>,
+) -> core::result::Result<bool, types::Error> {
     out.clear();
     let mut buf = [0u8; 64];
     loop {
@@ -779,15 +785,13 @@ fn log_line(msg: &str) {
 }
 
 fn handle_setup_packet(
-    packet: aurora::router::io::IncomingPacket,
+    packet: types::SetupPacket,
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
-) -> Result<()> {
-    if packet.chdr.typ != PacketType::Setup {
-        return Err(types::Error::Length);
-    }
-    let mut setup_packet = wire::decode(packet.chdr, &packet.ahdr.bytes, &packet.payload)?;
+) -> core::result::Result<(), types::Error> {
+    let chdr: types::Chdr = packet.chdr.into();
+    let mut setup_packet = wire::decode(chdr, &packet.ahdr.bytes, &packet.payload)?;
     // Attempt to extract a policy ID from the packet's TLVs. If the packet
     // carries no policy ID TLV and exactly one route is configured, infer the
     // policy from that sole route. This fallback accommodates single-route

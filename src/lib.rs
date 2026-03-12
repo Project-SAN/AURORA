@@ -19,6 +19,7 @@ pub mod setup;
 pub mod source;
 pub mod sphinx;
 pub mod time;
+pub mod tunnel;
 pub mod types;
 pub mod utils;
 pub mod wire;

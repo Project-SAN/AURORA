@@ -88,25 +88,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         vec![
             RouterSpec {
                 name: "router-entry",
-                bind: format!("{host}:17011"),
+                bind: format!("{host}:18111"),
                 storage_path: format!("{storage_dir}/router-entry-state.json"),
                 route: RouteElem::NextHop {
                     addr: IpAddr::V4(parse_ipv4(host)),
-                    port: 17012,
+                    port: 18112,
                 },
             },
             RouterSpec {
                 name: "router-middle",
-                bind: format!("{host}:17012"),
+                bind: format!("{host}:18112"),
                 storage_path: format!("{storage_dir}/router-middle-state.json"),
                 route: RouteElem::NextHop {
                     addr: IpAddr::V4(parse_ipv4(host)),
-                    port: 17013,
+                    port: 18113,
                 },
             },
             RouterSpec {
                 name: "router-exit",
-                bind: format!("{host}:17013"),
+                bind: format!("{host}:18113"),
                 storage_path: format!("{storage_dir}/router-exit-state.json"),
                 route: RouteElem::ExitTcp {
                     addr: IpAddr::V4(parse_ipv4(host)),
@@ -176,6 +176,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let policy_json = serde_json::to_string_pretty(&policy_info)?;
     let policy_path = format!("{out_dir}/policy-info.json");
     fs::write(policy_path, policy_json)?;
+    if qemu {
+        write_qemu_host_files(routers.as_slice(), &policy_info, out_dir)?;
+    }
     println!("generated {out_dir} for 3-router demo");
     Ok(())
 }
@@ -190,25 +193,25 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
     let routers = [
         RouterSpec {
             name: "router-entry",
-            bind: format!("{host}:17011"),
+            bind: format!("{host}:18111"),
             storage_path: format!("{storage_dir}/router-entry-state.json"),
             route: RouteElem::NextHop {
                 addr: IpAddr::V4(parse_ipv4(host)),
-                port: 17012,
+                port: 18112,
             },
         },
         RouterSpec {
             name: "router-middle",
-            bind: format!("{host}:17012"),
+            bind: format!("{host}:18112"),
             storage_path: format!("{storage_dir}/router-middle-state.json"),
             route: RouteElem::NextHop {
                 addr: IpAddr::V4(parse_ipv4(host)),
-                port: 17013,
+                port: 18113,
             },
         },
         RouterSpec {
             name: "router-exit",
-            bind: format!("{host}:17013"),
+            bind: format!("{host}:18113"),
             storage_path: format!("{storage_dir}/router-exit-state.json"),
             route: RouteElem::ExitTcp {
                 addr: IpAddr::V4(parse_ipv4(host)),
@@ -267,6 +270,7 @@ fn run_qemu_from_localnet() -> Result<(), Box<dyn std::error::Error>> {
     let policy_json = serde_json::to_string_pretty(&policy_info)?;
     let policy_path = format!("{out_dir}/policy-info.json");
     fs::write(policy_path, policy_json)?;
+    write_qemu_host_files(&routers, &policy_info, out_dir)?;
     println!("generated {out_dir} for qemu (from localnet)");
     Ok(())
 }
@@ -315,6 +319,54 @@ HORNET_DIR_INTERVAL=5\n",
     Ok(())
 }
 
+fn write_qemu_host_files(
+    routers: &[RouterSpec],
+    policy_info: &PolicyInfo,
+    out_dir: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for spec in routers {
+        write_host_env(spec, out_dir)?;
+    }
+    let host_policy = PolicyInfo {
+        policy_id: policy_info.policy_id.clone(),
+        directory_public_key: policy_info.directory_public_key.clone(),
+        routers: policy_info
+            .routers
+            .iter()
+            .map(|router| RouterInfo {
+                name: router.name.clone(),
+                bind: host_bind(&router.bind),
+                directory_path: router.directory_path.clone(),
+                storage_path: router.storage_path.clone(),
+                env_file: format!("{out_dir}/{}.host.env", router.name),
+            })
+            .collect(),
+    };
+    let host_policy_json = serde_json::to_string_pretty(&host_policy)?;
+    fs::write(format!("{out_dir}/policy-info.host.json"), host_policy_json)?;
+    Ok(())
+}
+
+fn write_host_env(spec: &RouterSpec, out_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let env_contents = format!(
+        "HORNET_DIR_URL=https://qemu-bootstrap.invalid/{name}\n\
+HORNET_DIR_PUBKEY={pubkey}\n\
+HORNET_ROUTER_ID={name}\n\
+HORNET_ROUTER_BIND={bind}\n\
+HORNET_STORAGE_PATH={storage}\n\
+HORNET_DIRECTORY_PATH={out_dir}/{name}.directory.json\n\
+HORNET_DIR_INTERVAL=5\n",
+        name = spec.name,
+        pubkey = encode_hex(&local_public_key()),
+        bind = host_bind(&spec.bind),
+        storage = spec.storage_path,
+        out_dir = out_dir,
+    );
+    let path = format!("{out_dir}/{}.host.env", spec.name);
+    fs::write(path, env_contents)?;
+    Ok(())
+}
+
 fn write_router_config(spec: &RouterSpec, out_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config = RouterConfigFile {
         listen_port: 7000,
@@ -323,6 +375,7 @@ fn write_router_config(spec: &RouterSpec, out_dir: &str) -> Result<(), Box<dyn s
         directory_path: "/directory.json".to_string(),
         directory_public_key: encode_hex(&local_public_key()),
         router_id: spec.name.to_string(),
+        skip_policy: false,
     };
     let json = serde_json::to_string_pretty(&config)?;
     let path = format!("{out_dir}/{}.router_config.json", spec.name);
@@ -335,6 +388,13 @@ fn parse_ipv4(addr: &str) -> [u8; 4] {
         .parse::<Ipv4Addr>()
         .unwrap_or(Ipv4Addr::new(127, 0, 0, 1));
     parsed.octets()
+}
+
+fn host_bind(bind: &str) -> String {
+    let Some((_, port)) = bind.rsplit_once(':') else {
+        return bind.to_string();
+    };
+    format!("127.0.0.1:{port}")
 }
 
 fn local_private_key() -> [u8; 32] {
@@ -383,4 +443,5 @@ struct RouterConfigFile {
     directory_path: String,
     directory_public_key: String,
     router_id: String,
+    skip_policy: bool,
 }

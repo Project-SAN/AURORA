@@ -7,11 +7,21 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use aurora::core::policy::ProofKind;
+use aurora::core::policy::{
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_KEY_HASH,
+    EXT_TAG_PAYLOAD_HASH, EXT_TAG_SEQUENCE,
+};
+use aurora::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
+use aurora::crypto::zkp::Circuit;
 use aurora::policy::blocklist;
+use aurora::policy::zkboo::ZkBooProofService;
+use aurora::policy::PolicyMetadata;
 use aurora::policy::TargetValue;
 use aurora::router::storage::StoredState;
 use aurora::routing::{self, IpAddr, RouteElem};
 use aurora::setup::directory::RouteAnnouncement;
+use aurora::tunnel::{TunnelOp, TunnelPrefix};
 use aurora::types::{Nonce, PacketType, Si};
 use aurora::utils::decode_hex;
 use rand_chacha::ChaCha20Rng;
@@ -19,6 +29,7 @@ use rand_core::{RngCore, SeedableRng};
 use serde::Deserialize;
 
 const STREAM_MAGIC: &[u8; 4] = b"HRS1";
+const STREAM_OP_OPEN: u8 = 1;
 const STREAM_OP_DATA: u8 = 2;
 const STREAM_OP_CLOSE: u8 = 3;
 const STREAM_DATA_OFFSET: usize = 64;
@@ -29,6 +40,7 @@ struct SenderConfig {
     route_only: String,
     rounds: String,
     payload_len: usize,
+    connect_payload_len: usize,
     host_offset: usize,
 }
 
@@ -75,6 +87,10 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(default_payload_len),
+        connect_payload_len: env::var("HORNET_CONNECT_PAYLOAD_LEN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(512),
         host_offset: env::var("HORNET_PROXY_HOST_OFFSET")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -111,9 +127,6 @@ fn handle_connect_tunnel(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3);
-    let data_timeout_override = env::var("HORNET_CONNECT_DATA_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok());
     let poll_timeout_override = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
@@ -128,20 +141,44 @@ fn handle_connect_tunnel(
     } else {
         None
     };
-    // External sender mode must tolerate slower backward responses because
-    // each sender process has an ephemeral listener; too-short timeouts
-    // lose responses irrecoverably.
-    let data_timeout_secs =
-        data_timeout_override.unwrap_or(if route_only_session.is_some() { 10 } else { 20 });
+    let mut policy_session = if cfg.route_only == "1" {
+        None
+    } else {
+        Some(PolicyTunnelSession::new(cfg, target)?)
+    };
     let poll_timeout_secs =
         poll_timeout_override.unwrap_or(if route_only_session.is_some() { 6 } else { 12 });
     let max_poll_timeout_secs =
         max_poll_timeout_override.unwrap_or(if route_only_session.is_some() { 20 } else { 30 });
+    let send_gap_ms: u64 = env::var("HORNET_CONNECT_SEND_GAP_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
 
-    // Exit transport auto-opens on first DATA. Skipping explicit OPEN avoids
-    // startup delay and duplicate stream state when retries occur.
-    let _ = open_timeout_secs;
-    eprintln!("[proxy] CONNECT open skipped (DATA auto-open)");
+    let open_payload = build_stream_payload(
+        cfg.payload_len,
+        cfg.host_offset,
+        host,
+        STREAM_OP_OPEN,
+        session_id,
+        &[],
+    )?;
+    let _ = if let Some(session) = policy_session.as_mut() {
+        session.send(TunnelOp::Open, session_id, &open_payload, open_timeout_secs)
+    } else {
+        send_connect_payload(
+            cfg,
+            target,
+            &mut route_only_session,
+            &open_payload,
+            open_timeout_secs,
+            false,
+        )
+    }?;
+    eprintln!("[proxy] CONNECT open sent");
+    if send_gap_ms > 0 {
+        thread::sleep(Duration::from_millis(send_gap_ms));
+    }
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .map_err(|e| format!("write connect ok: {e}"))?;
@@ -168,7 +205,7 @@ fn handle_connect_tunnel(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(6);
-    let max_chunk = cfg.payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
+    let max_chunk = cfg.connect_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
     let mut chunk = vec![0u8; max_chunk];
     loop {
         let mut sent_any = false;
@@ -217,27 +254,38 @@ fn handle_connect_tunnel(
                     dumped_first_client_chunk = true;
                 }
                 let payload = build_stream_payload(
-                    cfg.payload_len,
+                    cfg.connect_payload_len,
                     cfg.host_offset,
                     host,
                     STREAM_OP_DATA,
                     session_id,
                     &chunk[..total],
                 )?;
-                let response = send_connect_payload(
-                    cfg,
-                    target,
-                    &mut route_only_session,
-                    &payload,
-                    data_timeout_secs,
-                    true,
-                )?;
+                eprintln!(
+                    "[proxy] CONNECT send DATA sid={} payload_bytes={}",
+                    session_id, total
+                );
+                let response = if let Some(session) = policy_session.as_mut() {
+                    session.send(TunnelOp::Continue, session_id, &payload, 0)?
+                } else {
+                    send_connect_payload(
+                        cfg,
+                        target,
+                        &mut route_only_session,
+                        &payload,
+                        0,
+                        true,
+                    )?
+                };
                 if !response.is_empty() {
                     eprintln!("[proxy] CONNECT tunnel->client bytes={}", response.len());
                     stream
                         .write_all(&response)
                         .map_err(|e| format!("write tunnel response: {e}"))?;
                     last_tunnel_to_client = Instant::now();
+                }
+                if send_gap_ms > 0 {
+                    thread::sleep(Duration::from_millis(send_gap_ms));
                 }
                 last_client_activity = Instant::now();
                 pending_response = true;
@@ -273,7 +321,7 @@ fn handle_connect_tunnel(
                 continue;
             }
             let payload = build_stream_payload(
-                cfg.payload_len,
+                cfg.connect_payload_len,
                 cfg.host_offset,
                 host,
                 STREAM_OP_DATA,
@@ -284,14 +332,22 @@ fn handle_connect_tunnel(
                 poll_timeout_secs.saturating_add((empty_polls as u64).saturating_mul(2)),
                 max_poll_timeout_secs.max(poll_timeout_secs),
             );
-            let response = send_connect_payload(
-                cfg,
-                target,
-                &mut route_only_session,
-                &payload,
-                current_poll_timeout,
-                false,
-            )?;
+            eprintln!(
+                "[proxy] CONNECT poll DATA sid={} timeout={}s",
+                session_id, current_poll_timeout
+            );
+            let response = if let Some(session) = policy_session.as_mut() {
+                session.send(TunnelOp::Continue, session_id, &payload, current_poll_timeout)?
+            } else {
+                send_connect_payload(
+                    cfg,
+                    target,
+                    &mut route_only_session,
+                    &payload,
+                    current_poll_timeout,
+                    false,
+                )?
+            };
             if !response.is_empty() {
                 eprintln!(
                     "[proxy] CONNECT poll tunnel->client bytes={}",
@@ -325,7 +381,7 @@ fn handle_connect_tunnel(
     }
 
     let close_payload = build_stream_payload(
-        cfg.payload_len,
+        cfg.connect_payload_len,
         cfg.host_offset,
         host,
         STREAM_OP_CLOSE,
@@ -334,6 +390,8 @@ fn handle_connect_tunnel(
     )?;
     if let Some(session) = route_only_session.as_mut() {
         let _ = session.send(&close_payload, 1);
+    } else if let Some(session) = policy_session.as_mut() {
+        let _ = session.send(TunnelOp::Close, session_id, &close_payload, 1);
     } else {
         let _ = run_sender_tunnel(cfg, target, &close_payload, Some(0), None)?;
     }
@@ -380,8 +438,361 @@ struct PolicyInfo {
 
 #[derive(Clone, Deserialize)]
 struct RouterInfo {
+    name: String,
     bind: String,
+    directory_path: String,
     storage_path: String,
+}
+
+struct PolicyTunnelSession {
+    policy_id: [u8; 32],
+    policy_meta: PolicyMetadata,
+    routers: Vec<(StoredState, RouterInfo)>,
+    target_host: String,
+    target_ip: IpAddr,
+    target_port: u16,
+    entry_addr: String,
+    listener: TcpListener,
+    backward_keys_reversed: Vec<Si>,
+    backward_ahdr_bytes: Vec<u8>,
+    rounds: u16,
+    rng: ChaCha20Rng,
+}
+
+impl PolicyTunnelSession {
+    fn new(cfg: &SenderConfig, target: &str) -> Result<Self, String> {
+        let json = fs::read_to_string(&cfg.policy_info)
+            .map_err(|err| format!("failed to read {}: {err}", cfg.policy_info))?;
+        let info: PolicyInfo = serde_json::from_str(&json)
+            .map_err(|err| format!("invalid policy-info JSON: {err}"))?;
+        if info.routers.is_empty() {
+            return Err("policy-info has no routers".into());
+        }
+        let policy_id = decode_policy_id(&info.policy_id)?;
+        let routers = load_router_states(&info.routers, &policy_id)?;
+        let policy_meta = load_policy_metadata(&info.routers, &policy_id)?;
+        let (host, port) = parse_host_port(target, 443)?;
+        let (target_ip, target_port) = resolve_target_parts(&host, port)?;
+        let entry_addr = env::var("HORNET_PROXY_ENTRY_ADDR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| normalize_entry_addr(&cfg.policy_info, &routers[0].1.bind));
+        let bind_addr = if let Ok(bind) = env::var("HORNET_PROXY_RESPONSE_BIND") {
+            if bind.trim().is_empty() {
+                default_response_bind(&cfg.policy_info)
+            } else {
+                bind
+            }
+        } else {
+            default_response_bind(&cfg.policy_info)
+        };
+        let listener = TcpListener::bind(&bind_addr)
+            .map_err(|e| format!("failed to bind response listener {bind_addr}: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set nonblocking response listener: {e}"))?;
+        let local = listener
+            .local_addr()
+            .map_err(|e| format!("local_addr response listener: {e}"))?;
+        let return_ip = resolve_return_ip(local)?;
+        let return_port = local.port();
+        let rounds = cfg
+            .rounds
+            .parse::<u16>()
+            .map_err(|_| format!("invalid HORNET_PROXY_ZKBOO_ROUNDS: {}", cfg.rounds))?;
+        let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
+        let hops = routers.len();
+        let exp = compute_expiry(600);
+        let mut keys_b = Vec::with_capacity(hops);
+        for _ in 0..hops {
+            let mut si = [0u8; 16];
+            rng.fill_bytes(&mut si);
+            keys_b.push(Si(si));
+        }
+        let mut fses_b = Vec::with_capacity(hops);
+        for (i, hop_idx) in (0..hops).rev().enumerate() {
+            let segment = if hop_idx == 0 {
+                routing::segment_from_elems(&[RouteElem::NextHop {
+                    addr: return_ip.clone(),
+                    port: return_port,
+                }])
+            } else {
+                let prev_router = &routers[hop_idx - 1].1;
+                let (ip_str, port_str) = prev_router
+                    .bind
+                    .rsplit_once(':')
+                    .ok_or("invalid bind addr")?;
+                let port: u16 = port_str.parse().map_err(|_| "invalid bind port")?;
+                let ip = normalize_router_hop_ip(prev_router, ip_str)?;
+                routing::segment_from_elems(&[RouteElem::NextHop {
+                    addr: IpAddr::V4(ip),
+                    port,
+                }])
+            };
+            let state = &routers[hop_idx].0;
+            let fs = aurora::packet::core::create(&state.sv(), &keys_b[i], &segment, exp)
+                .map_err(|err| format!("failed to build Backward FS for hop {}: {err:?}", i))?;
+            fses_b.push(fs);
+        }
+        let mut ahdr_b_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xBEEF_BEEF);
+        let backward_ahdr = aurora::packet::ahdr::create_ahdr(&keys_b, &fses_b, hops, &mut ahdr_b_rng)
+            .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
+        let mut backward_keys_reversed = keys_b;
+        backward_keys_reversed.reverse();
+        eprintln!(
+            "[proxy][policy] cfg entry_addr={} return={:?}:{} target={:?}:{} rounds={}",
+            entry_addr, return_ip, return_port, target_ip, target_port, rounds
+        );
+        Ok(Self {
+            policy_id,
+            policy_meta,
+            routers,
+            target_host: host,
+            target_ip,
+            target_port,
+            entry_addr,
+            listener,
+            backward_keys_reversed,
+            backward_ahdr_bytes: backward_ahdr.bytes,
+            rounds,
+            rng,
+        })
+    }
+
+    fn send(
+        &mut self,
+        op: TunnelOp,
+        session_id: u64,
+        request_payload: &[u8],
+        timeout_secs: u64,
+    ) -> Result<Vec<u8>, String> {
+        let request_payload = if matches!(op, TunnelOp::Open) {
+            normalize_payload_len(request_payload, policy_payload_len(&self.policy_meta)?)?
+        } else {
+            request_payload.to_vec()
+        };
+        let capsule_buf = if matches!(op, TunnelOp::Open) {
+            self.build_capsule(&request_payload)?
+        } else {
+            Vec::new()
+        };
+        let tunnel_prefix = TunnelPrefix {
+            op,
+            session_id,
+            policy_id: self.policy_id,
+        }
+        .encode();
+        let hops = self.routers.len();
+        let rmax = hops;
+        let exp = compute_expiry(600);
+
+        let mut keys = Vec::with_capacity(hops);
+        for _ in 0..hops {
+            let mut si = [0u8; 16];
+            self.rng.fill_bytes(&mut si);
+            keys.push(Si(si));
+        }
+        let mut fses = Vec::with_capacity(hops);
+        for (hop, (state, route_info)) in self.routers.iter().enumerate() {
+            let segment = if hop == hops - 1 {
+                routing::segment_from_elems(&[RouteElem::ExitTcp {
+                    addr: self.target_ip.clone(),
+                    port: self.target_port,
+                }])
+            } else {
+                select_live_segment(route_info, &self.policy_id)
+                    .or_else(|_| select_route(state, &self.policy_id).map(|route| route.segment))?
+            };
+            let fs = aurora::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
+                .map_err(|err| format!("failed to build FS for hop {}: {err:?}", hop))?;
+            fses.push(fs);
+        }
+        let mut ahdr_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xA55A_A55A);
+        let ahdr = aurora::packet::ahdr::create_ahdr(&keys, &fses, rmax, &mut ahdr_rng)
+            .map_err(|err| format!("failed to build AHDR: {err:?}"))?;
+
+        let mut iv = {
+            let mut buf = [0u8; 16];
+            self.rng.fill_bytes(&mut buf);
+            Nonce(buf)
+        };
+        let mut chdr = aurora::packet::chdr::data_header(
+            aurora::types::HopCount::new(hops as u8).map_err(|_| "invalid hop count")?,
+            iv,
+        );
+
+        let canonical_bytes = canonical_target_leaf(&self.target_host)?;
+        let mut full_payload = Vec::new();
+        full_payload.extend_from_slice(&(self.backward_ahdr_bytes.len() as u32).to_le_bytes());
+        full_payload.extend_from_slice(&self.backward_ahdr_bytes);
+        full_payload.extend_from_slice(&request_payload);
+
+        let mut encrypted_tail = Vec::new();
+        encrypted_tail.extend_from_slice(&canonical_bytes);
+        encrypted_tail.extend_from_slice(&full_payload);
+        aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
+            .map_err(|err| format!("failed to build payload: {err:?}"))?;
+        let mut payload =
+            Vec::with_capacity(tunnel_prefix.len() + capsule_buf.len() + encrypted_tail.len());
+        payload.extend_from_slice(&tunnel_prefix);
+        payload.extend_from_slice(&capsule_buf);
+        payload.extend_from_slice(&encrypted_tail);
+        let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
+        send_frame_to(&self.entry_addr, &frame)?;
+        eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
+
+        if timeout_secs == 0 {
+            return Ok(Vec::new());
+        }
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        loop {
+            if Instant::now() >= deadline {
+                return Ok(Vec::new());
+            }
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .map_err(|e| format!("set blocking response stream: {e}"))?;
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
+                    stream
+                        .set_read_timeout(Some(read_timeout))
+                        .map_err(|e| format!("set read timeout response stream: {e}"))?;
+                    let frame = match read_backward_frame(&mut stream) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let mut payload = frame.payload;
+                    let mut iv_resp = frame.specific;
+                    if aurora::source::decrypt_backward_payload(
+                        &self.backward_keys_reversed,
+                        &mut iv_resp,
+                        &mut payload,
+                    )
+                    .is_ok()
+                    {
+                        eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
+                        return Ok(payload);
+                    }
+                    eprintln!("[proxy][policy] stale/unmatched response ignored");
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(e) => return Err(format!("accept response failed: {e}")),
+            }
+        }
+    }
+
+    fn build_capsule(&mut self, request_payload: &[u8]) -> Result<Vec<u8>, String> {
+        let sequence = current_sequence()?;
+        let seq_buf = sequence.to_be_bytes();
+        let kb_circuit = circuit_from_metadata(&self.policy_meta, ProofKind::KeyBinding)?;
+        let cons_circuit = circuit_from_metadata(&self.policy_meta, ProofKind::Consistency)?;
+        let pol_circuit = circuit_from_metadata(&self.policy_meta, ProofKind::Policy)?;
+
+        let kb_len = kb_circuit.n_inputs / 8;
+        let pol_len = pol_circuit.n_inputs / 8;
+        let cons_len = cons_circuit.n_inputs / 8;
+        if kb_len * 8 != kb_circuit.n_inputs
+            || pol_len * 8 != pol_circuit.n_inputs
+            || cons_len * 8 != cons_circuit.n_inputs
+        {
+            return Err("policy circuit n_inputs must be byte-aligned".into());
+        }
+        if request_payload.len() != pol_len {
+            return Err(format!(
+                "request length mismatch: got {} bytes, policy circuit expects {} bytes",
+                request_payload.len(),
+                pol_len
+            ));
+        }
+        if cons_len != kb_len + pol_len {
+            return Err(format!(
+                "consistency circuit input must be secret+payload ({}+{} bytes), got {} bytes",
+                kb_len, pol_len, cons_len
+            ));
+        }
+
+        let mut secret = vec![0u8; kb_len];
+        self.rng.fill_bytes(&mut secret);
+        let hkey = mix_fold(MIX_DOMAIN_KEYBIND, &secret);
+        let payload_hash = mix_fold(MIX_DOMAIN_PAYLOAD, request_payload);
+
+        let aux_keybinding = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_SEQUENCE,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_KEY_HASH,
+                data: &hkey,
+            },
+        ])?;
+        let aux_consistency = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_SEQUENCE,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_KEY_HASH,
+                data: &hkey,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PAYLOAD_HASH,
+                data: &payload_hash,
+            },
+        ])?;
+        let aux_policy = make_aux(&[
+            CapsuleExtensionRef {
+                tag: EXT_TAG_SEQUENCE,
+                data: &seq_buf,
+            },
+            CapsuleExtensionRef {
+                tag: EXT_TAG_PAYLOAD_HASH,
+                data: &payload_hash,
+            },
+        ])?;
+
+        let mut consistency_payload = Vec::with_capacity(secret.len() + request_payload.len());
+        consistency_payload.extend_from_slice(&secret);
+        consistency_payload.extend_from_slice(request_payload);
+
+        let kb = make_part(
+            &self.policy_id,
+            kb_circuit,
+            self.rounds,
+            &secret,
+            &aux_keybinding,
+            ProofKind::KeyBinding,
+        )?;
+        let cons = make_part(
+            &self.policy_id,
+            cons_circuit,
+            self.rounds,
+            &consistency_payload,
+            &aux_consistency,
+            ProofKind::Consistency,
+        )?;
+        let pol = make_part(
+            &self.policy_id,
+            pol_circuit,
+            self.rounds,
+            request_payload,
+            &aux_policy,
+            ProofKind::Policy,
+        )?;
+        let capsule = aurora::policy::PolicyCapsule {
+            policy_id: self.policy_id,
+            version: aurora::core::policy::POLICY_CAPSULE_VERSION,
+            part_count: 3,
+            parts: [kb, cons, pol, aurora::policy::ProofPart::default()],
+        };
+        capsule
+            .encode()
+            .map_err(|_| "failed to encode capsule".to_string())
+    }
 }
 
 struct RouteOnlyTunnelSession {
@@ -475,15 +886,15 @@ impl RouteOnlyTunnelSession {
         }
         let exp = compute_expiry(600);
         let mut fses = Vec::with_capacity(hops);
-        for (hop, (state, _route_info)) in self.routers.iter().enumerate() {
+        for (hop, (state, route_info)) in self.routers.iter().enumerate() {
             let segment = if hop == hops - 1 {
                 routing::segment_from_elems(&[RouteElem::ExitTcp {
                     addr: self.target_ip.clone(),
                     port: self.target_port,
                 }])
             } else {
-                let route = select_route(state, &self.policy_id)?;
-                route.segment
+                select_live_segment(route_info, &self.policy_id)
+                    .or_else(|_| select_route(state, &self.policy_id).map(|route| route.segment))?
             };
             let fs = aurora::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
                 .map_err(|err| format!("failed to build FS for hop {}: {err:?}", hop))?;
@@ -523,7 +934,7 @@ impl RouteOnlyTunnelSession {
                     .rsplit_once(':')
                     .ok_or("invalid bind addr")?;
                 let port: u16 = port_str.parse().map_err(|_| "invalid bind port")?;
-                let ip = parse_ipv4_octets(ip_str)?;
+                let ip = normalize_router_hop_ip(prev_router, ip_str)?;
                 routing::segment_from_elems(&[RouteElem::NextHop {
                     addr: IpAddr::V4(ip),
                     port,
@@ -711,6 +1122,14 @@ fn run_sender(
         if !bind.is_empty() {
             cmd.env("HORNET_RESPONSE_BIND", bind);
         }
+    } else if let Ok(bind) = env::var("HORNET_PROXY_RESPONSE_BIND") {
+        if !bind.is_empty() {
+            cmd.env("HORNET_RESPONSE_BIND", bind);
+        }
+    } else if cfg.policy_info.contains("config/qemu/") {
+        // QEMU guest routers must connect back to the host via 10.0.2.2, so
+        // the sender's response listener cannot stay on 127.0.0.1.
+        cmd.env("HORNET_RESPONSE_BIND", "0.0.0.0:0");
     }
     let output = cmd
         .output()
@@ -796,14 +1215,107 @@ fn select_route(state: &StoredState, policy_id: &[u8; 32]) -> Result<RouteAnnoun
         .ok_or_else(|| "no route for policy".into())
 }
 
+fn load_policy_metadata(
+    routers: &[RouterInfo],
+    policy_id: &[u8; 32],
+) -> Result<PolicyMetadata, String> {
+    let first = routers
+        .first()
+        .ok_or_else(|| "policy-info has no routers".to_string())?;
+    let body = fs::read_to_string(&first.directory_path)
+        .map_err(|err| format!("failed to read directory {}: {err}", first.directory_path))?;
+    #[derive(Deserialize)]
+    struct DirectoryLike {
+        #[serde(default)]
+        policies: Vec<PolicyMetadata>,
+    }
+    let directory: DirectoryLike =
+        serde_json::from_str(&body).map_err(|err| format!("invalid directory JSON: {err}"))?;
+    directory
+        .policies
+        .into_iter()
+        .find(|p| &p.policy_id == policy_id)
+        .ok_or_else(|| "directory did not contain policy metadata for policy_id".to_string())
+}
+
+fn select_live_segment(
+    router: &RouterInfo,
+    policy_id: &[u8; 32],
+) -> Result<aurora::types::RoutingSegment, String> {
+    #[derive(Deserialize)]
+    struct DirectoryLike {
+        #[serde(default)]
+        routes: Vec<DirectoryRoute>,
+    }
+
+    #[derive(Deserialize)]
+    struct DirectoryRoute {
+        policy_id: String,
+        interface: Option<String>,
+        segments: Vec<DirectorySegment>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(tag = "type")]
+    enum DirectorySegment {
+        #[serde(rename = "next_hop4")]
+        NextHop4 { ip: String, port: u16 },
+        #[serde(rename = "exit_tcp4")]
+        ExitTcp4 { ip: String, port: u16 },
+    }
+
+    let body = fs::read_to_string(&router.directory_path)
+        .map_err(|err| format!("failed to read directory {}: {err}", router.directory_path))?;
+    let directory: DirectoryLike =
+        serde_json::from_str(&body).map_err(|err| format!("invalid directory JSON: {err}"))?;
+    let route = directory
+        .routes
+        .into_iter()
+        .find(|route| {
+            decode_policy_id(&route.policy_id).ok().as_ref() == Some(policy_id)
+                && route.interface.as_deref() == Some(router.name.as_str())
+        })
+        .ok_or_else(|| {
+            format!(
+                "directory {} had no route for router {} and policy {:?}",
+                router.directory_path, router.name, policy_id
+            )
+        })?;
+    let elems: Result<Vec<RouteElem>, String> = route
+        .segments
+        .into_iter()
+        .map(|segment| match segment {
+            DirectorySegment::NextHop4 { ip, port } => Ok(RouteElem::NextHop {
+                addr: IpAddr::V4(parse_ipv4_octets(&ip)?),
+                port,
+            }),
+            DirectorySegment::ExitTcp4 { ip, port } => Ok(RouteElem::ExitTcp {
+                addr: IpAddr::V4(parse_ipv4_octets(&ip)?),
+                port,
+            }),
+        })
+        .collect();
+    Ok(routing::segment_from_elems(&elems?))
+}
+
+fn normalize_router_hop_ip(router: &RouterInfo, ip_str: &str) -> Result<[u8; 4], String> {
+    if router.directory_path.contains("config/qemu/") && ip_str == "127.0.0.1" {
+        return Ok([10, 0, 2, 2]);
+    }
+    parse_ipv4_octets(ip_str)
+}
+
 fn resolve_target_parts(hostname: &str, port: u16) -> Result<(IpAddr, u16), String> {
     use std::net::ToSocketAddrs;
 
-    let mut addrs = (hostname, port)
+    let addrs: Vec<_> = (hostname, port)
         .to_socket_addrs()
-        .map_err(|e| format!("failed to resolve {hostname}:{port}: {e}"))?;
+        .map_err(|e| format!("failed to resolve {hostname}:{port}: {e}"))?
+        .collect();
     let addr = addrs
-        .next()
+        .iter()
+        .find(|addr| matches!(addr, std::net::SocketAddr::V4(_)))
+        .or_else(|| addrs.first())
         .ok_or_else(|| format!("no suitable address found for {hostname}:{port}"))?;
     match addr {
         std::net::SocketAddr::V4(v4) => Ok((IpAddr::V4(v4.ip().octets()), v4.port())),
@@ -868,6 +1380,14 @@ fn canonical_target_leaf(host_port: &str) -> Result<Vec<u8>, String> {
     Ok(entry.leaf_bytes().as_slice().to_vec())
 }
 
+fn default_response_bind(policy_info_path: &str) -> String {
+    if policy_info_path.contains("config/qemu/") {
+        "0.0.0.0:0".to_string()
+    } else {
+        "127.0.0.1:0".to_string()
+    }
+}
+
 fn compute_expiry(delta_secs: u64) -> aurora::types::Exp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -883,6 +1403,39 @@ fn derive_seed() -> u64 {
         .unwrap_or_default()
         .as_nanos();
     (nanos ^ (std::process::id() as u128)) as u64
+}
+
+fn current_sequence() -> Result<u64, String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "time went backwards".to_string())?
+        .as_nanos();
+    let pid = std::process::id() as u128;
+    Ok(((nanos ^ (pid << 32)) & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+}
+
+fn normalize_payload_len(request: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
+    if request.len() == expected_len {
+        return Ok(request.to_vec());
+    }
+    if request.len() > expected_len {
+        return Err(format!(
+            "request length mismatch: got {} bytes, policy expects {} bytes",
+            request.len(),
+            expected_len
+        ));
+    }
+    let mut out = vec![0u8; expected_len];
+    out[..request.len()].copy_from_slice(request);
+    Ok(out)
+}
+
+fn policy_payload_len(meta: &PolicyMetadata) -> Result<usize, String> {
+    let circuit = circuit_from_metadata(meta, ProofKind::Policy)?;
+    if circuit.n_inputs % 8 != 0 {
+        return Err("policy circuit n_inputs must be byte-aligned".into());
+    }
+    Ok(circuit.n_inputs / 8)
 }
 
 fn encode_frame(
@@ -1151,6 +1704,45 @@ fn send_http_error(
     stream
         .write_all(resp.as_bytes())
         .map_err(|e| format!("write error response: {e}"))
+}
+
+fn circuit_from_metadata(meta: &PolicyMetadata, kind: ProofKind) -> Result<Circuit, String> {
+    let entry = meta
+        .verifiers
+        .iter()
+        .find(|e| e.kind == kind as u8)
+        .ok_or_else(|| format!("policy metadata missing verifier for {:?}", kind))?;
+    Circuit::decode(&entry.verifier_blob)
+        .map_err(|err| format!("failed to decode verifier circuit for {:?}: {err:?}", kind))
+}
+
+fn make_aux(exts: &[CapsuleExtensionRef<'_>]) -> Result<Vec<u8>, String> {
+    let mut buf = [0u8; AUX_MAX];
+    let len = encode_extensions_into(exts, &mut buf)
+        .map_err(|_| "failed to encode policy extensions".to_string())?;
+    Ok(buf[..len].to_vec())
+}
+
+fn make_part(
+    policy_id: &[u8; 32],
+    circuit: Circuit,
+    rounds: u16,
+    payload: &[u8],
+    aux: &[u8],
+    kind: ProofKind,
+) -> Result<aurora::policy::ProofPart, String> {
+    let service = ZkBooProofService::new_with_policy_id(circuit, *policy_id, rounds);
+    let capsule = service
+        .prove_payload_lsb_first(payload, aux)
+        .map_err(|err| format!("failed to prove {:?} with zkboo: {err:?}", kind))?;
+    if capsule.part_count as usize != 1 {
+        return Err("unexpected zkboo capsule layout".into());
+    }
+    let mut part = capsule.parts[0].clone();
+    part.kind = kind;
+    part.set_aux(aux)
+        .map_err(|_| "failed to set policy extensions".to_string())?;
+    Ok(part)
 }
 
 #[cfg(test)]
