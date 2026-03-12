@@ -9,12 +9,7 @@ pub const EXT_TAG_BATCH_ID: u8 = 3;
 pub const EXT_TAG_PRECOMPUTE_ID: u8 = 4;
 pub const EXT_TAG_PAYLOAD_HASH: u8 = 5;
 pub const EXT_TAG_PRECOMPUTE_PROOF: u8 = 6;
-pub const EXT_TAG_PCD_STATE: u8 = 7;
-pub const EXT_TAG_PCD_KEY_HASH: u8 = 8;
-pub const EXT_TAG_PCD_ROOT: u8 = 9;
-pub const EXT_TAG_PCD_TARGET_HASH: u8 = 10;
-pub const EXT_TAG_PCD_SEQ: u8 = 11;
-pub const EXT_TAG_PCD_PROOF: u8 = 12;
+pub const EXT_TAG_KEY_HASH: u8 = 8;
 pub const EXT_TAG_SESSION_NONCE: u8 = 13;
 pub const EXT_TAG_ROUTE_ID: u8 = 14;
 
