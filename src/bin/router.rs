@@ -10,7 +10,7 @@ use aurora::router::storage::{FileRouterStorage, RouterStorage, StoredState};
 use aurora::router::sync::client::{sync_once, DirectoryClient};
 use aurora::router::Router;
 use aurora::setup::wire;
-use aurora::types::{self, Packet, Result as AuroraResult};
+use aurora::types::{self, Packet};
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
@@ -182,7 +182,7 @@ fn handle_setup_packet(
     router: &mut Router,
     storage: &dyn RouterStorage,
     secrets: &RouterSecrets,
-) -> AuroraResult<()> {
+) -> core::result::Result<(), types::Error> {
     let chdr: types::Chdr = packet.chdr.into();
     let mut setup_packet = wire::decode(chdr, &packet.ahdr.bytes, &packet.payload)?;
     let policy_id = select_policy_id(&setup_packet).or_else(|| {
@@ -247,7 +247,7 @@ impl LocalFileClient {
 }
 
 impl DirectoryClient for LocalFileClient {
-    fn fetch_signed(&self) -> aurora::types::Result<String> {
+    fn fetch_signed(&self) -> core::result::Result<String, aurora::types::Error> {
         std::fs::read_to_string(&self.path).map_err(|_| aurora::types::Error::Crypto)
     }
 }
@@ -271,7 +271,7 @@ mod tests {
     }
 
     impl RouterStorage for MemoryStorage {
-        fn load(&self) -> AuroraResult<StoredState> {
+        fn load(&self) -> core::result::Result<StoredState, types::Error> {
             let guard = self.blob.lock().unwrap();
             match guard.as_ref() {
                 Some(bytes) => serde_json::from_slice(bytes).map_err(|_| types::Error::Crypto),
@@ -279,7 +279,7 @@ mod tests {
             }
         }
 
-        fn save(&self, state: &StoredState) -> AuroraResult<()> {
+        fn save(&self, state: &StoredState) -> core::result::Result<(), types::Error> {
             let data = serde_json::to_vec(state).map_err(|_| types::Error::Crypto)?;
             let mut guard = self.blob.lock().unwrap();
             *guard = Some(data);

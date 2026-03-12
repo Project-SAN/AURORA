@@ -11,7 +11,7 @@ use aurora::router::io::{
     encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
 };
 use aurora::routing::{self, IpAddr, RouteElem};
-use aurora::types::{Ahdr, Chdr, Error, PacketDirection, Result, RoutingSegment, Sv};
+use aurora::types::{Ahdr, Chdr, Error, PacketDirection, RoutingSegment, Sv};
 
 const STREAM_DATA_OFFSET: usize = 64;
 
@@ -21,14 +21,14 @@ pub struct UserlandPacketListener {
 }
 
 impl UserlandPacketListener {
-    pub fn listen(port: u16, sv: Sv) -> Result<Self> {
+    pub fn listen(port: u16, sv: Sv) -> core::result::Result<Self, Error> {
         let listener = TcpListener::listen(port).map_err(|_| Error::Crypto)?;
         Ok(Self { listener, sv })
     }
 }
 
 impl PacketListener for UserlandPacketListener {
-    fn next(&mut self) -> Result<Option<IncomingPacket>> {
+    fn next(&mut self) -> core::result::Result<Option<IncomingPacket>, Error> {
         match self.listener.accept().map_err(|_| Error::Crypto)? {
             None => Ok(None),
             Some(mut socket) => {
@@ -47,7 +47,7 @@ impl PacketListener for UserlandPacketListener {
 }
 
 impl PacketReader for TcpSocket {
-    fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), Error> {
         let mut offset = 0usize;
         let mut spins = 0u32;
         while offset < buf.len() {
@@ -82,7 +82,7 @@ impl Forward for UserlandForward {
         ahdr: &Ahdr,
         payload: &mut Vec<u8>,
         direction: PacketDirection,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), Error> {
         let elems = routing::elems_from_segment(rseg).map_err(|_| Error::Length)?;
         let hop = elems.first().ok_or(Error::Length)?;
         let (ip, port) = match hop {
@@ -95,14 +95,21 @@ impl Forward for UserlandForward {
             IpAddr::V6(_) => return Err(Error::NotImplemented),
         };
 
+        debug_log("router-io: forward send start");
+        debug_log_addr("router-io: forward addr", ip, port);
+        debug_log_usize("router-io: forward payload_len", payload.len());
         let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
         if connect_ipv4(&socket, ip, port).is_err() {
+            debug_log("router-io: forward connect failed");
             return Err(Error::Crypto);
         }
+        debug_log("router-io: forward connected");
         let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
         if send_all(&socket, &frame).is_err() {
+            debug_log("router-io: forward send failed");
             return Err(Error::Crypto);
         }
+        debug_log_usize("router-io: forward frame_len", frame.len());
         let _ = socket.close();
         Ok(())
     }
@@ -127,7 +134,7 @@ impl ExitTransport for UserlandExitTransport {
         port: u16,
         _mode: ExitMode,
         request: &[u8],
-    ) -> Result<Vec<u8>> {
+    ) -> core::result::Result<Vec<u8>, Error> {
         // _mode is reserved for future TLS support; currently only plain TCP is implemented.
         if let Some(frame) = parse_stream_frame(request) {
             return self.handle_stream_frame(addr, port, frame);
@@ -138,14 +145,23 @@ impl ExitTransport for UserlandExitTransport {
             IpAddr::V6(_) => return Err(Error::NotImplemented),
         };
 
+        debug_log("router-io: exit request start");
+        debug_log_addr("router-io: exit addr", ip, port);
+        debug_log_usize("router-io: exit req_len", request.len());
+        debug_log_preview("router-io: exit req", request);
         let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
         if connect_ipv4(&socket, ip, port).is_err() {
+            debug_log("router-io: exit connect failed");
             return Err(Error::Crypto);
         }
+        debug_log("router-io: exit connected");
         if send_all(&socket, request).is_err() {
+            debug_log("router-io: exit send failed");
             return Err(Error::Crypto);
         }
+        debug_log("router-io: exit request sent");
         let response = recv_to_idle(&socket)?;
+        debug_log_usize("router-io: exit rsp_len", response.len());
         let _ = socket.close();
         Ok(response)
     }
@@ -157,7 +173,7 @@ impl UserlandExitTransport {
         addr: &IpAddr,
         port: u16,
         frame: StreamFrame<'_>,
-    ) -> Result<Vec<u8>> {
+    ) -> core::result::Result<Vec<u8>, Error> {
         let ip = match addr {
             IpAddr::V4(octets) => *octets,
             IpAddr::V6(_) => return Err(Error::NotImplemented),
@@ -165,6 +181,9 @@ impl UserlandExitTransport {
 
         match frame.op {
             StreamOp::Open => {
+                debug_log("router-io: stream open start");
+                debug_log_addr("router-io: stream open addr", ip, port);
+                debug_log_u64("router-io: stream open sid", frame.session_id);
                 if !self.sessions.contains_key(&frame.session_id) {
                     let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
                     if connect_ipv4(&socket, ip, port).is_err() {
@@ -173,9 +192,18 @@ impl UserlandExitTransport {
                     }
                     self.sessions.insert(frame.session_id, socket);
                 }
+                debug_log("router-io: stream open ok");
                 Ok(Vec::new())
             }
             StreamOp::Data => {
+                debug_log("router-io: stream data start");
+                debug_log_u64("router-io: stream data sid", frame.session_id);
+                debug_log_usize("router-io: stream data len", frame.data.len());
+                if frame.data.is_empty() {
+                    debug_log("router-io: stream data mode=poll");
+                } else {
+                    debug_log("router-io: stream data mode=push");
+                }
                 if !self.sessions.contains_key(&frame.session_id) {
                     debug_log("router-io: stream data for unknown session");
                     return Err(Error::PolicyViolation);
@@ -186,7 +214,10 @@ impl UserlandExitTransport {
                     return Err(Error::Crypto);
                 }
                 match recv_available(socket) {
-                    Ok(bytes) => Ok(bytes),
+                    Ok(bytes) => {
+                        debug_log_usize("router-io: stream data rsp_len", bytes.len());
+                        Ok(bytes)
+                    }
                     Err(err) => {
                         debug_log("router-io: stream data recv failed");
                         Err(err)
@@ -194,6 +225,8 @@ impl UserlandExitTransport {
                 }
             }
             StreamOp::Close => {
+                debug_log("router-io: stream close");
+                debug_log_u64("router-io: stream close sid", frame.session_id);
                 if let Some(socket) = self.sessions.remove(&frame.session_id) {
                     let _ = socket.close();
                 }
@@ -244,7 +277,11 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
     })
 }
 
-fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16) -> Result<()> {
+fn connect_ipv4(
+    socket: &TcpSocket,
+    ip: [u8; 4],
+    port: u16,
+) -> core::result::Result<(), Error> {
     let mut state = socket.connect(ip, port).map_err(|_| Error::Crypto)?;
     let mut spins = 0u32;
     while state == ConnectState::InProgress {
@@ -263,7 +300,63 @@ fn debug_log(msg: &str) {
     let _ = sys::write(1, b"\n");
 }
 
-fn send_all(socket: &TcpSocket, buf: &[u8]) -> Result<()> {
+fn debug_log_usize(prefix: &str, value: usize) {
+    let _ = sys::write(1, prefix.as_bytes());
+    let _ = sys::write(1, b"=");
+    write_decimal(value as u64);
+    let _ = sys::write(1, b"\n");
+}
+
+fn debug_log_u64(prefix: &str, value: u64) {
+    let _ = sys::write(1, prefix.as_bytes());
+    let _ = sys::write(1, b"=");
+    write_decimal(value);
+    let _ = sys::write(1, b"\n");
+}
+
+fn debug_log_addr(prefix: &str, ip: [u8; 4], port: u16) {
+    let _ = sys::write(1, prefix.as_bytes());
+    let _ = sys::write(1, b"=");
+    write_decimal(ip[0] as u64);
+    let _ = sys::write(1, b".");
+    write_decimal(ip[1] as u64);
+    let _ = sys::write(1, b".");
+    write_decimal(ip[2] as u64);
+    let _ = sys::write(1, b".");
+    write_decimal(ip[3] as u64);
+    let _ = sys::write(1, b":");
+    write_decimal(port as u64);
+    let _ = sys::write(1, b"\n");
+}
+
+fn debug_log_preview(prefix: &str, bytes: &[u8]) {
+    let _ = sys::write(1, prefix.as_bytes());
+    let _ = sys::write(1, b"=");
+    let limit = core::cmp::min(bytes.len(), 48);
+    for &b in &bytes[..limit] {
+        let ch = if (0x20..=0x7e).contains(&b) { b } else { b'.' };
+        let _ = sys::write(1, &[ch]);
+    }
+    let _ = sys::write(1, b"\n");
+}
+
+fn write_decimal(mut value: u64) {
+    let mut buf = [0u8; 20];
+    let mut i = 0usize;
+    if value == 0 {
+        let _ = sys::write(1, b"0");
+        return;
+    }
+    while value > 0 && i < buf.len() {
+        buf[i] = b'0' + (value % 10) as u8;
+        value /= 10;
+        i += 1;
+    }
+    buf[..i].reverse();
+    let _ = sys::write(1, &buf[..i]);
+}
+
+fn send_all(socket: &TcpSocket, buf: &[u8]) -> core::result::Result<(), Error> {
     let mut offset = 0usize;
     let mut spins = 0u32;
     while offset < buf.len() {
@@ -282,7 +375,7 @@ fn send_all(socket: &TcpSocket, buf: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn recv_to_idle(socket: &TcpSocket) -> Result<Vec<u8>> {
+fn recv_to_idle(socket: &TcpSocket) -> core::result::Result<Vec<u8>, Error> {
     let mut response = Vec::new();
     let mut buf = [0u8; 512];
     let mut idle_spins = 0u32;
@@ -312,7 +405,7 @@ fn recv_to_idle(socket: &TcpSocket) -> Result<Vec<u8>> {
     Ok(response)
 }
 
-fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
+fn recv_available(socket: &TcpSocket) -> core::result::Result<Vec<u8>, Error> {
     let mut response = Vec::new();
     let mut buf = [0u8; 2048];
     let mut idle_spins = 0u32;
@@ -337,10 +430,15 @@ fn recv_available(socket: &TcpSocket) -> Result<Vec<u8>> {
             }
             Ok(n) => {
                 idle_spins = 0;
+                debug_log_usize("router-io: stream recv chunk", n);
                 response.extend_from_slice(&buf[..n]);
             }
-            Err(_) => return Err(Error::Crypto),
+            Err(_) => {
+                debug_log("router-io: stream recv syscall error");
+                return Err(Error::Crypto);
+            }
         }
     }
+    debug_log_u64("router-io: stream recv idle_spins", idle_spins as u64);
     Ok(response)
 }

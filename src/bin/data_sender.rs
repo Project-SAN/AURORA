@@ -298,7 +298,7 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
     }
     let exp = compute_expiry(600);
     let mut fses = Vec::with_capacity(hops);
-    for (hop, (state, _route)) in routers.iter().enumerate() {
+    for (hop, (state, route_info)) in routers.iter().enumerate() {
         let segment = if hop == hops - 1 {
             // Last hop: construct dynamic exit segment.
             let elem = RouteElem::ExitTcp {
@@ -307,9 +307,10 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             };
             routing::segment_from_elems(&[elem])
         } else {
-            // Intermediate hop: use stored route
-            let route = select_route(state, &policy_id)?;
-            route.segment
+            // Intermediate hop: prefer the current directory route. Router state can
+            // be stale across QEMU topology changes and pin old hostfwd ports.
+            select_live_segment(route_info, &policy_id)
+                .or_else(|_| select_route(state, &policy_id).map(|route| route.segment))?
         };
 
         let fs = aurora::packet::core::create(&state.sv(), &keys[hop], &segment, exp)
@@ -371,14 +372,12 @@ fn send_data(info_path: &str, host: &str, payload_tail: &[u8]) -> Result<(), Str
             // Exit -> Middle or Middle -> Entry
             // The next hop in backward path is the previous hop in forward path (hop_idx - 1)
             let prev_router = &routers[hop_idx - 1].1;
-            // Parse bind address of prev router to get IP/Port
-            // Assuming bind is "IP:Port"
             let (ip_str, port_str) = prev_router
                 .bind
                 .rsplit_once(':')
                 .ok_or("invalid bind addr")?;
             let port: u16 = port_str.parse().map_err(|_| "invalid port")?;
-            let ip_octets = parse_ipv4_octets(ip_str)?; // Helper needed
+            let ip_octets = normalize_router_hop_ip(prev_router, ip_str)?;
             let elem = RouteElem::NextHop {
                 addr: IpAddr::V4(ip_octets),
                 port,
@@ -628,12 +627,15 @@ fn resolve_return_addr(local_addr: std::net::SocketAddr) -> Result<(IpAddr, u16)
 }
 
 fn resolve_target_parts(hostname: &str, port: u16) -> Result<(IpAddr, u16), String> {
-    let mut addrs = (hostname, port)
+    let addrs: Vec<_> = (hostname, port)
         .to_socket_addrs()
-        .map_err(|e| format!("failed to resolve {hostname}:{port}: {e}"))?;
+        .map_err(|e| format!("failed to resolve {hostname}:{port}: {e}"))?
+        .collect();
 
     let addr = addrs
-        .next()
+        .iter()
+        .find(|addr| matches!(addr, std::net::SocketAddr::V4(_)))
+        .or_else(|| addrs.first())
         .ok_or_else(|| format!("no suitable address found for {hostname}:{port}"))?;
 
     match addr {
@@ -855,6 +857,73 @@ fn load_policy_metadata(
         .into_iter()
         .find(|p| &p.policy_id == policy_id)
         .ok_or_else(|| "directory did not contain policy metadata for policy_id".to_string())
+}
+
+fn normalize_router_hop_ip(router: &RouterInfo, ip_str: &str) -> Result<[u8; 4], String> {
+    if router.directory_path.contains("config/qemu/") && ip_str == "127.0.0.1" {
+        return Ok([10, 0, 2, 2]);
+    }
+    parse_ipv4_octets(ip_str)
+}
+
+fn select_live_segment(
+    router: &RouterInfo,
+    policy_id: &[u8; 32],
+) -> Result<aurora::types::RoutingSegment, String> {
+    #[derive(Deserialize)]
+    struct DirectoryLike {
+        #[serde(default)]
+        routes: Vec<DirectoryRoute>,
+    }
+
+    #[derive(Deserialize)]
+    struct DirectoryRoute {
+        policy_id: String,
+        interface: Option<String>,
+        segments: Vec<DirectorySegment>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(tag = "type")]
+    enum DirectorySegment {
+        #[serde(rename = "next_hop4")]
+        NextHop4 { ip: String, port: u16 },
+        #[serde(rename = "exit_tcp4")]
+        ExitTcp4 { ip: String, port: u16 },
+    }
+
+    let body = fs::read_to_string(&router.directory_path)
+        .map_err(|err| format!("failed to read directory {}: {err}", router.directory_path))?;
+    let directory: DirectoryLike =
+        serde_json::from_str(&body).map_err(|err| format!("invalid directory JSON: {err}"))?;
+    let route = directory
+        .routes
+        .into_iter()
+        .find(|route| {
+            decode_policy_id(&route.policy_id).ok().as_ref() == Some(policy_id)
+                && route.interface.as_deref() == Some(router.name.as_str())
+        })
+        .ok_or_else(|| {
+            format!(
+                "directory {} had no route for router {} and policy {:?}",
+                router.directory_path, router.name, policy_id
+            )
+        })?;
+    let elems: Result<Vec<RouteElem>, String> = route
+        .segments
+        .into_iter()
+        .map(|segment| match segment {
+            DirectorySegment::NextHop4 { ip, port } => Ok(RouteElem::NextHop {
+                addr: IpAddr::V4(parse_ipv4_octets(&ip)?),
+                port,
+            }),
+            DirectorySegment::ExitTcp4 { ip, port } => Ok(RouteElem::ExitTcp {
+                addr: IpAddr::V4(parse_ipv4_octets(&ip)?),
+                port,
+            }),
+        })
+        .collect();
+    Ok(routing::segment_from_elems(&elems?))
 }
 
 fn circuit_from_metadata(meta: &PolicyMetadata, kind: ProofKind) -> Result<Circuit, String> {
