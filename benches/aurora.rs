@@ -774,7 +774,7 @@ impl aurora::forward::Forward for SilentTcpForward {
                 stream
                     .write_all(&frame)
                     .map_err(|_| aurora::types::Error::Crypto)?;
-                self.pool.borrow_mut().insert(addr, stream);
+                self.pool.borrow_mut().insert(addr.to_owned(), stream);
                 Ok(())
             }
             Err(_) => Err(aurora::types::Error::Crypto),
