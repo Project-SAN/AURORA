@@ -7,13 +7,15 @@ use aurora::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
 use aurora::node::pipeline::ForwardPipeline;
 use aurora::policy::CapsuleValidator;
 use aurora::setup::pipeline::SetupPipeline;
-use aurora::types::Result;
 
 #[allow(dead_code)]
 pub struct NoopSetup;
 
 impl SetupPipeline for NoopSetup {
-    fn install(&mut self, _metadata: PolicyMetadata) -> Result<()> {
+    fn install(
+        &mut self,
+        _metadata: PolicyMetadata,
+    ) -> core::result::Result<(), aurora::types::Error> {
         Ok(())
     }
 }
@@ -42,7 +44,7 @@ impl ForwardPipeline for RecordingForward {
         payload: &mut Vec<u8>,
         validator: &dyn CapsuleValidator,
         role: PolicyRole,
-    ) -> Result<Option<(PolicyCapsule, usize)>> {
+    ) -> core::result::Result<Option<(PolicyCapsule, usize)>, aurora::types::Error> {
         let (capsule, consumed) = registry.enforce_with_role(payload, validator, role)?;
         *self.state.borrow_mut() = Some(capsule.clone());
         Ok(Some((capsule, consumed)))

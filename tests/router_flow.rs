@@ -9,7 +9,7 @@ use aurora::router::Router;
 use aurora::routing::{self, IpAddr, RouteElem};
 use aurora::time::TimeProvider;
 use aurora::types::{
-    Ahdr, Chdr, DataChdr, DataPacket, Exp, HopCount, LenChecked, Nonce, PacketDirection, Result,
+    Ahdr, Chdr, DataChdr, DataPacket, Exp, HopCount, LenChecked, Nonce, PacketDirection,
     RoutingSegment, Si, Sv, R_MAX,
 };
 use rand_chacha::ChaCha20Rng;
@@ -43,7 +43,7 @@ impl Forward for RecordingForward {
         _ahdr: &Ahdr,
         payload: &mut Vec<u8>,
         direction: PacketDirection,
-    ) -> Result<()> {
+    ) -> core::result::Result<(), aurora::types::Error> {
         let mut cloned = Vec::with_capacity(payload.len());
         cloned.extend_from_slice(payload);
         self.sent.replace(Some((rseg.clone(), direction, cloned)));
