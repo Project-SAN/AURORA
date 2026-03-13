@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +34,7 @@ const STREAM_OP_OPEN: u8 = 1;
 const STREAM_OP_DATA: u8 = 2;
 const STREAM_OP_CLOSE: u8 = 3;
 const STREAM_DATA_OFFSET: usize = 64;
+static SETUP_SENT: AtomicBool = AtomicBool::new(false);
 
 struct SenderConfig {
     policy_info: String,
@@ -95,6 +97,10 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
     };
     maybe_send_setup(&cfg)?;
     let target = format!("{target_host}:{target_port}");
+    let response_timeout_secs = env::var("HORNET_PROXY_RESPONSE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
 
     if method.eq_ignore_ascii_case("CONNECT") {
         handle_connect_tunnel(stream, &cfg, &target, &target_host)
@@ -109,10 +115,10 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
         );
         let response = if cfg.route_only == "1" {
             let mut session = RouteOnlyTunnelSession::new(&cfg, &target)?;
-            session.send(&outbound, 20)?
+            session.send(&outbound, response_timeout_secs)?
         } else {
             let mut session = PolicyTunnelSession::new(&cfg, &target)?;
-            session.send_request(&outbound, 20)?
+            session.send_request(&outbound, response_timeout_secs)?
         };
         eprintln!("[proxy] got response bytes={}", response.len());
         stream
@@ -130,7 +136,7 @@ fn handle_connect_tunnel(
     let open_timeout_secs = env::var("HORNET_CONNECT_OPEN_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3);
+        .unwrap_or(20);
     let poll_timeout_override = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
@@ -152,35 +158,19 @@ fn handle_connect_tunnel(
         poll_timeout_override.unwrap_or(if route_only_session.is_some() { 6 } else { 12 });
     let max_poll_timeout_secs =
         max_poll_timeout_override.unwrap_or(if route_only_session.is_some() { 20 } else { 30 });
+    let connect_open_rounds: u16 = env::var("HORNET_CONNECT_OPEN_ZKBOO_ROUNDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let push_timeout_secs: u64 = env::var("HORNET_CONNECT_PUSH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
     let send_gap_ms: u64 = env::var("HORNET_CONNECT_SEND_GAP_MS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
 
-    let open_payload = build_stream_payload(
-        cfg.payload_len,
-        cfg.host_offset,
-        host,
-        STREAM_OP_OPEN,
-        session_id,
-        &[],
-    )?;
-    let _ = if let Some(session) = policy_session.as_mut() {
-        session.send(TunnelOp::Open, session_id, &open_payload, open_timeout_secs)
-    } else {
-        send_connect_payload(
-            cfg,
-            target,
-            &mut route_only_session,
-            &open_payload,
-            open_timeout_secs,
-            false,
-        )
-    }?;
-    eprintln!("[proxy] CONNECT open sent");
-    if send_gap_ms > 0 {
-        thread::sleep(Duration::from_millis(send_gap_ms));
-    }
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .map_err(|e| format!("write connect ok: {e}"))?;
@@ -209,6 +199,7 @@ fn handle_connect_tunnel(
         .unwrap_or(6);
     let max_chunk = cfg.connect_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
     let mut chunk = vec![0u8; max_chunk];
+    let mut tunnel_opened = false;
     loop {
         let mut sent_any = false;
         match stream.read(&mut chunk) {
@@ -255,39 +246,88 @@ fn handle_connect_tunnel(
                     }
                     dumped_first_client_chunk = true;
                 }
-                let payload = build_stream_payload(
-                    cfg.connect_payload_len,
-                    cfg.host_offset,
-                    host,
-                    STREAM_OP_DATA,
-                    session_id,
-                    &chunk[..total],
-                )?;
-                eprintln!(
-                    "[proxy] CONNECT send DATA sid={} payload_bytes={}",
-                    session_id, total
-                );
-                let response = if let Some(session) = policy_session.as_mut() {
-                    session.send(TunnelOp::Continue, session_id, &payload, 0)?
-                } else {
-                    send_connect_payload(
-                        cfg,
-                        target,
-                        &mut route_only_session,
-                        &payload,
-                        0,
-                        true,
-                    )?
-                };
-                if !response.is_empty() {
-                    eprintln!("[proxy] CONNECT tunnel->client bytes={}", response.len());
-                    stream
-                        .write_all(&response)
-                        .map_err(|e| format!("write tunnel response: {e}"))?;
-                    last_tunnel_to_client = Instant::now();
-                }
-                if send_gap_ms > 0 {
-                    thread::sleep(Duration::from_millis(send_gap_ms));
+                let mut sent_offset = 0usize;
+                while sent_offset < total {
+                    let open_now = !tunnel_opened;
+                    let frame_payload_len = if open_now {
+                        cfg.payload_len
+                    } else {
+                        cfg.connect_payload_len
+                    };
+                    let frame_data_cap = frame_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
+                    let frame_end = core::cmp::min(total, sent_offset + frame_data_cap);
+                    let data_part = &chunk[sent_offset..frame_end];
+                    let payload = build_stream_payload(
+                        frame_payload_len,
+                        cfg.host_offset,
+                        host,
+                        if open_now {
+                            STREAM_OP_OPEN
+                        } else {
+                            STREAM_OP_DATA
+                        },
+                        session_id,
+                        data_part,
+                    )?;
+                    if open_now {
+                        eprintln!(
+                            "[proxy] CONNECT send OPEN sid={} payload_bytes={}",
+                            session_id,
+                            data_part.len()
+                        );
+                    } else {
+                        eprintln!(
+                            "[proxy] CONNECT send DATA sid={} payload_bytes={}",
+                            session_id,
+                            data_part.len()
+                        );
+                    }
+                    let frame_timeout_secs = if open_now {
+                        open_timeout_secs
+                    } else {
+                        push_timeout_secs
+                    };
+                    let response = if let Some(session) = policy_session.as_mut() {
+                        let saved_rounds = session.rounds;
+                        if open_now {
+                            session.rounds = connect_open_rounds;
+                        }
+                        let result = session.send(
+                            if open_now {
+                                TunnelOp::Open
+                            } else {
+                                TunnelOp::Continue
+                            },
+                            session_id,
+                            &payload,
+                            frame_timeout_secs,
+                        );
+                        session.rounds = saved_rounds;
+                        result?
+                    } else {
+                        send_connect_payload(
+                            cfg,
+                            target,
+                            &mut route_only_session,
+                            &payload,
+                            frame_timeout_secs,
+                            true,
+                        )?
+                    };
+                    if open_now {
+                        tunnel_opened = true;
+                    }
+                    if !response.is_empty() {
+                        eprintln!("[proxy] CONNECT tunnel->client bytes={}", response.len());
+                        stream
+                            .write_all(&response)
+                            .map_err(|e| format!("write tunnel response: {e}"))?;
+                        last_tunnel_to_client = Instant::now();
+                    }
+                    if send_gap_ms > 0 {
+                        thread::sleep(Duration::from_millis(send_gap_ms));
+                    }
+                    sent_offset = frame_end;
                 }
                 last_client_activity = Instant::now();
                 pending_response = true;
@@ -307,7 +347,7 @@ fn handle_connect_tunnel(
             break;
         }
 
-        if pending_response && !sent_any {
+        if tunnel_opened && pending_response && !sent_any {
             if last_tunnel_to_client.elapsed() < Duration::from_millis(client_priority_ms) {
                 // Immediately after receiving server TLS records, prioritize
                 // reading the client's next handshake records before issuing
@@ -382,20 +422,22 @@ fn handle_connect_tunnel(
         }
     }
 
-    let close_payload = build_stream_payload(
-        cfg.connect_payload_len,
-        cfg.host_offset,
-        host,
-        STREAM_OP_CLOSE,
-        session_id,
-        &[],
-    )?;
-    if let Some(session) = route_only_session.as_mut() {
-        let _ = session.send(&close_payload, 1);
-    } else if let Some(session) = policy_session.as_mut() {
-        let _ = session.send(TunnelOp::Close, session_id, &close_payload, 1);
-    } else {
-        return Err("proxy tunnel session unavailable".into());
+    if tunnel_opened {
+        let close_payload = build_stream_payload(
+            cfg.connect_payload_len,
+            cfg.host_offset,
+            host,
+            STREAM_OP_CLOSE,
+            session_id,
+            &[],
+        )?;
+        if let Some(session) = route_only_session.as_mut() {
+            let _ = session.send(&close_payload, 1);
+        } else if let Some(session) = policy_session.as_mut() {
+            let _ = session.send(TunnelOp::Close, session_id, &close_payload, 1);
+        } else {
+            return Err("proxy tunnel session unavailable".into());
+        }
     }
     Ok(())
 }
@@ -448,7 +490,6 @@ struct PolicyTunnelSession {
     target_ip: IpAddr,
     target_port: u16,
     entry_addr: String,
-    listener: TcpListener,
     backward_keys_reversed: Vec<Si>,
     backward_ahdr_bytes: Vec<u8>,
     rounds: u16,
@@ -547,7 +588,6 @@ impl PolicyTunnelSession {
             target_ip,
             target_port,
             entry_addr,
-            listener,
             backward_keys_reversed,
             backward_ahdr_bytes: backward_ahdr.bytes,
             rounds,
@@ -574,6 +614,7 @@ impl PolicyTunnelSession {
         };
         let tunnel_prefix = TunnelPrefix {
             op,
+            expects_reply: timeout_secs > 0,
             session_id,
             policy_id: self.policy_id,
         }
@@ -634,51 +675,33 @@ impl PolicyTunnelSession {
         payload.extend_from_slice(&capsule_buf);
         payload.extend_from_slice(&encrypted_tail);
         let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
-        send_frame_to(&self.entry_addr, &frame)?;
+        let mut stream = send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
 
         if timeout_secs == 0 {
             return Ok(Vec::new());
         }
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
-        loop {
-            if Instant::now() >= deadline {
-                return Ok(Vec::new());
-            }
-            match self.listener.accept() {
-                Ok((mut stream, _)) => {
-                    stream
-                        .set_nonblocking(false)
-                        .map_err(|e| format!("set blocking response stream: {e}"))?;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
-                    stream
-                        .set_read_timeout(Some(read_timeout))
-                        .map_err(|e| format!("set read timeout response stream: {e}"))?;
-                    let frame = match read_backward_frame(&mut stream) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    let mut payload = frame.payload;
-                    let mut iv_resp = frame.specific;
-                    if aurora::source::decrypt_backward_payload(
-                        &self.backward_keys_reversed,
-                        &mut iv_resp,
-                        &mut payload,
-                    )
-                    .is_ok()
-                    {
-                        eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
-                        return Ok(payload);
-                    }
-                    eprintln!("[proxy][policy] stale/unmatched response ignored");
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(2));
-                }
-                Err(e) => return Err(format!("accept response failed: {e}")),
-            }
+        stream
+            .set_read_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
+            .map_err(|e| format!("set read timeout response stream: {e}"))?;
+        let frame = match read_backward_frame(&mut stream) {
+            Ok(v) => v,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut payload = frame.payload;
+        let mut iv_resp = frame.specific;
+        if aurora::source::decrypt_backward_payload(
+            &self.backward_keys_reversed,
+            &mut iv_resp,
+            &mut payload,
+        )
+        .is_ok()
+        {
+            eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
+            return Ok(payload);
         }
+        eprintln!("[proxy][policy] stale/unmatched response ignored");
+        Ok(Vec::new())
     }
 
     fn build_capsule(&mut self, request_payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -856,51 +879,33 @@ impl PolicyTunnelSession {
         payload.extend_from_slice(capsule_buf);
         payload.extend_from_slice(&encrypted_tail);
         let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
-        send_frame_to(&self.entry_addr, &frame)?;
+        let mut stream = send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
 
         if timeout_secs == 0 {
             return Ok(Vec::new());
         }
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
-        loop {
-            if Instant::now() >= deadline {
-                return Ok(Vec::new());
-            }
-            match self.listener.accept() {
-                Ok((mut stream, _)) => {
-                    stream
-                        .set_nonblocking(false)
-                        .map_err(|e| format!("set blocking response stream: {e}"))?;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
-                    stream
-                        .set_read_timeout(Some(read_timeout))
-                        .map_err(|e| format!("set read timeout response stream: {e}"))?;
-                    let frame = match read_backward_frame(&mut stream) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    let mut payload = frame.payload;
-                    let mut iv_resp = frame.specific;
-                    if aurora::source::decrypt_backward_payload(
-                        &self.backward_keys_reversed,
-                        &mut iv_resp,
-                        &mut payload,
-                    )
-                    .is_ok()
-                    {
-                        eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
-                        return Ok(payload);
-                    }
-                    eprintln!("[proxy][policy] stale/unmatched response ignored");
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(2));
-                }
-                Err(e) => return Err(format!("accept response failed: {e}")),
-            }
+        stream
+            .set_read_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
+            .map_err(|e| format!("set read timeout response stream: {e}"))?;
+        let frame = match read_backward_frame(&mut stream) {
+            Ok(v) => v,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut payload = frame.payload;
+        let mut iv_resp = frame.specific;
+        if aurora::source::decrypt_backward_payload(
+            &self.backward_keys_reversed,
+            &mut iv_resp,
+            &mut payload,
+        )
+        .is_ok()
+        {
+            eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
+            return Ok(payload);
         }
+        eprintln!("[proxy][policy] stale/unmatched response ignored");
+        Ok(Vec::new())
     }
 }
 
@@ -1443,13 +1448,13 @@ fn encode_frame(
     Ok(frame)
 }
 
-fn send_frame_to(addr: &str, frame: &[u8]) -> Result<(), String> {
+fn send_frame_to(addr: &str, frame: &[u8]) -> Result<TcpStream, String> {
     let mut stream =
         TcpStream::connect(addr).map_err(|err| format!("failed to connect to {}: {err}", addr))?;
     stream
         .write_all(frame)
         .map_err(|err| format!("failed to send frame: {err}"))?;
-    Ok(())
+    Ok(stream)
 }
 
 fn build_stream_payload(
@@ -1715,7 +1720,12 @@ fn maybe_send_setup(cfg: &SenderConfig) -> Result<(), String> {
     if env::var("HORNET_PROXY_SKIP_SETUP").ok().as_deref() == Some("1") {
         return Ok(());
     }
-    send_setup(&cfg.policy_info)
+    if SETUP_SENT.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    send_setup(&cfg.policy_info)?;
+    SETUP_SENT.store(true, Ordering::Release);
+    Ok(())
 }
 
 fn send_setup(info_path: &str) -> Result<(), String> {

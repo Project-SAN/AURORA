@@ -4,7 +4,8 @@ use crate::types::Error;
 
 const TUNNEL_MAGIC: &[u8; 4] = b"HRSX";
 const TUNNEL_VERSION: u8 = 1;
-const HEADER_LEN: usize = 4 + 1 + 1 + 8 + 32;
+const FLAG_EXPECT_REPLY: u8 = 0x01;
+const HEADER_LEN: usize = 4 + 1 + 1 + 1 + 8 + 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TunnelOp {
@@ -27,6 +28,7 @@ impl TunnelOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TunnelPrefix {
     pub op: TunnelOp,
+    pub expects_reply: bool,
     pub session_id: u64,
     pub policy_id: [u8; 32],
 }
@@ -37,8 +39,13 @@ impl TunnelPrefix {
         out[..4].copy_from_slice(TUNNEL_MAGIC);
         out[4] = TUNNEL_VERSION;
         out[5] = self.op as u8;
-        out[6..14].copy_from_slice(&self.session_id.to_be_bytes());
-        out[14..46].copy_from_slice(&self.policy_id);
+        out[6] = if self.expects_reply {
+            FLAG_EXPECT_REPLY
+        } else {
+            0
+        };
+        out[7..15].copy_from_slice(&self.session_id.to_be_bytes());
+        out[15..47].copy_from_slice(&self.policy_id);
         out
     }
 
@@ -54,12 +61,13 @@ impl TunnelPrefix {
         }
         let op = TunnelOp::from_u8(payload[5]).ok_or(Error::Length)?;
         let mut sid = [0u8; 8];
-        sid.copy_from_slice(&payload[6..14]);
+        sid.copy_from_slice(&payload[7..15]);
         let mut policy_id = [0u8; 32];
-        policy_id.copy_from_slice(&payload[14..46]);
+        policy_id.copy_from_slice(&payload[15..47]);
         Ok(Some((
             Self {
                 op,
+                expects_reply: (payload[6] & FLAG_EXPECT_REPLY) != 0,
                 session_id: u64::from_be_bytes(sid),
                 policy_id,
             },
@@ -97,6 +105,7 @@ mod tests {
     fn prefix_roundtrip() {
         let prefix = TunnelPrefix {
             op: TunnelOp::Continue,
+            expects_reply: true,
             session_id: 0x1122_3344_5566_7788,
             policy_id: [0xAB; 32],
         };

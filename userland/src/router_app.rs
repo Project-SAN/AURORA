@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -9,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use aurora::application::setup::RegistrySetupPipeline;
 use aurora::node::NoReplay;
 use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
-use aurora::router::io::PacketListener;
-use aurora::router::runtime::RouterRuntime;
 use aurora::router::storage::RouterStorage;
 use aurora::router::Router;
 use aurora::setup::directory::from_signed_json;
@@ -78,13 +75,21 @@ pub fn run_router() -> ! {
         if let Some(server) = cli.as_mut() {
             server.poll(&mut router, &mut config);
         }
-        match listener.next() {
-            Ok(Some(packet)) => {
+        match listener.next_with_socket() {
+            Ok(Some((packet, socket))) => {
                 let aurora::router::io::IncomingPacket {
                     direction,
                     sv,
                     packet,
                 } = packet;
+                {
+                    let mut msg = String::new();
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut msg,
+                        format_args!("router: packet dir={:?}", direction),
+                    );
+                    log_line(&msg);
+                }
                 match packet {
                     Packet::Setup(setup_frame) => {
                         if let Err(err) =
@@ -97,36 +102,86 @@ pub fn run_router() -> ! {
                             );
                             log_line(&msg);
                         }
+                        let _ = socket.close();
                         continue;
                     }
                     Packet::Data(data_packet_raw) => {
-                        let mut runtime = RouterRuntime::new(
-                            &mut router,
-                            &time,
-                            || Box::new(UserlandForward::new()),
-                            || Box::new(NoReplay),
-                        );
+                        let mut replay = NoReplay;
+                        let mut forward = UserlandForward::with_reply_socket(sv, socket);
+                        log_line("router: data process start");
                         let res = match direction {
-                            types::PacketDirection::Forward => runtime
-                                .process_forward_data_packet_with_exit(
+                            types::PacketDirection::Forward => router
+                                .process_forward_data_packet(
                                     sv,
-                                    data_packet_raw,
+                                    &time,
+                                    &mut forward,
                                     Some(&mut exit),
+                                    &mut replay,
+                                    data_packet_raw,
                                 )
                                 .map(|_| ()),
-                            types::PacketDirection::Backward => runtime
-                                .process_backward_data_packet(sv, data_packet_raw)
+                            types::PacketDirection::Backward => router
+                                .process_backward_data_packet(
+                                    sv,
+                                    &time,
+                                    &mut forward,
+                                    &mut replay,
+                                    data_packet_raw,
+                                )
                                 .map(|_| ()),
                         };
+                        let mut had_error = false;
                         if let Err(err) = res {
+                            had_error = true;
                             let mut msg = String::new();
                             let _ = core::fmt::Write::write_fmt(
                                 &mut msg,
                                 format_args!("router: packet error {:?} dir={:?}", err, direction),
                             );
                             log_line(&msg);
+                        } else {
+                            log_line("router: data process ok");
                         }
-                        let _ = runtime.handle_async_violations();
+                        let returned = forward.take_returned_packet();
+                        if returned.is_none() {
+                            log_line("router: no downstream reply packet");
+                        }
+                        if let Some(returned) = returned {
+                            let mut msg = String::new();
+                            let _ = core::fmt::Write::write_fmt(
+                                &mut msg,
+                                format_args!("router: downstream reply dir={:?}", returned.direction),
+                            );
+                            log_line(&msg);
+                            match returned.packet {
+                                Packet::Data(backward) => {
+                                    log_line("router: downstream reply is backward data");
+                                    let mut replay = NoReplay;
+                                    if let Err(err) = router.process_backward_data_packet(
+                                        returned.sv,
+                                        &time,
+                                        &mut forward,
+                                        &mut replay,
+                                        backward,
+                                    ) {
+                                        let mut msg = String::new();
+                                        let _ = core::fmt::Write::write_fmt(
+                                            &mut msg,
+                                            format_args!("router: downstream backward error {:?}", err),
+                                        );
+                                        log_line(&msg);
+                                    } else {
+                                        log_line("router: downstream backward processed");
+                                    }
+                                }
+                                _ => {
+                                    log_line("router: unexpected downstream reply");
+                                }
+                            }
+                        } else if had_error {
+                            log_line("router: packet failed without downstream reply");
+                        }
+                        let _ = router.handle_async_violations();
                     }
                 }
             }
