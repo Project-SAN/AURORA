@@ -686,7 +686,10 @@ impl PolicyTunnelSession {
             .map_err(|e| format!("set read timeout response stream: {e}"))?;
         let frame = match read_backward_frame(&mut stream) {
             Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
+            Err(err) => {
+                eprintln!("[proxy][policy] read backward failed: {err}");
+                return Ok(Vec::new());
+            }
         };
         let mut payload = frame.payload;
         let mut iv_resp = frame.specific;
@@ -890,7 +893,10 @@ impl PolicyTunnelSession {
             .map_err(|e| format!("set read timeout response stream: {e}"))?;
         let frame = match read_backward_frame(&mut stream) {
             Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
+            Err(err) => {
+                eprintln!("[proxy][policy] read backward failed: {err}");
+                return Ok(Vec::new());
+            }
         };
         let mut payload = frame.payload;
         let mut iv_resp = frame.specific;
@@ -1102,7 +1108,10 @@ impl RouteOnlyTunnelSession {
                         .map_err(|e| format!("set read timeout response stream: {e}"))?;
                     let frame = match read_backward_frame(&mut stream) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(err) => {
+                            eprintln!("[proxy][route-only] read backward failed: {err}");
+                            continue;
+                        }
                     };
                     let mut payload = frame.payload;
                     let mut iv_resp = frame.specific;
