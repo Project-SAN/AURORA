@@ -11,6 +11,7 @@ use aurora::router::io::{
     encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
 };
 use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::tunnel::TunnelPrefix;
 use aurora::types::{Ahdr, Chdr, Error, PacketDirection, RoutingSegment, Sv};
 
 const STREAM_DATA_OFFSET: usize = 64;
@@ -25,23 +26,39 @@ impl UserlandPacketListener {
         let listener = TcpListener::listen(port).map_err(|_| Error::Crypto)?;
         Ok(Self { listener, sv })
     }
-}
 
-impl PacketListener for UserlandPacketListener {
-    fn next(&mut self) -> core::result::Result<Option<IncomingPacket>, Error> {
+    pub fn next_with_socket(
+        &mut self,
+    ) -> core::result::Result<Option<(IncomingPacket, TcpSocket)>, Error> {
         match self.listener.accept().map_err(|_| Error::Crypto)? {
             None => Ok(None),
             Some(mut socket) => {
+                debug_log("router-io: accept start");
                 let packet = match read_incoming_packet(&mut socket, self.sv) {
-                    Ok(packet) => packet,
+                    Ok(packet) => {
+                        debug_log("router-io: accept decoded");
+                        packet
+                    }
                     Err(_) => {
+                        debug_log("router-io: accept decode failed");
                         let _ = socket.close();
                         return Err(Error::Crypto);
                     }
                 };
+                Ok(Some((packet, socket)))
+            }
+        }
+    }
+}
+
+impl PacketListener for UserlandPacketListener {
+    fn next(&mut self) -> core::result::Result<Option<IncomingPacket>, Error> {
+        match self.next_with_socket()? {
+            Some((packet, socket)) => {
                 let _ = socket.close();
                 Ok(Some(packet))
             }
+            None => Ok(None),
         }
     }
 }
@@ -50,27 +67,58 @@ impl PacketReader for TcpSocket {
     fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), Error> {
         let mut offset = 0usize;
         let mut spins = 0u32;
+        debug_log_usize("router-io: read_exact want", buf.len());
         while offset < buf.len() {
             let read = self.recv(&mut buf[offset..]).map_err(|_| Error::Crypto)?;
             if read == 0 {
                 spins = spins.saturating_add(1);
-                if spins > 4096 {
+                if spins > 60_000 {
+                    debug_log_usize("router-io: read_exact stalled_at", offset);
                     return Err(Error::Crypto);
                 }
                 sys::sleep(1);
                 continue;
             }
+            debug_log_usize("router-io: read_exact chunk", read);
             offset += read;
         }
+        debug_log_usize("router-io: read_exact done", offset);
         Ok(())
     }
 }
 
-pub struct UserlandForward;
+pub struct UserlandForward {
+    sv: Sv,
+    reply_socket: Option<TcpSocket>,
+    returned_packet: Option<IncomingPacket>,
+    sent_reply: bool,
+}
 
 impl UserlandForward {
-    pub fn new() -> Self {
-        Self
+    pub fn with_reply_socket(sv: Sv, reply_socket: TcpSocket) -> Self {
+        Self {
+            sv,
+            reply_socket: Some(reply_socket),
+            returned_packet: None,
+            sent_reply: false,
+        }
+    }
+
+    pub fn take_returned_packet(&mut self) -> Option<IncomingPacket> {
+        self.returned_packet.take()
+    }
+}
+
+impl Drop for UserlandForward {
+    fn drop(&mut self) {
+        if let Some(socket) = self.reply_socket {
+            if self.sent_reply {
+                for _ in 0..5_000 {
+                    sys::sleep(1);
+                }
+            }
+            let _ = socket.close();
+        }
     }
 }
 
@@ -83,6 +131,15 @@ impl Forward for UserlandForward {
         payload: &mut Vec<u8>,
         direction: PacketDirection,
     ) -> core::result::Result<(), Error> {
+        if matches!(direction, PacketDirection::Backward) {
+            if let Some(reply_socket) = self.reply_socket.as_ref() {
+                debug_log("router-io: backward over existing socket");
+                let reply_frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
+                send_all(reply_socket, &reply_frame)?;
+                self.sent_reply = true;
+                return Ok(());
+            }
+        }
         let elems = routing::elems_from_segment(rseg).map_err(|_| Error::Length)?;
         let hop = elems.first().ok_or(Error::Length)?;
         let (ip, port) = match hop {
@@ -96,21 +153,60 @@ impl Forward for UserlandForward {
         };
 
         debug_log("router-io: forward send start");
+        match direction {
+            PacketDirection::Forward => debug_log("router-io: forward dir=Forward"),
+            PacketDirection::Backward => debug_log("router-io: forward dir=Backward"),
+        }
         debug_log_addr("router-io: forward addr", ip, port);
         debug_log_usize("router-io: forward payload_len", payload.len());
-        let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
+        let mut socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
         if connect_ipv4(&socket, ip, port).is_err() {
             debug_log("router-io: forward connect failed");
             return Err(Error::Crypto);
         }
         debug_log("router-io: forward connected");
+        let should_wait = matches!(direction, PacketDirection::Forward)
+            && should_wait_for_downstream_reply(payload.as_slice());
         let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
-        if send_all(&socket, &frame).is_err() {
+        let mut wire_frame = frame.clone();
+        if (matches!(direction, PacketDirection::Backward)
+            || (matches!(direction, PacketDirection::Forward) && !should_wait))
+            && wire_frame.len() < 4096
+        {
+            wire_frame.resize(4096, 0);
+            debug_log_usize("router-io: forward padded_frame_len", wire_frame.len());
+        }
+        if send_all(&socket, &wire_frame).is_err() {
             debug_log("router-io: forward send failed");
             return Err(Error::Crypto);
         }
         debug_log_usize("router-io: forward frame_len", frame.len());
-        let _ = socket.close();
+        if should_wait {
+            if let Ok(packet) = read_incoming_packet(&mut socket, self.sv) {
+                debug_log("router-io: forward downstream reply");
+                self.returned_packet = Some(packet);
+            }
+        }
+        // Guest networking is syscall-driven; after a one-shot small send we need to
+        // keep polling the stack briefly so the queued TCP payload actually leaves.
+        let backward = matches!(direction, PacketDirection::Backward);
+        let pump_ticks = if backward {
+            // Backward delivery competes with the peer still unwinding its large forward packet.
+            // Keep polling this socket long enough for hostfwd + peer accept to catch up.
+            30_000
+        } else if frame.len() <= 4096 {
+            5_000
+        } else {
+            // Large forward frames are drained in the kernel send path; keeping the
+            // router here blocks the event loop and starves backward accepts.
+            8
+        };
+        pump_connected_socket(&socket, ip, port, pump_ticks);
+        if !backward && should_wait {
+            let _ = socket.close();
+        } else if !backward {
+            debug_log("router-io: forward defer close");
+        }
         Ok(())
     }
 }
@@ -184,6 +280,7 @@ impl UserlandExitTransport {
                 debug_log("router-io: stream open start");
                 debug_log_addr("router-io: stream open addr", ip, port);
                 debug_log_u64("router-io: stream open sid", frame.session_id);
+                debug_log_usize("router-io: stream open len", frame.data.len());
                 if !self.sessions.contains_key(&frame.session_id) {
                     let socket = TcpSocket::new().map_err(|_| Error::Crypto)?;
                     if connect_ipv4(&socket, ip, port).is_err() {
@@ -193,7 +290,26 @@ impl UserlandExitTransport {
                     self.sessions.insert(frame.session_id, socket);
                 }
                 debug_log("router-io: stream open ok");
-                Ok(Vec::new())
+                let socket = self.sessions.get(&frame.session_id).ok_or(Error::Crypto)?;
+                if !frame.data.is_empty() {
+                    debug_log("router-io: stream open mode=push");
+                    if send_all(socket, frame.data).is_err() {
+                        debug_log("router-io: stream open send failed");
+                        return Err(Error::Crypto);
+                    }
+                    match recv_available(socket) {
+                        Ok(bytes) => {
+                            debug_log_usize("router-io: stream open rsp_len", bytes.len());
+                            Ok(bytes)
+                        }
+                        Err(err) => {
+                            debug_log("router-io: stream open recv failed");
+                            Err(err)
+                        }
+                    }
+                } else {
+                    Ok(Vec::new())
+                }
             }
             StreamOp::Data => {
                 debug_log("router-io: stream data start");
@@ -295,6 +411,20 @@ fn connect_ipv4(
     Ok(())
 }
 
+fn pump_connected_socket(socket: &TcpSocket, ip: [u8; 4], port: u16, ticks: u32) {
+    for _ in 0..ticks {
+        sys::sleep(1);
+        let _ = socket.connect(ip, port);
+    }
+}
+
+fn should_wait_for_downstream_reply(payload: &[u8]) -> bool {
+    match TunnelPrefix::decode(payload) {
+        Ok(Some((prefix, _))) => prefix.expects_reply,
+        _ => true,
+    }
+}
+
 fn debug_log(msg: &str) {
     let _ = sys::write(1, msg.as_bytes());
     let _ = sys::write(1, b"\n");
@@ -359,18 +489,31 @@ fn write_decimal(mut value: u64) {
 fn send_all(socket: &TcpSocket, buf: &[u8]) -> core::result::Result<(), Error> {
     let mut offset = 0usize;
     let mut spins = 0u32;
+    let trace_small = buf.len() <= 4096;
+    if trace_small {
+        debug_log_usize("router-io: send_all want", buf.len());
+    }
     while offset < buf.len() {
         let written = socket.send(&buf[offset..]).map_err(|_| Error::Crypto)?;
         if written == 0 {
             spins = spins.saturating_add(1);
             if spins > 4096 {
+                if trace_small {
+                    debug_log_usize("router-io: send_all stalled_at", offset);
+                }
                 return Err(Error::Crypto);
             }
             sys::sleep(1);
             continue;
         }
         spins = 0;
+        if trace_small {
+            debug_log_usize("router-io: send_all chunk", written);
+        }
         offset += written;
+    }
+    if trace_small {
+        debug_log_usize("router-io: send_all done", offset);
     }
     Ok(())
 }
