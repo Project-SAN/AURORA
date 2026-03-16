@@ -1,17 +1,21 @@
-# AURORA (Attested Unlinkable Routing with Overlay Relay Assurance)
+# AURORA
 
-A privacy preserving network middlebox powered by zero knowledge proofs.
+Attested Unlinkable Routing with Overlay Relay Assurance.
 
+AURORA は、零知識証明を基盤にした、プライバシー保護志向のルーティングおよびミドルボックスの実験実装です。
 
-## How to install
-```
-git clone <urls>
+## クイックスタート
+
+```sh
 cargo build --release
+cargo run --bin aurora_router
+cargo run --bin aurora_proxy
 ```
 
-This project is experimental and not audit
+最小のローカル構成は [docs/localnet-three-router.md](docs/localnet-three-router.md) を参照してください。
 
-## Contributing
+## ステータス
 
+実験的な研究コードです。監査は受けていません。
 
 
