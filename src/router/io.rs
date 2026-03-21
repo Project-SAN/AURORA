@@ -1,6 +1,4 @@
-use crate::types::{
-    Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Sv,
-};
+use crate::types::{Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Sv};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -102,9 +100,3 @@ pub fn read_incoming_packet<R: PacketReader>(
         )?,
     })
 }
-
-#[cfg(feature = "std")]
-#[path = "io_std.rs"]
-mod io_std;
-#[cfg(feature = "std")]
-pub use io_std::{TcpForward, TcpPacketListener};

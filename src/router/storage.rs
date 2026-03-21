@@ -25,12 +25,6 @@ pub trait RouterStorage {
     fn save(&self, state: &StoredState) -> core::result::Result<(), crate::types::Error>;
 }
 
-#[cfg(feature = "std")]
-#[path = "storage_std.rs"]
-mod storage_std;
-#[cfg(feature = "std")]
-pub use storage_std::FileRouterStorage;
-
 impl StoredState {
     pub fn new(
         policies: Vec<PolicyMetadata>,

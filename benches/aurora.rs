@@ -4,7 +4,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +14,7 @@ use std::time::Duration;
 
 const HOP_CASES: &[usize] = &[2, 3, 5, 7];
 const PAYLOAD_CASES: &[usize] = &[256, 1024, 4096, 16 * 1024];
+type BenchResult<T> = core::result::Result<T, aurora::types::Error>;
 
 fn bench_create_ahdr(c: &mut Criterion) {
     let mut group = c.benchmark_group("ahdr/create");
@@ -97,6 +98,7 @@ fn bench_process_data_forward(c: &mut Criterion) {
                             replay: &mut replay,
                             policy: None,
                             exit: None,
+                            tunnels: None,
                         };
                         aurora::node::forward::process_data(
                             &mut ctx,
@@ -480,6 +482,7 @@ fn run_forward_chain(
             replay: &mut replay,
             policy: None,
             exit: None,
+            tunnels: None,
         };
         aurora::node::forward::process_data(&mut ctx, chdr, ahdr, payload)
             .expect("process forward hop");
@@ -510,6 +513,7 @@ fn run_backward_chain(
             replay: &mut replay,
             policy: None,
             exit: None,
+            tunnels: None,
         };
         process_backward_silent(&mut ctx, chdr, ahdr, payload).expect("process backward hop");
         if let Some(next) = slot.borrow_mut().take() {
@@ -523,7 +527,7 @@ fn process_backward_silent(
     chdr: &mut aurora::types::Chdr,
     ahdr: &mut aurora::types::Ahdr,
     payload: &mut Vec<u8>,
-) -> aurora::types::Result<()> {
+) -> BenchResult<()> {
     use aurora::types::{Error, Exp, Nonce, PacketDirection};
     let now = Exp(ctx.now.now_coarse());
     let res = aurora::packet::ahdr::proc_ahdr(&ctx.sv, ahdr, now)?;
@@ -577,7 +581,7 @@ impl aurora::forward::Forward for CaptureForward {
         ahdr: &aurora::types::Ahdr,
         _payload: &mut Vec<u8>,
         _direction: aurora::types::PacketDirection,
-    ) -> aurora::types::Result<()> {
+    ) -> BenchResult<()> {
         *self.slot.borrow_mut() = Some(clone_ahdr(ahdr));
         Ok(())
     }
@@ -734,7 +738,7 @@ impl SilentTcpForward {
         }
     }
 
-    fn first_hop_addr(rseg: &aurora::types::RoutingSegment) -> aurora::types::Result<String> {
+    fn first_hop_addr(rseg: &aurora::types::RoutingSegment) -> BenchResult<String> {
         let elems =
             aurora::routing::elems_from_segment(rseg).map_err(|_| aurora::types::Error::Length)?;
         let hop = elems.first().ok_or(aurora::types::Error::Length)?;
@@ -755,7 +759,7 @@ impl aurora::forward::Forward for SilentTcpForward {
         ahdr: &aurora::types::Ahdr,
         payload: &mut Vec<u8>,
         direction: PacketDirection,
-    ) -> aurora::types::Result<()> {
+    ) -> BenchResult<()> {
         let addr = Self::first_hop_addr(rseg)?;
         let frame =
             aurora::router::io::encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
@@ -779,6 +783,24 @@ impl aurora::forward::Forward for SilentTcpForward {
             }
             Err(_) => Err(aurora::types::Error::Crypto),
         }
+    }
+}
+
+struct TcpStreamReader<'a> {
+    stream: &'a mut TcpStream,
+}
+
+impl<'a> TcpStreamReader<'a> {
+    fn new(stream: &'a mut TcpStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl aurora::router::io::PacketReader for TcpStreamReader<'_> {
+    fn read_exact(&mut self, buf: &mut [u8]) -> BenchResult<()> {
+        self.stream
+            .read_exact(buf)
+            .map_err(|_| aurora::types::Error::Crypto)
     }
 }
 
@@ -814,7 +836,8 @@ impl RouterWorker {
                 }
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
                 loop {
-                    let incoming = match aurora::router::io::read_incoming_packet(&mut stream, sv) {
+                    let mut reader = TcpStreamReader::new(&mut stream);
+                    let incoming = match aurora::router::io::read_incoming_packet(&mut reader, sv) {
                         Ok(incoming) => incoming,
                         Err(aurora::types::Error::Crypto) => {
                             if stop_signal.load(Ordering::SeqCst) {
@@ -886,8 +909,9 @@ impl SinkServer {
                 }
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
                 loop {
+                    let mut reader = TcpStreamReader::new(&mut stream);
                     match aurora::router::io::read_incoming_packet(
-                        &mut stream,
+                        &mut reader,
                         aurora::types::Sv([0u8; 16]),
                     ) {
                         Ok(_) => {

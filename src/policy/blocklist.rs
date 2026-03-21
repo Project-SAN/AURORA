@@ -261,9 +261,7 @@ impl Blocklist {
     }
 
     /// Construct from pre-encoded canonical leaves for backwards compatibility.
-    pub fn from_canonical_bytes(
-        entries: Vec<LeafBytes>,
-    ) -> core::result::Result<Self, Error> {
+    pub fn from_canonical_bytes(entries: Vec<LeafBytes>) -> core::result::Result<Self, Error> {
         let entries = entries.into_iter().map(BlocklistEntry::Raw).collect();
         Self::new(entries)
     }
@@ -399,10 +397,7 @@ impl Blocklist {
     }
 
     /// Hash each entry with SHA-256 to produce fixed-length leaves.
-    pub fn leaf_hashes_into(
-        &self,
-        out: &mut [[u8; 32]],
-    ) -> core::result::Result<usize, Error> {
+    pub fn leaf_hashes_into(&self, out: &mut [[u8; 32]]) -> core::result::Result<usize, Error> {
         let len = self.entries.len();
         if out.len() < len {
             return Err(Error::Crypto);
@@ -508,9 +503,7 @@ impl Blocklist {
 }
 
 /// Build a canonical blocklist entry from a target value extracted from payloads.
-pub fn entry_from_target(
-    target: &TargetValue,
-) -> core::result::Result<BlocklistEntry, Error> {
+pub fn entry_from_target(target: &TargetValue) -> core::result::Result<BlocklistEntry, Error> {
     match target {
         TargetValue::Domain(bytes) => {
             let value = str::from_utf8(bytes).map_err(|_| Error::Crypto)?;

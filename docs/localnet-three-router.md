@@ -1,24 +1,24 @@
 # ローカル 3 ルータ検証手順
 
-`src/bin/localnet_prep.rs` が生成する設定ファイルを使うと、`aurora_router` を 3 プロセス起動して最小のローカル網を構築できます。各ルータは独立したディレクトリ JSON/状態ファイルを参照するため、エントリ → 中継 → エグジットの順に別ポートで待ち受けます。
+チェックイン済みの `config/localnet/` を使うと、`aurora_router` を 3 プロセス起動して最小のローカル網を構築できます。各ルータは独立したディレクトリ JSON/状態ファイルを参照するため、エントリ → 中継 → エグジットの順に別ポートで待ち受けます。
 
 ## 前提
 
 - Rust toolchain がインストール済み。
-- `cargo run --bin aurora_router` を実行できること（`std` feature はデフォルト有効）。
+- `cargo run -p aurora-router` を実行できること。
 - `nc` や `ncat` 等、シンプルな TCP サーバ/クライアントが利用可能であること（エグジット側の出口確認用）。
 
-## 設定ファイル生成
+## 設定ファイル
 
 ```bash
-cargo run --bin localnet_prep
+ls config/localnet
 ```
 
-- `config/localnet/` に以下が生成される:
-  - `router-entry|middle|exit.directory.json` – 各ルータ専用のディレクトリアナウンス。HMAC 共有鍵は `localnet-secret`。
-  - `router-*.env` – 上記ディレクトリを読み込むための環境変数セット。バインドアドレス（7101/7102/7103）と状態ファイルパスが含まれる。
+- `config/localnet/` には以下が含まれる:
+  - `router-entry|middle|exit.directory.json` – 各ルータ専用のディレクトリアナウンス。
+  - `router-*.env` – ディレクトリ/バインド/状態ファイルを指定する環境変数セット。
   - `policy-info.json` – ポリシー ID と各ルータのバインド設定をまとめたメタ情報。
-- `target/localnet/` 以下に状態ファイルが保存されるよう準備されます（初回起動時は存在しなくて OK）。
+- `target/localnet/` 以下の state は実行時に生成されます（初回起動時は存在しなくて OK）。
 
 ## エグジット先のダミーサーバ
 
@@ -35,28 +35,17 @@ nc -lk 7200
 
 ```bash
 # 入口ルータ
-env $(cat config/localnet/router-entry.env | xargs) cargo run --bin aurora_router
+env $(cat config/localnet/router-entry.env | xargs) cargo run -p aurora-router
 
 # 中継ルータ
-env $(cat config/localnet/router-middle.env | xargs) cargo run --bin aurora_router
+env $(cat config/localnet/router-middle.env | xargs) cargo run -p aurora-router
 
 # 出口ルータ
-env $(cat config/localnet/router-exit.env | xargs) cargo run --bin aurora_router
+env $(cat config/localnet/router-exit.env | xargs) cargo run -p aurora-router
 ```
 
 - 各ルータは自分専用の `router-*.directory.json` を読み込み、`target/localnet/router-*-state.json` にポリシー/ルート/SV を永続化します。
-- ログに `directory sync failed` が出る場合は、`localnet_prep` を再実行してディレクトリを再生成してください。
-
-## ユーザ送信 CLI (`aurora_sender`)
-
-ルータの state (`target/localnet/router-*-state.json`) が生成されたら、`aurora_sender` でエントリルータにセットアップパケットを送信できます。内部で各 state からノード公開鍵を復元し、ディレクトリメタデータを TLV として付与します。
-
-```bash
-cargo run --bin aurora_sender config/localnet/policy-info.json
-```
-
-- 入口ルータ (`policy-info.json` の先頭) に TCP でフレームを書き込んで完了します。
-- state ファイルが存在しない場合は「ルータを一度起動して state を生成してください」と表示されるため、まずルータを起動→停止して state を用意してください。
+- ログに `directory sync failed` が出る場合は、`config/localnet/*.directory.json` と `policy-info.json` の整合を確認してください。
 
 ## スクリプトによる自動化
 
@@ -74,29 +63,18 @@ scripts/localnet_send.sh config/localnet/policy-info.json safe.example "custom m
 scripts/localnet_down.sh
 ```
 
-`localnet_up.sh` は内部で `cargo run --bin localnet_prep` を実行し、各ルータをバックグラウンドで起動したままにします。`localnet_down.sh` で必ず明示的に停止してください。
-
-## データフレーム送信 CLI (`aurora_data_sender`)
-
-政策検証済みのデータパケットは次のように送信できます。ブロックリストには `config/blocklist.json`（または `LOCALNET_BLOCKLIST` で差し替え）を利用します。
-
-```bash
-cargo run --bin aurora_data_sender config/localnet/policy-info.json safe.example "hello hornet"
-```
-
-- 第2引数: ポリシーに適合するホスト名。ブロック対象を指定するとクライアント側で証明が失敗します。
-- 第3引数: 任意のメッセージ文字列（省略可）。ポリシーカプセル + ターゲット葉に続いてペイロード末尾へ追加されます。
-- CLI は AHDR/CHDR/ペイロードを構築し、入口ルータ (`127.0.0.1:7101`) に forward フレームを送信します。
+`config/localnet/` は固定ファイルとして管理しています。通常の検証では追加の生成手順は不要です。
 
 ## HTTP プロキシ (`aurora_proxy`)
 
-`aurora_proxy` はローカル HTTP プロキシとして待ち受け、受信した HTTP リクエストを `aurora_data_sender` 経由で送信します。
+`aurora_proxy` はローカル HTTP プロキシとして待ち受け、起動時に自動で `setup` を送り、その後の HTTP リクエストを内部で送信します。
 
 ```bash
 HORNET_PROXY_BIND=127.0.0.1:18080 \
 HORNET_POLICY_INFO=config/localnet/policy-info.json \
+HORNET_PROXY_ROUTE_ONLY=0 \
 HORNET_PROXY_ZKBOO_ROUNDS=8 \
-cargo run --features std --bin aurora_proxy
+cargo run -p aurora-proxy
 ```
 
 例:
@@ -106,13 +84,13 @@ curl -x http://127.0.0.1:18080 http://example.com/
 ```
 
 > [!IMPORTANT]
-> 現在の `aurora_proxy` は単発 request/response モードです。`CONNECT` による TLS トンネルは未対応です。
+> `aurora_proxy` は `HTTP` と `HTTPS CONNECT` の両方を扱えます。`CONNECT` は setup 後に session 継続型トンネルとして流れます。
 
 ## 動作確認
 
 1. 各ルータのログにエラーが出ず、`target/localnet/router-*-state.json` が生成されること。
-2. `cargo run --bin aurora_sender config/localnet/policy-info.json` を実行すると入口ルータ側で setup 処理ログが出ること。
-3. `cargo run --bin aurora_data_sender config/localnet/policy-info.json safe.example` を実行してもエラーが出ず、出口 (`nc -lk 7200` など) にフレームが到達すること。
+2. `aurora_proxy` 起動時に入口ルータ側で setup 処理ログが出ること。
+3. `curl -x http://127.0.0.1:18080 http://safe.example/` 等でエラーが出ず、出口 (`nc -lk 7200` など) にフレームが到達すること。
 4. `cargo test tests::pipeline` などの既存パイプラインテストが green であること（ポリシーカプセルの検証ロジックをカバー）。
 
-**補足:** 将来的に送信デモを追加するときは、ここで生成した `policy-info.json` に含まれる `policy_id` と `localnet-secret` を利用してエンドツーエンド試験を行う想定です。
+**補足:** `policy-info.json` に含まれる `policy_id` を使ってエンドツーエンド試験を行います。値を更新する場合は `config/localnet/` 一式をまとめて更新してください。

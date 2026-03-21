@@ -6,6 +6,7 @@ use crate::node::PolicyRuntime;
 use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
 use crate::setup::pipeline::SetupPipeline;
+use crate::tunnel::TunnelRegistry;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
 use crate::types::{
@@ -16,12 +17,10 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub mod config;
 pub mod io;
 pub mod penalty;
 pub mod runtime;
 pub mod storage;
-pub mod sync;
 
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {
@@ -32,6 +31,7 @@ pub struct Router {
     policy_roles: BTreeMap<[u8; 32], PolicyRole>,
     node_id: Option<String>,
     penalty: penalty::PenaltyBox,
+    tunnels: TunnelRegistry,
 }
 
 impl Router {
@@ -44,6 +44,7 @@ impl Router {
             policy_roles: BTreeMap::new(),
             node_id: None,
             penalty: penalty::PenaltyBox::new(3),
+            tunnels: TunnelRegistry::default(),
         }
     }
 
@@ -63,6 +64,7 @@ impl Router {
             policy_roles: BTreeMap::new(),
             node_id: None,
             penalty: penalty::PenaltyBox::new(3),
+            tunnels: TunnelRegistry::default(),
         }
     }
 
@@ -78,6 +80,7 @@ impl Router {
             policy_roles: BTreeMap::new(),
             node_id,
             penalty: penalty::PenaltyBox::new(3),
+            tunnels: TunnelRegistry::default(),
         }
     }
 
@@ -228,7 +231,7 @@ impl Router {
 
     #[allow(clippy::too_many_arguments)]
     fn process_forward_packet_raw<'io>(
-        &self,
+        &mut self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,
@@ -239,7 +242,16 @@ impl Router {
         payload: &mut Vec<u8>,
     ) -> core::result::Result<(), crate::types::Error> {
         use crate::node;
-        let policy = self.policy_runtime();
+        let policy = if self.registry.is_empty() {
+            None
+        } else {
+            Some(PolicyRuntime {
+                registry: &self.registry,
+                validator: &self.validator,
+                forward: self.forward_pipeline.as_ref(),
+                roles: &self.policy_roles,
+            })
+        };
         #[cfg(feature = "localnet-debug")]
         let orig_chdr = *chdr;
         #[cfg(feature = "localnet-debug")]
@@ -253,6 +265,7 @@ impl Router {
             replay,
             policy,
             exit,
+            tunnels: Some(&mut self.tunnels),
         };
         match node::forward::process_data(&mut ctx, chdr, ahdr, payload) {
             Ok(()) => Ok(()),
@@ -271,6 +284,7 @@ impl Router {
                     replay,
                     policy: None,
                     exit: None,
+                    tunnels: Some(&mut self.tunnels),
                 };
                 node::forward::process_data(&mut retry_ctx, chdr, ahdr, payload)
             }
@@ -280,7 +294,7 @@ impl Router {
 
     #[allow(clippy::too_many_arguments)]
     pub fn process_forward_data_packet<'io>(
-        &self,
+        &mut self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,
@@ -308,7 +322,7 @@ impl Router {
 
     #[allow(clippy::too_many_arguments)]
     fn process_backward_packet_raw<'io>(
-        &self,
+        &mut self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,
@@ -318,7 +332,16 @@ impl Router {
         payload: &mut Vec<u8>,
     ) -> core::result::Result<(), crate::types::Error> {
         use crate::node;
-        let policy = self.policy_runtime();
+        let policy = if self.registry.is_empty() {
+            None
+        } else {
+            Some(PolicyRuntime {
+                registry: &self.registry,
+                validator: &self.validator,
+                forward: self.forward_pipeline.as_ref(),
+                roles: &self.policy_roles,
+            })
+        };
         let mut ctx = node::NodeCtx {
             sv,
             now,
@@ -326,13 +349,14 @@ impl Router {
             replay,
             policy,
             exit: None,
+            tunnels: Some(&mut self.tunnels),
         };
         node::backward::process_data(&mut ctx, chdr, ahdr, payload)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn process_backward_data_packet<'io>(
-        &self,
+        &mut self,
         sv: crate::types::Sv,
         now: &'io dyn crate::time::TimeProvider,
         forward: &'io mut dyn crate::forward::Forward,

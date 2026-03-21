@@ -65,6 +65,7 @@ pub struct NodeCtx<'p, 'io, 'e> {
     pub replay: &'io mut dyn ReplayFilter,
     pub policy: Option<PolicyRuntime<'p>>,
     pub exit: Option<&'e mut dyn ExitTransport>,
+    pub tunnels: Option<&'io mut crate::tunnel::TunnelRegistry>,
 }
 
 // Optional helpers for setup path (per paper 4.3.4):

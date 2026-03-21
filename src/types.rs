@@ -332,7 +332,11 @@ impl Chdr {
         }
     }
 
-    pub fn from_raw_parts(typ: PacketType, hops: u8, specific: [u8; 16]) -> core::result::Result<Self, Error> {
+    pub fn from_raw_parts(
+        typ: PacketType,
+        hops: u8,
+        specific: [u8; 16],
+    ) -> core::result::Result<Self, Error> {
         let hops = HopCount::new(hops)?;
         match typ {
             PacketType::Setup => {
@@ -443,17 +447,23 @@ impl DataPacket<Raw> {
 }
 
 impl DataPacket<LenChecked> {
-    pub fn mark_forward_policy_checked(self) -> core::result::Result<DataPacket<ForwardPolicyChecked>, Error> {
+    pub fn mark_forward_policy_checked(
+        self,
+    ) -> core::result::Result<DataPacket<ForwardPolicyChecked>, Error> {
         Ok(self.transition())
     }
 
-    pub fn mark_backward_onion_processed(self) -> core::result::Result<DataPacket<BackwardOnionProcessed>, Error> {
+    pub fn mark_backward_onion_processed(
+        self,
+    ) -> core::result::Result<DataPacket<BackwardOnionProcessed>, Error> {
         Ok(self.transition())
     }
 }
 
 impl DataPacket<ForwardPolicyChecked> {
-    pub fn mark_forward_onion_processed(self) -> core::result::Result<DataPacket<ForwardOnionProcessed>, Error> {
+    pub fn mark_forward_onion_processed(
+        self,
+    ) -> core::result::Result<DataPacket<ForwardOnionProcessed>, Error> {
         Ok(self.transition())
     }
 }
@@ -464,7 +474,11 @@ pub enum Packet {
 }
 
 impl Packet {
-    pub fn from_wire_parts(chdr: Chdr, ahdr: Ahdr, payload: Vec<u8>) -> core::result::Result<Self, Error> {
+    pub fn from_wire_parts(
+        chdr: Chdr,
+        ahdr: Ahdr,
+        payload: Vec<u8>,
+    ) -> core::result::Result<Self, Error> {
         match chdr {
             Chdr::Setup { hops, exp } => Ok(Self::Setup(SetupPacket {
                 chdr: SetupChdr { hops, exp },

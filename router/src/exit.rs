@@ -1,15 +1,14 @@
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::fmt::Write as FmtWrite;
+use std::collections::BTreeMap;
+use std::fmt::Write as FmtWrite;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::string::String;
 use std::time::Duration;
+use std::vec::Vec;
 
-use crate::routing::IpAddr;
-use crate::types::Error;
-
-use super::{ExitMode, ExitTransport};
+use aurora::node::exit::{ExitMode, ExitTransport};
+use aurora::routing::IpAddr;
+use aurora::types::Error;
 
 const STREAM_DATA_OFFSET: usize = 64;
 
@@ -70,7 +69,13 @@ impl TcpExitTransport {
                     stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
                     self.sessions.insert(key, stream);
                 }
-                Ok(Vec::new())
+                let stream = self.sessions.get_mut(&key).ok_or(Error::Crypto)?;
+                if frame.data.is_empty() {
+                    return Ok(Vec::new());
+                }
+                stream.write_all(frame.data).map_err(|_| Error::Crypto)?;
+                stream.flush().map_err(|_| Error::Crypto)?;
+                read_available(stream)
             }
             StreamOp::Data => {
                 if !self.sessions.contains_key(&frame.session_id) {
@@ -136,17 +141,7 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
     })
 }
 
-/// Reads all currently available bytes from `stream` into a contiguous buffer.
-///
-/// The loop exits only when the OS signals that no more data is ready
-/// (`WouldBlock` / `TimedOut`) or the peer has closed the connection (`Ok(0)`).
-/// An earlier version broke out of the loop whenever a short read occurred
-/// (`n < buf.len()`), assuming that meant all data had been delivered.
-/// That heuristic is unreliable: the kernel may split a single logical message
-/// across several `read` calls regardless of how much data is waiting, so an
-/// early exit could cause the caller to silently discard the tail of a frame.
-/// Looping until `WouldBlock` is the correct termination condition for a
-/// non-blocking / timeout-configured socket.
+// Read until the OS reports that no more bytes are immediately available.
 fn read_available(stream: &mut TcpStream) -> core::result::Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];

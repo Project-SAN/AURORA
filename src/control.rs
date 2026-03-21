@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::types::{Error};
+use crate::types::Error;
 
 const MAGIC: &[u8; 4] = b"CTRL";
 const VERSION: u8 = 1;

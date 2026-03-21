@@ -1,0 +1,16 @@
+[package]
+name = "aurora-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aurora = { package = "aurora", path = ".." }
+rand_chacha = { version = "0.3", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+x25519-dalek = { version = "2", default-features = false }
+
+[[bin]]
+name = "aurora_proxy"
+path = "src/main.rs"

@@ -190,6 +190,10 @@ impl NetStack {
         };
 
         let free_handle = self.entries[free_idx].handle;
+        serial::write(format_args!(
+            "net: accept swap listener_id={} listener_handle={:?} free_idx={} free_handle={:?}\n",
+            listener_id, listener_handle, free_idx, free_handle
+        ));
         self.entries[free_idx].handle = listener_handle;
         self.entries[free_idx].state = SocketState::Established;
         self.entries[free_idx].listen_port = 0;
@@ -207,17 +211,49 @@ impl NetStack {
     }
 
     pub fn recv(&mut self, id: SocketId, buf: &mut [u8]) -> usize {
-        let handle = match self.socket_handle(id) {
-            Some(handle) => handle,
+        let idx = match self.valid_index(id) {
+            Some(idx) => idx,
             None => return 0,
         };
+        let handle = self.entries[idx].handle;
         let socket = self.sockets.get_mut::<tcp::Socket>(handle);
-        if !socket.can_recv() {
-            return 0;
-        }
         match socket.recv_slice(buf) {
-            Ok(size) => size,
-            Err(_) => 0,
+            Ok(size) => {
+                if size == 0 && buf.len() <= 4 {
+                    serial::write(format_args!(
+                        "net: recv zero id={} handle={:?} entry_state={:?} tcp_state={:?} active={} open={} may_recv={} may_send={} recv_q={} send_q={}\n",
+                        id,
+                        handle,
+                        self.entries[idx].state,
+                        socket.state(),
+                        socket.is_active(),
+                        socket.is_open(),
+                        socket.may_recv(),
+                        socket.may_send(),
+                        socket.recv_queue(),
+                        socket.send_queue()
+                    ));
+                }
+                size
+            }
+            Err(_) => {
+                if buf.len() <= 4 {
+                    serial::write(format_args!(
+                        "net: recv err id={} handle={:?} entry_state={:?} tcp_state={:?} active={} open={} may_recv={} may_send={} recv_q={} send_q={}\n",
+                        id,
+                        handle,
+                        self.entries[idx].state,
+                        socket.state(),
+                        socket.is_active(),
+                        socket.is_open(),
+                        socket.may_recv(),
+                        socket.may_send(),
+                        socket.recv_queue(),
+                        socket.send_queue()
+                    ));
+                }
+                0
+            }
         }
     }
 
@@ -236,6 +272,34 @@ impl NetStack {
         }
     }
 
+    pub fn send_queue(&mut self, id: SocketId) -> Option<usize> {
+        let handle = self.socket_handle(id)?;
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        Some(socket.send_queue())
+    }
+
+    pub fn trace_socket_state(&mut self, id: SocketId, label: &str) {
+        let Some(idx) = self.valid_index(id) else {
+            return;
+        };
+        let handle = self.entries[idx].handle;
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        serial::write(format_args!(
+            "net: {} id={} handle={:?} entry_state={:?} tcp_state={:?} active={} open={} may_recv={} may_send={} recv_q={} send_q={}\n",
+            label,
+            id,
+            handle,
+            self.entries[idx].state,
+            socket.state(),
+            socket.is_active(),
+            socket.is_open(),
+            socket.may_recv(),
+            socket.may_send(),
+            socket.recv_queue(),
+            socket.send_queue()
+        ));
+    }
+
     pub fn close(&mut self, id: SocketId) {
         let idx = match self.valid_index(id) {
             Some(idx) => idx,
@@ -246,6 +310,21 @@ impl NetStack {
         socket.abort();
         self.entries[idx].state = SocketState::Idle;
         self.entries[idx].listen_port = 0;
+    }
+
+    pub fn shutdown(&mut self, id: SocketId) -> bool {
+        let idx = match self.valid_index(id) {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let handle = self.entries[idx].handle;
+        let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+        if self.entries[idx].state == SocketState::Listening {
+            socket.abort();
+            return false;
+        }
+        socket.close();
+        true
     }
 
     pub fn connect(&mut self, id: SocketId, ip: [u8; 4], port: u16) -> Result<bool, ()> {

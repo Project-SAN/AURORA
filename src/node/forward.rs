@@ -7,6 +7,7 @@ use crate::{
     policy::PolicyCapsule,
     routing::{self, RouteElem},
     sphinx::derive_tau_tag,
+    tunnel::{TunnelOp, TunnelPrefix},
     types::{Ahdr, Chdr, Error, Exp, Nonce, RoutingSegment, Sv},
 };
 pub type Result<T> = core::result::Result<T, Error>;
@@ -28,76 +29,136 @@ pub fn process_data(
     if !ctx.replay.insert(tau) {
         return Err(crate::types::Error::Replay);
     }
+    let tunnel = TunnelPrefix::decode(payload.as_slice())?;
+    let (tunnel_prefix, tunnel_len) = match tunnel {
+        Some((prefix, len)) => (Some(prefix), len),
+        None => (None, 0),
+    };
     let capsule_len = if let Some(policy) = ctx.policy {
-        let role = match PolicyCapsule::decode(payload.as_slice()) {
-            Ok((capsule, _)) => {
-                // Role must be configured for this policy/router. Do not silently
-                // substitute a different role for ZKBoo.
-                let _meta = policy
-                    .registry
-                    .get(&capsule.policy_id)
-                    .ok_or(Error::PolicyViolation)?;
-                policy
-                    .roles
-                    .get(&capsule.policy_id)
-                    .copied()
-                    .ok_or(Error::PolicyViolation)?
+        if let Some(prefix) = tunnel_prefix {
+            match prefix.op {
+                TunnelOp::Open => {
+                    let role = match PolicyCapsule::decode(&payload[tunnel_len..]) {
+                        Ok((capsule, _)) => {
+                            if capsule.policy_id != prefix.policy_id {
+                                return Err(Error::PolicyViolation);
+                            }
+                            let _meta = policy
+                                .registry
+                                .get(&capsule.policy_id)
+                                .ok_or(Error::PolicyViolation)?;
+                            policy
+                                .roles
+                                .get(&capsule.policy_id)
+                                .copied()
+                                .ok_or(Error::PolicyViolation)?
+                        }
+                        Err(_) => return Err(Error::PolicyViolation),
+                    };
+                    let mut capsule_payload = payload[tunnel_len..].to_vec();
+                    Some(
+                        match policy.forward.enforce(
+                            policy.registry,
+                            &mut capsule_payload,
+                            policy.validator,
+                            role,
+                        )? {
+                            Some((_, consumed)) => consumed,
+                            None => return Err(Error::PolicyViolation),
+                        },
+                    )
+                }
+                TunnelOp::Continue | TunnelOp::Close => {
+                    let tunnels = ctx.tunnels.as_deref().ok_or(Error::PolicyViolation)?;
+                    if !tunnels.is_authorized(prefix) {
+                        return Err(Error::PolicyViolation);
+                    }
+                    Some(0)
+                }
             }
-            Err(_) => return Err(Error::PolicyViolation),
-        };
-        policy
-            .forward
-            .enforce(policy.registry, payload, policy.validator, role)?
-            .map(|(_, consumed)| consumed)
+        } else {
+            let role = match PolicyCapsule::decode(payload.as_slice()) {
+                Ok((capsule, _)) => {
+                    // Role must be configured for this policy/router. Do not silently
+                    // substitute a different role for ZKBoo.
+                    let _meta = policy
+                        .registry
+                        .get(&capsule.policy_id)
+                        .ok_or(Error::PolicyViolation)?;
+                    policy
+                        .roles
+                        .get(&capsule.policy_id)
+                        .copied()
+                        .ok_or(Error::PolicyViolation)?
+                }
+                Err(_) => return Err(Error::PolicyViolation),
+            };
+            policy
+                .forward
+                .enforce(policy.registry, payload, policy.validator, role)?
+                .map(|(_, consumed)| consumed)
+        }
     } else {
         None
     }
     .or_else(|| {
-        PolicyCapsule::decode(payload.as_slice())
+        PolicyCapsule::decode(&payload[tunnel_len..])
             .ok()
             .map(|(_, len)| len)
     })
     .unwrap_or(0);
+    let prefix_len = tunnel_len + capsule_len;
 
     use crate::types::PacketDirection;
 
     let mut iv = chdr.nonce().ok_or(Error::Length)?.0;
-    if capsule_len >= payload.len() {
+    if prefix_len >= payload.len() {
         // nothing beyond the capsule to decrypt for the next hop
         chdr.set_nonce(Nonce(iv))?;
-        return ctx.forward.send(
+        let res = ctx.forward.send(
             &res.r,
             chdr,
             &res.ahdr_next,
             payload,
             PacketDirection::Forward,
         );
+        if res.is_ok() {
+            update_tunnel_registry(ctx, tunnel_prefix);
+        }
+        return res;
     }
 
-    onion::remove_layer_suffix(&res.s, &mut iv, payload, capsule_len)?;
+    onion::remove_layer_suffix(&res.s, &mut iv, payload, prefix_len)?;
     chdr.set_nonce(Nonce(iv))?;
 
     if let Ok(elems) = routing::elems_from_segment(&res.r) {
         if let Some(RouteElem::ExitTcp { addr, port }) = elems.first() {
             let mut exit = ctx.exit.take();
-            let tail = &mut payload[capsule_len..];
+            let tail = &mut payload[prefix_len..];
             let res = if let Some(exit) = exit.as_deref_mut() {
                 handle_exit(ctx, exit, addr, *port, chdr.hops(), tail)
             } else {
                 Err(Error::NotImplemented)
             };
             ctx.exit = exit;
+            if res.is_ok() {
+                update_tunnel_registry(ctx, tunnel_prefix);
+            }
             return res;
         }
     }
 
-    ctx.forward.send(
+    let res = ctx.forward.send(
         &res.r,
         chdr,
         &res.ahdr_next,
         payload,
         PacketDirection::Forward,
-    )
+    );
+    if res.is_ok() {
+        update_tunnel_registry(ctx, tunnel_prefix);
+    }
+    res
 }
 
 // Optional helpers for setup path (per paper 4.3.4):
@@ -211,5 +272,19 @@ fn leaf_len(bytes: &[u8]) -> Result<usize> {
             Ok(1 + 4 + len_a + 4 + len_b)
         }
         _ => Err(Error::Length),
+    }
+}
+
+fn update_tunnel_registry(ctx: &mut NodeCtx<'_, '_, '_>, prefix: Option<TunnelPrefix>) {
+    let Some(prefix) = prefix else {
+        return;
+    };
+    let Some(tunnels) = ctx.tunnels.as_deref_mut() else {
+        return;
+    };
+    match prefix.op {
+        TunnelOp::Open => tunnels.authorize(prefix),
+        TunnelOp::Close => tunnels.close(prefix),
+        TunnelOp::Continue => {}
     }
 }

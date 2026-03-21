@@ -274,7 +274,11 @@ fn sys_net_recv(handle: u64, buf: u64, len: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         let slice = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, max_len) };
-        stack.recv(handle, slice) as u64
+        let n = stack.recv(handle, slice) as u64;
+        if n > 0 {
+            serial::write(format_args!("net: recv handle={} len={}\n", handle, n));
+        }
+        n
     })
 }
 
@@ -286,14 +290,39 @@ fn sys_net_send(handle: u64, buf: u64, len: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
         let slice = unsafe { core::slice::from_raw_parts(buf as *const u8, max_len) };
-        stack.send(handle, slice) as u64
+        if max_len <= 4096 {
+            stack.trace_socket_state(handle, "send_pre");
+        }
+        let sent = stack.send(handle, slice) as u64;
+        if sent > 0 {
+            let drain_loops = if max_len <= 4096 { 20_000 } else { 2_048 };
+            for _ in 0..drain_loops {
+                let _ = stack.poll(device, net::now());
+                if stack.send_queue(handle).unwrap_or(0) == 0 {
+                    break;
+                }
+            }
+        }
+        if max_len <= 4096 {
+            stack.trace_socket_state(handle, "send_post");
+        }
+        sent
     })
 }
 
 fn sys_net_close(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
+        stack.trace_socket_state(handle, "close_pre");
+        if stack.shutdown(handle) {
+            for _ in 0..500 {
+                let _ = stack.poll(device, net::now());
+            }
+            stack.trace_socket_state(handle, "close_post_shutdown");
+            return 0;
+        }
         stack.close(handle);
+        stack.trace_socket_state(handle, "close_post_abort");
         0
     })
 }

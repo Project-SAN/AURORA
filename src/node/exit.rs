@@ -20,9 +20,3 @@ pub trait ExitTransport {
         request: &[u8],
     ) -> core::result::Result<Vec<u8>, crate::types::Error>;
 }
-
-#[cfg(feature = "std")]
-#[path = "exit_std.rs"]
-mod exit_std;
-#[cfg(feature = "std")]
-pub use exit_std::TcpExitTransport;

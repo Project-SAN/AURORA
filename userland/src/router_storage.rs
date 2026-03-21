@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use crate::fs;
 use aurora::router::storage::{RouterStorage, StoredState};
-use aurora::types::{Error, Result};
+use aurora::types::Error;
 
 pub struct UserlandRouterStorage {
     path: String,
@@ -18,18 +18,18 @@ impl UserlandRouterStorage {
 }
 
 impl RouterStorage for UserlandRouterStorage {
-    fn load(&self) -> Result<StoredState> {
+    fn load(&self) -> core::result::Result<StoredState, Error> {
         let data = read_all(&self.path)?;
         serde_json::from_slice(&data).map_err(|_| Error::Crypto)
     }
 
-    fn save(&self, state: &StoredState) -> Result<()> {
+    fn save(&self, state: &StoredState) -> core::result::Result<(), Error> {
         let data = serde_json::to_vec_pretty(state).map_err(|_| Error::Crypto)?;
         write_all(&self.path, &data)
     }
 }
 
-fn read_all(path: &str) -> Result<Vec<u8>> {
+fn read_all(path: &str) -> core::result::Result<Vec<u8>, Error> {
     let handle = fs::open(path, fs::O_READ).ok_or(Error::Crypto)?;
     let mut out = Vec::new();
     let mut buf = [0u8; 512];
@@ -49,7 +49,7 @@ fn read_all(path: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn write_all(path: &str, data: &[u8]) -> Result<()> {
+fn write_all(path: &str, data: &[u8]) -> core::result::Result<(), Error> {
     let handle = fs::open(path, fs::O_CREATE | fs::O_WRITE | fs::O_TRUNC).ok_or(Error::Crypto)?;
     let mut offset = 0usize;
     while offset < data.len() {
