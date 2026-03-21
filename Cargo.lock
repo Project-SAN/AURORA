@@ -66,18 +66,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aurora-proxy"
-version = "0.1.0"
-dependencies = [
- "aurora",
- "rand_chacha",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "x25519-dalek",
-]
-
-[[package]]
 name = "aurora-router"
 version = "0.1.0"
 dependencies = [
@@ -908,6 +896,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proxy"
+version = "0.1.0"
+dependencies = [
+ "aurora",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "x25519-dalek",
 ]
 
 [[package]]

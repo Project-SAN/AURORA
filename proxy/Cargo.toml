@@ -1,5 +1,5 @@
 [package]
-name = "aurora-proxy"
+name = "proxy"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,5 +12,5 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "2", default-features = false }
 
 [[bin]]
-name = "aurora_proxy"
+name = "proxy"
 path = "src/main.rs"
