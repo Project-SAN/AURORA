@@ -12,7 +12,6 @@ name = "aurora"
 
 [features]
 default = []
-std = []
 localnet-debug = []
 
 [dependencies]
@@ -45,7 +44,6 @@ panic = "abort"
 [[bench]]
 name = "aurora"
 harness = false
-required-features = ["std"]
 
 [[bench]]
 name = "zkboo"

@@ -8,19 +8,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aurora::core::policy::ProofKind;
 use aurora::core::policy::{
-    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_KEY_HASH,
-    EXT_TAG_PAYLOAD_HASH, EXT_TAG_SEQUENCE,
+    encode_extensions_into, CapsuleExtensionRef, AUX_MAX, EXT_TAG_KEY_HASH, EXT_TAG_PAYLOAD_HASH,
+    EXT_TAG_SEQUENCE,
 };
 use aurora::crypto::ascon::{mix_fold, MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use aurora::crypto::zkp::Circuit;
 use aurora::policy::blocklist;
 use aurora::policy::zkboo::ZkBooProofService;
-use aurora::policy::{PolicyMetadata, POLICY_ID_TLV};
 use aurora::policy::TargetValue;
+use aurora::policy::{PolicyMetadata, POLICY_ID_TLV};
 use aurora::router::storage::StoredState;
 use aurora::routing::{self, IpAddr, RouteElem};
-use aurora::setup::wire;
 use aurora::setup::directory::RouteAnnouncement;
+use aurora::setup::wire;
 use aurora::tunnel::{TunnelOp, TunnelPrefix};
 use aurora::types::{Chdr, Nonce, PacketType, Si};
 use aurora::utils::decode_hex;
@@ -193,7 +193,10 @@ fn handle_connect_tunnel(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(6);
-    let max_chunk = cfg.connect_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
+    let max_chunk = cfg
+        .connect_payload_len
+        .saturating_sub(STREAM_DATA_OFFSET)
+        .max(1);
     let mut chunk = vec![0u8; max_chunk];
     let mut tunnel_opened = false;
     loop {
@@ -250,7 +253,8 @@ fn handle_connect_tunnel(
                     } else {
                         cfg.connect_payload_len
                     };
-                    let frame_data_cap = frame_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
+                    let frame_data_cap =
+                        frame_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
                     let (frame_end, data_part) = if open_now {
                         (sent_offset, &chunk[sent_offset..sent_offset])
                     } else {
@@ -282,11 +286,7 @@ fn handle_connect_tunnel(
                             data_part.len()
                         );
                     }
-                    let frame_timeout_secs = if open_now {
-                        0
-                    } else {
-                        push_timeout_secs
-                    };
+                    let frame_timeout_secs = if open_now { 0 } else { push_timeout_secs };
                     let response = if let Some(session) = policy_session.as_mut() {
                         let saved_rounds = session.rounds;
                         if open_now {
@@ -379,7 +379,12 @@ fn handle_connect_tunnel(
                 session_id, current_poll_timeout
             );
             let response = if let Some(session) = policy_session.as_mut() {
-                session.send(TunnelOp::Continue, session_id, &payload, current_poll_timeout)?
+                session.send(
+                    TunnelOp::Continue,
+                    session_id,
+                    &payload,
+                    current_poll_timeout,
+                )?
             } else {
                 send_connect_payload(
                     cfg,
@@ -458,12 +463,15 @@ fn send_connect_payload(
             == Some("1");
         let allow_internal_fallback =
             env::var("HORNET_PROXY_INTERNAL_FALLBACK").ok().as_deref() == Some("1");
-        if fallback_on_empty && response.is_empty() && (degrade_on_empty || allow_internal_fallback) {
+        if fallback_on_empty && response.is_empty() && (degrade_on_empty || allow_internal_fallback)
+        {
             eprintln!("[proxy] route-only internal empty response tolerated");
         }
         return Ok(response);
     }
-    Err(format!("route-only tunnel session unavailable for target={target}"))
+    Err(format!(
+        "route-only tunnel session unavailable for target={target}"
+    ))
 }
 
 #[derive(Clone, Deserialize)]
@@ -573,8 +581,9 @@ impl PolicyTunnelSession {
             fses_b.push(fs);
         }
         let mut ahdr_b_rng = ChaCha20Rng::seed_from_u64(derive_seed() ^ 0xBEEF_BEEF);
-        let backward_ahdr = aurora::packet::ahdr::create_ahdr(&keys_b, &fses_b, hops, &mut ahdr_b_rng)
-            .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
+        let backward_ahdr =
+            aurora::packet::ahdr::create_ahdr(&keys_b, &fses_b, hops, &mut ahdr_b_rng)
+                .map_err(|err| format!("failed to build Backward AHDR: {err:?}"))?;
         let mut backward_keys_reversed = keys_b;
         backward_keys_reversed.reverse();
         eprintln!(
@@ -797,8 +806,13 @@ impl PolicyTunnelSession {
             .map_err(|_| "failed to encode capsule".to_string())
     }
 
-    fn send_request(&mut self, request_payload: &[u8], timeout_secs: u64) -> Result<Vec<u8>, String> {
-        let request_payload = normalize_payload_len(request_payload, policy_payload_len(&self.policy_meta)?)?;
+    fn send_request(
+        &mut self,
+        request_payload: &[u8],
+        timeout_secs: u64,
+    ) -> Result<Vec<u8>, String> {
+        let request_payload =
+            normalize_payload_len(request_payload, policy_payload_len(&self.policy_meta)?)?;
         let capsule_buf = self.build_capsule(&request_payload)?;
         self.send_inner(&request_payload, &capsule_buf, timeout_secs)
     }

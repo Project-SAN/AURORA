@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aurora = { package = "aurora", path = "..", features = ["std"] }
+aurora = { package = "aurora", path = ".." }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 ureq = { version = "2.9", default-features = false, features = ["json", "tls"], optional = true }
 

@@ -393,11 +393,7 @@ fn parse_stream_frame(req: &[u8]) -> Option<StreamFrame<'_>> {
     })
 }
 
-fn connect_ipv4(
-    socket: &TcpSocket,
-    ip: [u8; 4],
-    port: u16,
-) -> core::result::Result<(), Error> {
+fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16) -> core::result::Result<(), Error> {
     let mut state = socket.connect(ip, port).map_err(|_| Error::Crypto)?;
     let mut spins = 0u32;
     while state == ConnectState::InProgress {

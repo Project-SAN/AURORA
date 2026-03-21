@@ -1,8 +1,6 @@
 use crate::crypto::{kdf::mac_key, mac, prg};
 use crate::packet::core::open;
-use crate::types::{
-    Ahdr, AhdrLen, Error, Exp, Fs, RMax, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN,
-};
+use crate::types::{Ahdr, AhdrLen, Error, Exp, Fs, RMax, RoutingSegment, Si, Sv, C_BLOCK, FS_LEN};
 use alloc::vec;
 use alloc::vec::Vec;
 use rand_core::RngCore;
