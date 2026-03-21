@@ -1,9 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::types::Error;
-
-use super::{RouterStorage, StoredState};
+use aurora::router::storage::{RouterStorage, StoredState};
+use aurora::types::Error;
 
 pub struct FileRouterStorage {
     path: PathBuf,

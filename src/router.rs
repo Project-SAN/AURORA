@@ -17,12 +17,10 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub mod config;
 pub mod io;
 pub mod penalty;
 pub mod runtime;
 pub mod storage;
-pub mod sync;
 
 /// High-level router facade that owns policy state and validation pipelines.
 pub struct Router {

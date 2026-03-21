@@ -5,7 +5,7 @@
 ## 前提
 
 - Rust toolchain がインストール済み。
-- `cargo run --bin aurora_router` を実行できること（`std` feature はデフォルト有効）。
+- `cargo run -p aurora-router` を実行できること。
 - `nc` や `ncat` 等、シンプルな TCP サーバ/クライアントが利用可能であること（エグジット側の出口確認用）。
 
 ## 設定ファイル
@@ -35,13 +35,13 @@ nc -lk 7200
 
 ```bash
 # 入口ルータ
-env $(cat config/localnet/router-entry.env | xargs) cargo run --bin aurora_router
+env $(cat config/localnet/router-entry.env | xargs) cargo run -p aurora-router
 
 # 中継ルータ
-env $(cat config/localnet/router-middle.env | xargs) cargo run --bin aurora_router
+env $(cat config/localnet/router-middle.env | xargs) cargo run -p aurora-router
 
 # 出口ルータ
-env $(cat config/localnet/router-exit.env | xargs) cargo run --bin aurora_router
+env $(cat config/localnet/router-exit.env | xargs) cargo run -p aurora-router
 ```
 
 - 各ルータは自分専用の `router-*.directory.json` を読み込み、`target/localnet/router-*-state.json` にポリシー/ルート/SV を永続化します。
@@ -72,8 +72,9 @@ scripts/localnet_down.sh
 ```bash
 HORNET_PROXY_BIND=127.0.0.1:18080 \
 HORNET_POLICY_INFO=config/localnet/policy-info.json \
+HORNET_PROXY_ROUTE_ONLY=0 \
 HORNET_PROXY_ZKBOO_ROUNDS=8 \
-cargo run --features std --bin aurora_proxy
+cargo run -p aurora-proxy
 ```
 
 例:

@@ -1,14 +1,13 @@
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::fmt::Write as FmtWrite;
+use std::fmt::Write as FmtWrite;
+use std::io::{Read, Write};
+use std::string::String;
+use std::vec::Vec;
 
-use crate::forward::Forward;
-use crate::routing::{self, IpAddr, RouteElem};
-use crate::types::{Ahdr, Chdr, Error, PacketDirection, RoutingSegment, Sv};
-
-use super::{
-    encode_frame_bytes, read_incoming_packet, IncomingPacket, PacketListener, PacketReader,
-};
+use aurora::forward::Forward;
+pub use aurora::router::io::{IncomingPacket, PacketListener, PacketReader};
+use aurora::router::io::{encode_frame_bytes, read_incoming_packet};
+use aurora::routing::{self, IpAddr, RouteElem};
+use aurora::types::{Ahdr, Chdr, Error, PacketDirection, RoutingSegment, Sv};
 
 fn format_ip(addr: &IpAddr, port: u16) -> String {
     match addr {
@@ -33,9 +32,19 @@ fn format_ip(addr: &IpAddr, port: u16) -> String {
     }
 }
 
-impl<T: std::io::Read> PacketReader for T {
+struct StdPacketReader<T> {
+    inner: T,
+}
+
+impl<T> StdPacketReader<T> {
+    fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<T: Read> PacketReader for StdPacketReader<T> {
     fn read_exact(&mut self, buf: &mut [u8]) -> core::result::Result<(), Error> {
-        std::io::Read::read_exact(self, buf).map_err(|_| Error::Crypto)
+        self.inner.read_exact(buf).map_err(|_| Error::Crypto)
     }
 }
 
@@ -50,16 +59,13 @@ impl TcpPacketListener {
         listener.set_nonblocking(false)?;
         Ok(Self { listener, sv })
     }
-
-    pub fn update_sv(&mut self, sv: Sv) {
-        self.sv = sv;
-    }
 }
 
 impl PacketListener for TcpPacketListener {
     fn next(&mut self) -> core::result::Result<Option<IncomingPacket>, Error> {
-        let (mut stream, _) = self.listener.accept().map_err(|_| Error::Crypto)?;
-        let packet = read_incoming_packet(&mut stream, self.sv)?;
+        let (stream, _) = self.listener.accept().map_err(|_| Error::Crypto)?;
+        let mut reader = StdPacketReader::new(stream);
+        let packet = read_incoming_packet(&mut reader, self.sv)?;
         Ok(Some(packet))
     }
 }
@@ -107,7 +113,7 @@ impl Forward for TcpForward {
                 let mut stream =
                     std::net::TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
-                std::io::Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
+                Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
             }
             RouteElem::ExitTcp { addr, port } => {
                 let addr_str = format_ip(addr, *port);
@@ -121,7 +127,7 @@ impl Forward for TcpForward {
                 let mut stream =
                     std::net::TcpStream::connect(addr_str).map_err(|_| Error::Crypto)?;
                 let frame = encode_frame_bytes(direction, chdr, ahdr, payload.as_slice());
-                std::io::Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
+                Write::write_all(&mut stream, &frame).map_err(|_| Error::Crypto)
             }
         }
     }
@@ -130,9 +136,10 @@ impl Forward for TcpForward {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routing::{self, IpAddr as RouteIp, RouteElem};
-    use crate::types::{HopCount, Nonce, Sv, C_BLOCK};
     use std::io::Cursor;
+
+    use aurora::routing::{IpAddr as RouteIp, RouteElem};
+    use aurora::types::{C_BLOCK, HopCount, Nonce, Packet, Sv};
 
     #[test]
     fn tcp_forward_resolves_first_hop_from_multihop_segment() {
@@ -158,16 +165,17 @@ mod tests {
         };
         let payload = vec![0xDD, 0xEE, 0xFF];
         let frame = encode_frame_bytes(PacketDirection::Forward, &chdr, &ahdr, &payload);
-        let mut cursor = Cursor::new(frame);
-        let incoming = read_incoming_packet(&mut cursor, Sv([0x11; 16])).expect("decode");
+        let cursor = Cursor::new(frame);
+        let mut reader = StdPacketReader::new(cursor);
+        let incoming = read_incoming_packet(&mut reader, Sv([0x11; 16])).expect("decode");
         assert_eq!(incoming.direction, PacketDirection::Forward);
         match incoming.packet {
-            crate::types::Packet::Data(pkt) => {
+            Packet::Data(pkt) => {
                 assert_eq!(pkt.chdr.hops.get(), 1);
                 assert_eq!(pkt.ahdr.bytes, ahdr.bytes);
                 assert_eq!(pkt.payload, payload);
             }
-            crate::types::Packet::Setup(_) => panic!("expected data packet"),
+            Packet::Setup(_) => panic!("expected data packet"),
         }
     }
 }

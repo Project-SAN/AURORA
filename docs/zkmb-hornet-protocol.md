@@ -393,7 +393,7 @@ No TLV is used for these fields; the concatenation order is fixed.
 - `ip_version` is `0x04` or `0x06`.
 - `target_port` is big‑endian.
 
-This definition matches the client-side route selection logic in `src/bin/proxy.rs`.
+This definition matches the client-side route selection logic in `proxy/src/main.rs`.
 
 #### Public input encoding (KeyBinding)
 
@@ -515,7 +515,7 @@ Key locations:
 - Forward pipeline: `src/node/forward.rs`
 - Backward pipeline: `src/node/backward.rs`
 - TCP I/O: `src/router/io.rs`
-- Client build: `src/bin/proxy.rs`
+- Client build: `proxy/src/main.rs`
 
 ## 10. Known Limitations
 
