@@ -70,7 +70,13 @@ impl TcpExitTransport {
                     stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
                     self.sessions.insert(key, stream);
                 }
-                Ok(Vec::new())
+                let stream = self.sessions.get_mut(&key).ok_or(Error::Crypto)?;
+                if frame.data.is_empty() {
+                    return Ok(Vec::new());
+                }
+                stream.write_all(frame.data).map_err(|_| Error::Crypto)?;
+                stream.flush().map_err(|_| Error::Crypto)?;
+                read_available(stream)
             }
             StreamOp::Data => {
                 if !self.sessions.contains_key(&frame.session_id) {

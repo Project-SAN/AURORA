@@ -45,16 +45,12 @@ dependencies = [
  "libc",
  "rand_chacha",
  "rand_core 0.6.4",
- "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
  "sha3",
  "spin",
  "subtle",
- "ureq",
- "webpki-roots 0.26.11",
  "x25519-dalek",
 ]
 
@@ -67,6 +63,30 @@ dependencies = [
  "hadris-fat",
  "smoltcp",
  "uefi",
+]
+
+[[package]]
+name = "aurora-proxy"
+version = "0.1.0"
+dependencies = [
+ "aurora",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "aurora-router"
+version = "0.1.0"
+dependencies = [
+ "aurora",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "serde_json",
+ "ureq",
+ "x25519-dalek",
 ]
 
 [[package]]

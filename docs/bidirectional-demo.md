@@ -46,7 +46,7 @@ ls config/localnet
 HORNET_ROUTER_BIND=127.0.0.1:7101 \
 HORNET_DIRECTORY_PATH=config/localnet/router-entry.directory.json \
 HORNET_STORAGE_PATH=target/localnet/router-entry-state.json \
-cargo run --bin aurora_router
+cargo run -p aurora-router
 ```
 
 **Middle Router (ターミナル2):**
@@ -54,7 +54,7 @@ cargo run --bin aurora_router
 HORNET_ROUTER_BIND=127.0.0.1:7102 \
 HORNET_DIRECTORY_PATH=config/localnet/router-middle.directory.json \
 HORNET_STORAGE_PATH=target/localnet/router-middle-state.json \
-cargo run --bin aurora_router
+cargo run -p aurora-router
 ```
 
 **Exit Router (ターミナル3):**
@@ -62,7 +62,7 @@ cargo run --bin aurora_router
 HORNET_ROUTER_BIND=127.0.0.1:7103 \
 HORNET_DIRECTORY_PATH=config/localnet/router-exit.directory.json \
 HORNET_STORAGE_PATH=target/localnet/router-exit-state.json \
-cargo run --bin aurora_router
+cargo run -p aurora-router
 ```
 
 各ルータが正常に起動すると、それぞれのポート（7101, 7102, 7103）でリスニングを開始します。
@@ -82,7 +82,7 @@ python3 -m http.server 8080
 データセンダーを実行して、双方向通信をテストします：
 
 ```bash
-cargo run --features std --bin aurora_proxy
+HORNET_PROXY_ROUTE_ONLY=0 cargo run -p aurora-proxy
 ```
 
 ### 期待される出力
@@ -187,7 +187,7 @@ curl -x http://127.0.0.1:18080 http://127.0.0.1:8080/
 ### レスポンスが暗号化されたまま
 
 これは修正済みですが、もし発生した場合は：
-- `src/bin/proxy.rs` で backward 鍵の順序が正しく `reverse()` されているか確認
+- `proxy/src/main.rs` で backward 鍵の順序が正しく `reverse()` されているか確認
 - `src/node/backward.rs` でポリシーカプセルの処理が削除されているか確認
 
 ## ログの確認

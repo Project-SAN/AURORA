@@ -8,8 +8,8 @@ AURORA is an experimental privacy-preserving routing and middlebox prototype bui
 
 ```sh
 cargo build --release
-cargo run --bin aurora_router
-cargo run --bin aurora_proxy
+cargo run -p aurora-router
+cargo run -p aurora-proxy
 ```
 
 For a minimal local setup, see [docs/localnet-three-router.md](docs/localnet-three-router.md).
@@ -17,4 +17,3 @@ For a minimal local setup, see [docs/localnet-three-router.md](docs/localnet-thr
 ## Status
 
 Experimental research code. Not audited.
-

@@ -75,7 +75,7 @@ fn handle_client(stream: &mut TcpStream) -> Result<(), String> {
 
     let req = read_http_request(stream)?;
     let (method, target_host, target_port) = parse_target(&req)?;
-    let route_only = env::var("HORNET_PROXY_ROUTE_ONLY").unwrap_or_else(|_| "1".to_string());
+    let route_only = env::var("HORNET_PROXY_ROUTE_ONLY").unwrap_or_else(|_| "0".to_string());
     let default_payload_len = if route_only == "1" { 512 } else { 96 };
     let cfg = SenderConfig {
         policy_info: env::var("HORNET_POLICY_INFO")
@@ -133,10 +133,6 @@ fn handle_connect_tunnel(
     target: &str,
     host: &str,
 ) -> Result<(), String> {
-    let open_timeout_secs = env::var("HORNET_CONNECT_OPEN_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20);
     let poll_timeout_override = env::var("HORNET_CONNECT_POLL_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
@@ -255,8 +251,12 @@ fn handle_connect_tunnel(
                         cfg.connect_payload_len
                     };
                     let frame_data_cap = frame_payload_len.saturating_sub(STREAM_DATA_OFFSET).max(1);
-                    let frame_end = core::cmp::min(total, sent_offset + frame_data_cap);
-                    let data_part = &chunk[sent_offset..frame_end];
+                    let (frame_end, data_part) = if open_now {
+                        (sent_offset, &chunk[sent_offset..sent_offset])
+                    } else {
+                        let frame_end = core::cmp::min(total, sent_offset + frame_data_cap);
+                        (frame_end, &chunk[sent_offset..frame_end])
+                    };
                     let payload = build_stream_payload(
                         frame_payload_len,
                         cfg.host_offset,
@@ -283,7 +283,7 @@ fn handle_connect_tunnel(
                         );
                     }
                     let frame_timeout_secs = if open_now {
-                        open_timeout_secs
+                        0
                     } else {
                         push_timeout_secs
                     };
@@ -324,7 +324,7 @@ fn handle_connect_tunnel(
                             .map_err(|e| format!("write tunnel response: {e}"))?;
                         last_tunnel_to_client = Instant::now();
                     }
-                    if send_gap_ms > 0 {
+                    if send_gap_ms > 0 && !open_now {
                         thread::sleep(Duration::from_millis(send_gap_ms));
                     }
                     sent_offset = frame_end;
@@ -490,6 +490,7 @@ struct PolicyTunnelSession {
     target_ip: IpAddr,
     target_port: u16,
     entry_addr: String,
+    listener: TcpListener,
     backward_keys_reversed: Vec<Si>,
     backward_ahdr_bytes: Vec<u8>,
     rounds: u16,
@@ -588,6 +589,7 @@ impl PolicyTunnelSession {
             target_ip,
             target_port,
             entry_addr,
+            listener,
             backward_keys_reversed,
             backward_ahdr_bytes: backward_ahdr.bytes,
             rounds,
@@ -675,36 +677,15 @@ impl PolicyTunnelSession {
         payload.extend_from_slice(&capsule_buf);
         payload.extend_from_slice(&encrypted_tail);
         let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
-        let mut stream = send_frame_to(&self.entry_addr, &frame)?;
+        send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
 
-        if timeout_secs == 0 {
-            return Ok(Vec::new());
-        }
-        stream
-            .set_read_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
-            .map_err(|e| format!("set read timeout response stream: {e}"))?;
-        let frame = match read_backward_frame(&mut stream) {
-            Ok(v) => v,
-            Err(err) => {
-                eprintln!("[proxy][policy] read backward failed: {err}");
-                return Ok(Vec::new());
-            }
-        };
-        let mut payload = frame.payload;
-        let mut iv_resp = frame.specific;
-        if aurora::source::decrypt_backward_payload(
+        wait_for_backward_response(
+            &self.listener,
+            timeout_secs,
             &self.backward_keys_reversed,
-            &mut iv_resp,
-            &mut payload,
+            "[proxy][policy]",
         )
-        .is_ok()
-        {
-            eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
-            return Ok(payload);
-        }
-        eprintln!("[proxy][policy] stale/unmatched response ignored");
-        Ok(Vec::new())
     }
 
     fn build_capsule(&mut self, request_payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -882,36 +863,15 @@ impl PolicyTunnelSession {
         payload.extend_from_slice(capsule_buf);
         payload.extend_from_slice(&encrypted_tail);
         let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
-        let mut stream = send_frame_to(&self.entry_addr, &frame)?;
+        send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
 
-        if timeout_secs == 0 {
-            return Ok(Vec::new());
-        }
-        stream
-            .set_read_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
-            .map_err(|e| format!("set read timeout response stream: {e}"))?;
-        let frame = match read_backward_frame(&mut stream) {
-            Ok(v) => v,
-            Err(err) => {
-                eprintln!("[proxy][policy] read backward failed: {err}");
-                return Ok(Vec::new());
-            }
-        };
-        let mut payload = frame.payload;
-        let mut iv_resp = frame.specific;
-        if aurora::source::decrypt_backward_payload(
+        wait_for_backward_response(
+            &self.listener,
+            timeout_secs,
             &self.backward_keys_reversed,
-            &mut iv_resp,
-            &mut payload,
+            "[proxy][policy]",
         )
-        .is_ok()
-        {
-            eprintln!("[proxy][policy] response decrypted bytes={}", payload.len());
-            return Ok(payload);
-        }
-        eprintln!("[proxy][policy] stale/unmatched response ignored");
-        Ok(Vec::new())
     }
 }
 
@@ -1086,62 +1046,73 @@ impl RouteOnlyTunnelSession {
 
         let mut keys_b_reversed = keys_b;
         keys_b_reversed.reverse();
-        if timeout_secs == 0 {
-            eprintln!("[proxy][route-only] response wait skipped");
-            return Ok(Vec::new());
-        }
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
-        loop {
-            if Instant::now() >= deadline {
-                eprintln!("[proxy][route-only] response timeout");
-                return Ok(Vec::new());
-            }
-            match self.listener.accept() {
-                Ok((mut stream, _)) => {
-                    stream
-                        .set_nonblocking(false)
-                        .map_err(|e| format!("set blocking response stream: {e}"))?;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
-                    stream
-                        .set_read_timeout(Some(read_timeout))
-                        .map_err(|e| format!("set read timeout response stream: {e}"))?;
-                    let frame = match read_backward_frame(&mut stream) {
-                        Ok(v) => v,
-                        Err(err) => {
-                            eprintln!("[proxy][route-only] read backward failed: {err}");
-                            continue;
-                        }
-                    };
-                    let mut payload = frame.payload;
-                    let mut iv_resp = frame.specific;
-                    if aurora::source::decrypt_backward_payload(
-                        &keys_b_reversed,
-                        &mut iv_resp,
-                        &mut payload,
-                    )
-                    .is_ok()
-                    {
-                        eprintln!(
-                            "[proxy][route-only] response decrypted bytes={}",
-                            payload.len()
-                        );
-                        return Ok(payload);
-                    }
-                    eprintln!("[proxy][route-only] stale/unmatched response ignored");
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(2));
-                }
-                Err(e) => return Err(format!("accept response failed: {e}")),
-            }
-        }
+        wait_for_backward_response(
+            &self.listener,
+            timeout_secs,
+            &keys_b_reversed,
+            "[proxy][route-only]",
+        )
     }
 }
 
 struct BackwardFrame {
     specific: [u8; 16],
     payload: Vec<u8>,
+}
+
+fn wait_for_backward_response(
+    listener: &TcpListener,
+    timeout_secs: u64,
+    backward_keys_reversed: &[Si],
+    log_prefix: &str,
+) -> Result<Vec<u8>, String> {
+    if timeout_secs == 0 {
+        eprintln!("{log_prefix} response wait skipped");
+        return Ok(Vec::new());
+    }
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+    loop {
+        if Instant::now() >= deadline {
+            eprintln!("{log_prefix} response timeout");
+            return Ok(Vec::new());
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|e| format!("set blocking response stream: {e}"))?;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let read_timeout = core::cmp::max(remaining, Duration::from_millis(500));
+                stream
+                    .set_read_timeout(Some(read_timeout))
+                    .map_err(|e| format!("set read timeout response stream: {e}"))?;
+                let frame = match read_backward_frame(&mut stream) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        eprintln!("{log_prefix} read backward failed: {err}");
+                        continue;
+                    }
+                };
+                let mut payload = frame.payload;
+                let mut iv_resp = frame.specific;
+                if aurora::source::decrypt_backward_payload(
+                    backward_keys_reversed,
+                    &mut iv_resp,
+                    &mut payload,
+                )
+                .is_ok()
+                {
+                    eprintln!("{log_prefix} response decrypted bytes={}", payload.len());
+                    return Ok(payload);
+                }
+                eprintln!("{log_prefix} stale/unmatched response ignored");
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(e) => return Err(format!("accept response failed: {e}")),
+        }
+    }
 }
 
 fn read_backward_frame(stream: &mut TcpStream) -> Result<BackwardFrame, String> {

@@ -102,9 +102,3 @@ pub fn read_incoming_packet<R: PacketReader>(
         )?,
     })
 }
-
-#[cfg(feature = "std")]
-#[path = "io_std.rs"]
-mod io_std;
-#[cfg(feature = "std")]
-pub use io_std::{TcpForward, TcpPacketListener};
