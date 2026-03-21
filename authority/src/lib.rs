@@ -1,15 +1,11 @@
-//! Minimal placeholder for the authority crate.
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 
-pub fn hello() -> &'static str {
-    "hello, world"
+#[get("/")]
+pub async fn index() -> impl Responder {
+    HttpResponse::Ok().body("Hello, World!")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::hello;
-
-    #[test]
-    fn returns_hello_world() {
-        assert_eq!(hello(), "hello, world");
-    }
+#[get("/metadata")]
+pub async fn metadata() -> impl Responder {
+    HttpResponse::Ok().body("Metadata endpoint")
 }

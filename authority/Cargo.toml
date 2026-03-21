@@ -5,3 +5,6 @@ edition = "2021"
 
 [lib]
 name = "authority"
+
+[dependencies]
+actix-web = "4.13.0"
