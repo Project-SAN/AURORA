@@ -9,9 +9,8 @@ pub use capsule::{
 };
 pub use extensions::{
     encode_extensions_into, extension_iter, find_extension, CapsuleExtensionRef, ExtensionIter,
-    EXT_TAG_BATCH_ID, EXT_TAG_KEY_HASH, EXT_TAG_MODE, EXT_TAG_PAYLOAD_HASH,
-    EXT_TAG_PRECOMPUTE_ID, EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE,
-    EXT_TAG_SESSION_NONCE,
+    EXT_TAG_BATCH_ID, EXT_TAG_KEY_HASH, EXT_TAG_MODE, EXT_TAG_PAYLOAD_HASH, EXT_TAG_PRECOMPUTE_ID,
+    EXT_TAG_PRECOMPUTE_PROOF, EXT_TAG_ROUTE_ID, EXT_TAG_SEQUENCE, EXT_TAG_SESSION_NONCE,
 };
 pub use metadata::{PolicyId, PolicyMetadata, VerifierEntry};
 pub use registry::{CapsuleValidator, PolicyRegistry, PolicyRole};

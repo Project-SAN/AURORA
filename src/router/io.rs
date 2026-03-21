@@ -1,6 +1,4 @@
-use crate::types::{
-    Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Sv,
-};
+use crate::types::{Ahdr, Chdr, Error, Packet, PacketDirection, PacketType, PayloadLen, Sv};
 use alloc::vec;
 use alloc::vec::Vec;
 

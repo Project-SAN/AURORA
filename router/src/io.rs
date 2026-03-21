@@ -4,8 +4,8 @@ use std::string::String;
 use std::vec::Vec;
 
 use aurora::forward::Forward;
-pub use aurora::router::io::{IncomingPacket, PacketListener, PacketReader};
 use aurora::router::io::{encode_frame_bytes, read_incoming_packet};
+pub use aurora::router::io::{IncomingPacket, PacketListener, PacketReader};
 use aurora::routing::{self, IpAddr, RouteElem};
 use aurora::types::{Ahdr, Chdr, Error, PacketDirection, RoutingSegment, Sv};
 
@@ -139,7 +139,7 @@ mod tests {
     use std::io::Cursor;
 
     use aurora::routing::{IpAddr as RouteIp, RouteElem};
-    use aurora::types::{C_BLOCK, HopCount, Nonce, Packet, Sv};
+    use aurora::types::{HopCount, Nonce, Packet, Sv, C_BLOCK};
 
     #[test]
     fn tcp_forward_resolves_first_hop_from_multihop_segment() {

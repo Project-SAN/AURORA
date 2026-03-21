@@ -584,11 +584,7 @@ fn read_fixed<const N: usize>(
     Ok(out)
 }
 
-fn read_bytes(
-    buf: &[u8],
-    cursor: &mut usize,
-    len: usize,
-) -> core::result::Result<Vec<u8>, Error> {
+fn read_bytes(buf: &[u8], cursor: &mut usize, len: usize) -> core::result::Result<Vec<u8>, Error> {
     if *cursor + len > buf.len() {
         return Err(Error::Length);
     }

@@ -5,8 +5,8 @@ use crate::node::pipeline::ForwardPipeline;
 use crate::node::PolicyRuntime;
 use crate::policy::{PolicyRegistry, PolicyRole};
 use crate::setup::directory::{from_signed_json, DirectoryAnnouncement, RouteAnnouncement};
-use crate::tunnel::TunnelRegistry;
 use crate::setup::pipeline::SetupPipeline;
+use crate::tunnel::TunnelRegistry;
 #[cfg(feature = "localnet-debug")]
 use crate::types::Error;
 use crate::types::{

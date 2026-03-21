@@ -1,11 +1,11 @@
 mod config;
+mod exit;
 mod io;
 mod storage;
 mod sync;
 
 use aurora::application::setup::RegistrySetupPipeline;
 use aurora::control::{self, ControlMessage};
-use aurora::node::exit::TcpExitTransport;
 use aurora::node::NoReplay;
 use aurora::policy::{decode_metadata_tlv, PolicyId, POLICY_ID_TLV, POLICY_METADATA_TLV};
 use aurora::router::runtime::RouterRuntime;
@@ -14,11 +14,12 @@ use aurora::router::Router;
 use aurora::setup::wire;
 use aurora::types::{self, Packet};
 use config::RouterConfig;
+use exit::TcpExitTransport;
 use io::{PacketListener, TcpForward, TcpPacketListener};
-use storage::FileRouterStorage;
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
+use storage::FileRouterStorage;
 use sync::{sync_once, DirectoryClient};
 
 fn main() {

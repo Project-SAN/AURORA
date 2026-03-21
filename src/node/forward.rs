@@ -56,17 +56,17 @@ pub fn process_data(
                         Err(_) => return Err(Error::PolicyViolation),
                     };
                     let mut capsule_payload = payload[tunnel_len..].to_vec();
-                    Some(match policy
-                        .forward
-                        .enforce(
+                    Some(
+                        match policy.forward.enforce(
                             policy.registry,
                             &mut capsule_payload,
                             policy.validator,
                             role,
                         )? {
-                        Some((_, consumed)) => consumed,
-                        None => return Err(Error::PolicyViolation),
-                    })
+                            Some((_, consumed)) => consumed,
+                            None => return Err(Error::PolicyViolation),
+                        },
+                    )
                 }
                 TunnelOp::Continue | TunnelOp::Close => {
                     let tunnels = ctx.tunnels.as_deref().ok_or(Error::PolicyViolation)?;
@@ -78,20 +78,20 @@ pub fn process_data(
             }
         } else {
             let role = match PolicyCapsule::decode(payload.as_slice()) {
-            Ok((capsule, _)) => {
-                // Role must be configured for this policy/router. Do not silently
-                // substitute a different role for ZKBoo.
-                let _meta = policy
-                    .registry
-                    .get(&capsule.policy_id)
-                    .ok_or(Error::PolicyViolation)?;
-                policy
-                    .roles
-                    .get(&capsule.policy_id)
-                    .copied()
-                    .ok_or(Error::PolicyViolation)?
-            }
-            Err(_) => return Err(Error::PolicyViolation),
+                Ok((capsule, _)) => {
+                    // Role must be configured for this policy/router. Do not silently
+                    // substitute a different role for ZKBoo.
+                    let _meta = policy
+                        .registry
+                        .get(&capsule.policy_id)
+                        .ok_or(Error::PolicyViolation)?;
+                    policy
+                        .roles
+                        .get(&capsule.policy_id)
+                        .copied()
+                        .ok_or(Error::PolicyViolation)?
+                }
+                Err(_) => return Err(Error::PolicyViolation),
             };
             policy
                 .forward
@@ -275,10 +275,7 @@ fn leaf_len(bytes: &[u8]) -> Result<usize> {
     }
 }
 
-fn update_tunnel_registry(
-    ctx: &mut NodeCtx<'_, '_, '_>,
-    prefix: Option<TunnelPrefix>,
-) {
+fn update_tunnel_registry(ctx: &mut NodeCtx<'_, '_, '_>, prefix: Option<TunnelPrefix>) {
     let Some(prefix) = prefix else {
         return;
     };

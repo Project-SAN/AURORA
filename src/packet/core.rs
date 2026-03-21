@@ -3,12 +3,7 @@ use crate::types::{Chdr, Error, Exp, Fs, RoutingSegment, Si, Sv, FS_LEN};
 use alloc::vec::Vec;
 
 // Encode {s || EXP || R[0..12]} into 32 bytes, then PRP-enc with key from SV
-pub fn create(
-    sv: &Sv,
-    s: &Si,
-    r: &RoutingSegment,
-    exp: Exp,
-) -> core::result::Result<Fs, Error> {
+pub fn create(sv: &Sv, s: &Si, r: &RoutingSegment, exp: Exp) -> core::result::Result<Fs, Error> {
     if r.0.len() > 12 {
         return Err(Error::Length);
     }

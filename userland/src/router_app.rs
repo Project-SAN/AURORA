@@ -150,7 +150,10 @@ pub fn run_router() -> ! {
                             let mut msg = String::new();
                             let _ = core::fmt::Write::write_fmt(
                                 &mut msg,
-                                format_args!("router: downstream reply dir={:?}", returned.direction),
+                                format_args!(
+                                    "router: downstream reply dir={:?}",
+                                    returned.direction
+                                ),
                             );
                             log_line(&msg);
                             match returned.packet {
@@ -167,7 +170,10 @@ pub fn run_router() -> ! {
                                         let mut msg = String::new();
                                         let _ = core::fmt::Write::write_fmt(
                                             &mut msg,
-                                            format_args!("router: downstream backward error {:?}", err),
+                                            format_args!(
+                                                "router: downstream backward error {:?}",
+                                                err
+                                            ),
                                         );
                                         log_line(&msg);
                                     } else {
@@ -655,10 +661,7 @@ fn send_line(
     send_bytes(socket, b"\n")
 }
 
-fn send_str(
-    socket: &crate::socket::TcpSocket,
-    s: &str,
-) -> core::result::Result<(), types::Error> {
+fn send_str(socket: &crate::socket::TcpSocket, s: &str) -> core::result::Result<(), types::Error> {
     send_bytes(socket, s.as_bytes())
 }
 
