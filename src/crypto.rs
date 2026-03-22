@@ -1,9 +1,11 @@
 pub mod aegis;
 pub mod ascon;
 pub mod dh;
+pub mod isogeny;
 pub mod kdf;
 pub mod mac;
 pub mod prg;
+pub mod prism;
 pub mod prp;
 pub mod random;
 pub mod rng;
