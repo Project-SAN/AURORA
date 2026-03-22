@@ -5,7 +5,7 @@
 //! protocol flow end-to-end while the real ideal-to-isogeny and product
 //! isogeny machinery is still under construction.
 
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -140,11 +140,13 @@ pub struct ReferenceActualQuotientProfile {
     pub axis_probe_sum_image: ReferenceProductPoint,
     pub axis_probe_diff_image: ReferenceProductPoint,
     pub axis_probe_double_images: [ReferenceProductPoint; 2],
+    pub axis_probe_triple_images: Box<[ReferenceProductPoint; 2]>,
     pub generators: [ReferenceProductPoint; 2],
     pub generator_images: [ReferenceProductPoint; 2],
     pub generator_sum_image: ReferenceProductPoint,
     pub generator_diff_image: ReferenceProductPoint,
     pub generator_double_images: [ReferenceProductPoint; 2],
+    pub generator_triple_images: Box<[ReferenceProductPoint; 2]>,
     pub samples: Vec<ReferenceProductPoint>,
     pub images: Vec<ReferenceProductPoint>,
 }
@@ -244,10 +246,12 @@ impl ReferenceActualWitness {
             || derived_profile.axis_probe_sum_image != quotient_profile.axis_probe_sum_image
             || derived_profile.axis_probe_diff_image != quotient_profile.axis_probe_diff_image
             || derived_profile.axis_probe_double_images != quotient_profile.axis_probe_double_images
+            || derived_profile.axis_probe_triple_images != quotient_profile.axis_probe_triple_images
             || derived_profile.generator_images != quotient_profile.generator_images
             || derived_profile.generator_sum_image != quotient_profile.generator_sum_image
             || derived_profile.generator_diff_image != quotient_profile.generator_diff_image
             || derived_profile.generator_double_images != quotient_profile.generator_double_images
+            || derived_profile.generator_triple_images != quotient_profile.generator_triple_images
         {
             return Err(ReferencePrismError::Kani(KaniError::InvalidActualWitness));
         }
@@ -407,6 +411,9 @@ impl ReferenceActualQuotientProfile {
             axis_probe_double_images: actual
                 .axis_probe_double_images
                 .map(ReferenceProductPoint::from_actual),
+            axis_probe_triple_images: Box::new(
+                (*actual.axis_probe_triple_images).map(ReferenceProductPoint::from_actual),
+            ),
             generators: actual.generators.map(ReferenceProductPoint::from_actual),
             generator_images: actual
                 .generator_images
@@ -416,6 +423,9 @@ impl ReferenceActualQuotientProfile {
             generator_double_images: actual
                 .generator_double_images
                 .map(ReferenceProductPoint::from_actual),
+            generator_triple_images: Box::new(
+                (*actual.generator_triple_images).map(ReferenceProductPoint::from_actual),
+            ),
             samples: actual
                 .samples
                 .iter()
@@ -444,6 +454,11 @@ impl ReferenceActualQuotientProfile {
         let axis_probe_double_images = self
             .axis_probe_double_images
             .map(ReferenceProductPoint::to_actual);
+        let axis_probe_triple_images = Box::new(
+            self.axis_probe_triple_images
+                .as_ref()
+                .map(ReferenceProductPoint::to_actual),
+        );
         let generators = self.generators.map(ReferenceProductPoint::to_actual);
         let generator_images = self.generator_images.map(ReferenceProductPoint::to_actual);
         let generator_sum_image = self.generator_sum_image.to_actual();
@@ -451,6 +466,11 @@ impl ReferenceActualQuotientProfile {
         let generator_double_images = self
             .generator_double_images
             .map(ReferenceProductPoint::to_actual);
+        let generator_triple_images = Box::new(
+            self.generator_triple_images
+                .as_ref()
+                .map(ReferenceProductPoint::to_actual),
+        );
         let samples = self
             .samples
             .iter()
@@ -470,11 +490,13 @@ impl ReferenceActualQuotientProfile {
             axis_probe_sum_image,
             axis_probe_diff_image,
             axis_probe_double_images,
+            axis_probe_triple_images,
             generators,
             generator_images,
             generator_sum_image,
             generator_diff_image,
             generator_double_images,
+            generator_triple_images,
             samples: samples.clone(),
             images: images.clone(),
         };
@@ -514,6 +536,11 @@ impl ReferenceActualQuotientProfile {
                 .map(|point| point.encoded_len(left_target, right_target))
                 .sum::<usize>()
             + self
+                .axis_probe_triple_images
+                .iter()
+                .map(|point| point.encoded_len(left_target, right_target))
+                .sum::<usize>()
+            + self
                 .generators
                 .iter()
                 .map(|point| point.encoded_len(left_source.modulus(), right_source.modulus()))
@@ -531,6 +558,11 @@ impl ReferenceActualQuotientProfile {
                 .encoded_len(left_target, right_target)
             + self
                 .generator_double_images
+                .iter()
+                .map(|point| point.encoded_len(left_target, right_target))
+                .sum::<usize>()
+            + self
+                .generator_triple_images
                 .iter()
                 .map(|point| point.encoded_len(left_target, right_target))
                 .sum::<usize>()
@@ -566,6 +598,9 @@ impl ReferenceActualQuotientProfile {
         for image in &self.axis_probe_double_images {
             sha3::Digest::update(&mut hasher, image.commitment());
         }
+        for image in self.axis_probe_triple_images.iter() {
+            sha3::Digest::update(&mut hasher, image.commitment());
+        }
         for generator in &self.generators {
             sha3::Digest::update(&mut hasher, generator.commitment());
         }
@@ -575,6 +610,9 @@ impl ReferenceActualQuotientProfile {
         sha3::Digest::update(&mut hasher, self.generator_sum_image.commitment());
         sha3::Digest::update(&mut hasher, self.generator_diff_image.commitment());
         for image in &self.generator_double_images {
+            sha3::Digest::update(&mut hasher, image.commitment());
+        }
+        for image in self.generator_triple_images.iter() {
             sha3::Digest::update(&mut hasher, image.commitment());
         }
         sha3::Digest::update(&mut hasher, (self.samples.len() as u32).to_be_bytes());
@@ -608,6 +646,9 @@ impl ReferenceActualQuotientProfile {
         for image in &self.axis_probe_double_images {
             sha3::Digest::update(&mut hasher, image.commitment());
         }
+        for image in self.axis_probe_triple_images.iter() {
+            sha3::Digest::update(&mut hasher, image.commitment());
+        }
         for generator in &self.generators {
             sha3::Digest::update(&mut hasher, generator.commitment());
         }
@@ -617,6 +658,9 @@ impl ReferenceActualQuotientProfile {
         sha3::Digest::update(&mut hasher, self.generator_sum_image.commitment());
         sha3::Digest::update(&mut hasher, self.generator_diff_image.commitment());
         for image in &self.generator_double_images {
+            sha3::Digest::update(&mut hasher, image.commitment());
+        }
+        for image in self.generator_triple_images.iter() {
             sha3::Digest::update(&mut hasher, image.commitment());
         }
         let mut out = [0u8; 32];
@@ -645,6 +689,9 @@ impl ReferenceActualQuotientProfile {
         for image in &self.axis_probe_double_images {
             image.encode_into(out);
         }
+        for image in self.axis_probe_triple_images.iter() {
+            image.encode_into(out);
+        }
         for generator in &self.generators {
             generator.encode_into(out);
         }
@@ -654,6 +701,9 @@ impl ReferenceActualQuotientProfile {
         self.generator_sum_image.encode_into(out);
         self.generator_diff_image.encode_into(out);
         for image in &self.generator_double_images {
+            image.encode_into(out);
+        }
+        for image in self.generator_triple_images.iter() {
             image.encode_into(out);
         }
         out.extend_from_slice(&(self.samples.len() as u16).to_be_bytes());
@@ -709,6 +759,12 @@ impl ReferenceActualQuotientProfile {
         let (axis_probe_double_image_1, next_cursor) =
             ReferenceProductPoint::decode_from(bytes, cursor, left_target, right_target)?;
         cursor = next_cursor;
+        let (axis_probe_triple_image_0, next_cursor) =
+            ReferenceProductPoint::decode_from(bytes, cursor, left_target, right_target)?;
+        cursor = next_cursor;
+        let (axis_probe_triple_image_1, next_cursor) =
+            ReferenceProductPoint::decode_from(bytes, cursor, left_target, right_target)?;
+        cursor = next_cursor;
         let (generator_0, next_cursor) = ReferenceProductPoint::decode_from(
             bytes,
             cursor,
@@ -741,6 +797,12 @@ impl ReferenceActualQuotientProfile {
         let (generator_double_image_1, next_cursor) =
             ReferenceProductPoint::decode_from(bytes, cursor, left_target, right_target)?;
         cursor = next_cursor;
+        let (generator_triple_image_0, next_cursor) =
+            ReferenceProductPoint::decode_from(bytes, cursor, left_target, right_target)?;
+        cursor = next_cursor;
+        let (generator_triple_image_1, next_cursor) =
+            ReferenceProductPoint::decode_from(bytes, cursor, left_target, right_target)?;
+        cursor = next_cursor;
         let sample_count = u16::from_be_bytes(bytes.get(cursor..cursor + 2)?.try_into().ok()?);
         cursor += 2;
         let mut samples = Vec::with_capacity(sample_count as usize);
@@ -771,11 +833,19 @@ impl ReferenceActualQuotientProfile {
                 axis_probe_sum_image,
                 axis_probe_diff_image,
                 axis_probe_double_images: [axis_probe_double_image_0, axis_probe_double_image_1],
+                axis_probe_triple_images: Box::new([
+                    axis_probe_triple_image_0,
+                    axis_probe_triple_image_1,
+                ]),
                 generators: [generator_0, generator_1],
                 generator_images: [generator_image_0, generator_image_1],
                 generator_sum_image,
                 generator_diff_image,
                 generator_double_images: [generator_double_image_0, generator_double_image_1],
+                generator_triple_images: Box::new([
+                    generator_triple_image_0,
+                    generator_triple_image_1,
+                ]),
                 samples,
                 images,
             },
@@ -2829,6 +2899,39 @@ mod tests {
         tampered.quotient_profile.target_identity.left = replacement;
         assert!(matches!(
             tampered.to_actual(),
+            Err(super::ReferencePrismError::Kani(
+                KaniError::InvalidActualWitness
+            ))
+        ));
+    }
+
+    #[test]
+    fn actual_small_model_rejects_tampered_generator_triple_image() {
+        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+        let mut rng = ChaCha20Rng::from_seed([34u8; 32]);
+        let signature = sign_with_backend(
+            &mut backend,
+            &verifying_key,
+            &signing_key,
+            b"message",
+            &mut rng,
+            256,
+        )
+        .unwrap();
+
+        let decoded = backend.decode_signature_body(&signature.body).unwrap();
+        let mut actual_witness = decoded.actual_witness.unwrap();
+        let identity = actual_witness
+            .to_actual()
+            .unwrap()
+            .isogeny
+            .target_identity();
+        actual_witness.quotient_profile.generator_triple_images[0] =
+            super::ReferenceProductPoint::from_actual(identity);
+
+        assert!(matches!(
+            actual_witness.to_actual(),
             Err(super::ReferencePrismError::Kani(
                 KaniError::InvalidActualWitness
             ))

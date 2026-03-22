@@ -1,6 +1,6 @@
 //! Kani's lemma based 2-dimensional isogeny constructions.
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::crypto::isogeny::algorithms::ideal_to_isogeny::{
     ActualIsogenyChain, IdealToIsogenyError,
@@ -341,11 +341,13 @@ pub struct ActualQuotientProfile {
     pub axis_probe_sum_image: ProductPoint,
     pub axis_probe_diff_image: ProductPoint,
     pub axis_probe_double_images: [ProductPoint; 2],
+    pub axis_probe_triple_images: Box<[ProductPoint; 2]>,
     pub generators: [ProductPoint; 2],
     pub generator_images: [ProductPoint; 2],
     pub generator_sum_image: ProductPoint,
     pub generator_diff_image: ProductPoint,
     pub generator_double_images: [ProductPoint; 2],
+    pub generator_triple_images: Box<[ProductPoint; 2]>,
     pub samples: Vec<ProductPoint>,
     pub images: Vec<ProductPoint>,
 }
@@ -383,6 +385,34 @@ impl ActualQuotientProfile {
                 &witness.isogeny.right.source,
             )?)?,
         ];
+        let axis_probe_triple_images = Box::new([
+            witness.isogeny.map_point(
+                &axis_probes[0]
+                    .add(
+                        &axis_probes[0],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?
+                    .add(
+                        &axis_probes[0],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?,
+            )?,
+            witness.isogeny.map_point(
+                &axis_probes[1]
+                    .add(
+                        &axis_probes[1],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?
+                    .add(
+                        &axis_probes[1],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?,
+            )?,
+        ]);
         let generator_sum = generators[0].add(
             &generators[1],
             &witness.isogeny.left.source,
@@ -407,6 +437,34 @@ impl ActualQuotientProfile {
                 &witness.isogeny.right.source,
             )?)?,
         ];
+        let generator_triple_images = Box::new([
+            witness.isogeny.map_point(
+                &generators[0]
+                    .add(
+                        &generators[0],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?
+                    .add(
+                        &generators[0],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?,
+            )?,
+            witness.isogeny.map_point(
+                &generators[1]
+                    .add(
+                        &generators[1],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?
+                    .add(
+                        &generators[1],
+                        &witness.isogeny.left.source,
+                        &witness.isogeny.right.source,
+                    )?,
+            )?,
+        ]);
         let profile = Self {
             target_identity: witness.isogeny.target_identity(),
             axis_probes,
@@ -414,11 +472,13 @@ impl ActualQuotientProfile {
             axis_probe_sum_image,
             axis_probe_diff_image,
             axis_probe_double_images,
+            axis_probe_triple_images,
             generators,
             generator_images,
             generator_sum_image,
             generator_diff_image,
             generator_double_images,
+            generator_triple_images,
             samples: witness.samples.clone(),
             images: witness.images.clone(),
         };
@@ -496,6 +556,8 @@ impl ActualQuotientProfile {
         for index in 0..self.axis_probes.len() {
             self.axis_probe_double_images[index]
                 .validate_on(&isogeny.left.target, &isogeny.right.target)?;
+            self.axis_probe_triple_images[index]
+                .validate_on(&isogeny.left.target, &isogeny.right.target)?;
             let source_double = self.axis_probes[index].add(
                 &self.axis_probes[index],
                 &isogeny.left.source,
@@ -511,6 +573,23 @@ impl ActualQuotientProfile {
                 &isogeny.right.target,
             )?;
             if target_double != self.axis_probe_double_images[index] {
+                return Err(KaniError::InvalidActualWitness);
+            }
+            let source_triple = source_double.add(
+                &self.axis_probes[index],
+                &isogeny.left.source,
+                &isogeny.right.source,
+            )?;
+            let mapped_triple = isogeny.map_point(&source_triple)?;
+            if mapped_triple != self.axis_probe_triple_images[index] {
+                return Err(KaniError::InvalidActualWitness);
+            }
+            let target_triple = target_double.add(
+                &self.axis_probe_images[index],
+                &isogeny.left.target,
+                &isogeny.right.target,
+            )?;
+            if target_triple != self.axis_probe_triple_images[index] {
                 return Err(KaniError::InvalidActualWitness);
             }
         }
@@ -575,6 +654,8 @@ impl ActualQuotientProfile {
         for index in 0..self.generators.len() {
             self.generator_double_images[index]
                 .validate_on(&isogeny.left.target, &isogeny.right.target)?;
+            self.generator_triple_images[index]
+                .validate_on(&isogeny.left.target, &isogeny.right.target)?;
             let source_double = self.generators[index].add(
                 &self.generators[index],
                 &isogeny.left.source,
@@ -590,6 +671,23 @@ impl ActualQuotientProfile {
                 &isogeny.right.target,
             )?;
             if target_double != self.generator_double_images[index] {
+                return Err(KaniError::InvalidActualWitness);
+            }
+            let source_triple = source_double.add(
+                &self.generators[index],
+                &isogeny.left.source,
+                &isogeny.right.source,
+            )?;
+            let mapped_triple = isogeny.map_point(&source_triple)?;
+            if mapped_triple != self.generator_triple_images[index] {
+                return Err(KaniError::InvalidActualWitness);
+            }
+            let target_triple = target_double.add(
+                &self.generator_images[index],
+                &isogeny.left.target,
+                &isogeny.right.target,
+            )?;
+            if target_triple != self.generator_triple_images[index] {
                 return Err(KaniError::InvalidActualWitness);
             }
         }
@@ -664,6 +762,9 @@ impl ActualQuotientProfile {
         for image in &self.axis_probe_double_images {
             hasher.update(image.commitment());
         }
+        for image in self.axis_probe_triple_images.iter() {
+            hasher.update(image.commitment());
+        }
         let mut out = [0u8; 32];
         out.copy_from_slice(&hasher.finalize());
         out
@@ -678,6 +779,9 @@ impl ActualQuotientProfile {
         hasher.update(self.generator_sum_image.commitment());
         hasher.update(self.generator_diff_image.commitment());
         for image in &self.generator_double_images {
+            hasher.update(image.commitment());
+        }
+        for image in self.generator_triple_images.iter() {
             hasher.update(image.commitment());
         }
         let mut out = [0u8; 32];
@@ -1898,6 +2002,32 @@ mod tests {
                 .unwrap();
         let mut profile = witness_data.quotient_profile().unwrap();
         profile.axis_probe_double_images[0] = witness_data.isogeny.target_identity();
+
+        assert_eq!(
+            profile.validate(&witness_data.isogeny, &witness_data.kernel),
+            Err(KaniError::InvalidActualWitness)
+        );
+    }
+
+    #[test]
+    fn quotient_profile_rejects_tampered_generator_triple_image() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 3);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 3)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let mut profile = witness_data.quotient_profile().unwrap();
+        profile.generator_triple_images[0] = witness_data.isogeny.target_identity();
 
         assert_eq!(
             profile.validate(&witness_data.isogeny, &witness_data.kernel),

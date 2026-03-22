@@ -1295,15 +1295,12 @@ mod tests {
         let honest_statement =
             super::public_kani_statement(&TEST_PARAMS, &verifying_key, &decoded, &actual_witness)
                 .unwrap();
-        let mut tampered_witness = actual_witness.clone();
-        assert!(tampered_witness.quotient_profile.samples.len() > 1);
-        tampered_witness.quotient_profile.samples.swap(0, 1);
-        tampered_witness.quotient_profile.images.swap(0, 1);
-        tampered_witness.quotient_profile.generators.swap(0, 1);
-        tampered_witness
-            .quotient_profile
-            .generator_images
-            .swap(0, 1);
+        let mut tampered_actual = actual_witness.to_actual().unwrap();
+        assert!(tampered_actual.samples.len() > 1);
+        tampered_actual.samples.swap(0, 1);
+        tampered_actual.images.swap(0, 1);
+        let tampered_witness =
+            crate::crypto::prism::ReferenceActualWitness::from_actual(&tampered_actual).unwrap();
         let tampered_statement =
             super::public_kani_statement(&TEST_PARAMS, &verifying_key, &decoded, &tampered_witness)
                 .unwrap();
