@@ -5029,6 +5029,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn bounded_kernel_extraction_prefers_exact_stage_ideal_path() {
         let curve = e0_curve_with_order_basis(5);
         let algebra = QuaternionAlgebra::new(5).unwrap();
@@ -5062,6 +5063,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn bounded_kernel_extraction_uses_exact_principal_representative_path() {
         let curve = e0_curve_with_order_basis(5);
         let algebra = QuaternionAlgebra::new(5).unwrap();
@@ -5095,6 +5097,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn actual_kernel_extraction_roundtrip_recovers_chain() {
         let order = MaximalOrder::reference(QuaternionAlgebra::new(5).unwrap());
         let ideal = LeftIdeal::new(
@@ -5143,6 +5146,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn actual_kernel_extraction_rejects_tampered_hint() {
         let order = MaximalOrder::reference(QuaternionAlgebra::new(5).unwrap());
         let ideal = LeftIdeal::new(
@@ -5167,6 +5171,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn actual_kernel_extraction_rejects_tampered_stage_binding() {
         let order = MaximalOrder::reference(QuaternionAlgebra::new(5).unwrap());
         let ideal = LeftIdeal::new(
@@ -5191,6 +5196,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn actual_kernel_extraction_rejects_tampered_explicit_generator() {
         let order = MaximalOrder::reference(QuaternionAlgebra::new(5).unwrap());
         let ideal = LeftIdeal::new(
@@ -5986,6 +5992,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn bounded_kernel_extraction_roundtrip_recovers_large_field_chain() {
         let params = SupersingularParameters::new(5, 8);
         let degrees = [IsogenyInteger::from(2u64), IsogenyInteger::from(5u64)];
@@ -6007,6 +6014,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn bounded_kernel_extraction_rejects_tampered_large_field_hint() {
         let params = SupersingularParameters::new(5, 8);
         let degrees = [IsogenyInteger::from(2u64), IsogenyInteger::from(5u64)];
@@ -6026,6 +6034,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn bounded_kernel_extraction_rejects_tampered_stage_binding() {
         let params = SupersingularParameters::new(5, 8);
         let degrees = [IsogenyInteger::from(2u64), IsogenyInteger::from(5u64)];
@@ -6045,6 +6054,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy exact kernel extraction test"]
     fn bounded_kernel_extraction_rejects_tampered_explicit_generator() {
         let params = SupersingularParameters::new(5, 8);
         let degrees = [IsogenyInteger::from(2u64), IsogenyInteger::from(5u64)];

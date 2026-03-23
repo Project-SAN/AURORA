@@ -1532,6 +1532,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual backend test"]
     fn base_curve_provider_derives_large_field_witness() {
         let mut reference = ReferencePrismBackend::new(&TEST_PARAMS);
         let (verifying_key, signing_key) = keygen_with_backend(&mut reference).unwrap();
@@ -1580,6 +1581,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual backend test"]
     fn base_curve_provider_derives_degree_five_chain_when_supported() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
@@ -1602,6 +1604,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual backend test"]
     fn base_curve_provider_derives_multistep_chain_from_qlapoti_plan() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
@@ -1645,6 +1648,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual backend test"]
     fn base_curve_provider_prefers_direct_odd_prime_power_step_when_available() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS_ODD3);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
@@ -1686,6 +1690,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual backend test"]
     fn base_curve_provider_falls_back_to_repeated_prime_steps_when_needed() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS_ODD3);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();

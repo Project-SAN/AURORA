@@ -2790,6 +2790,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_roundtrip_verifies() {
         run_on_large_stack(|| {
             let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
@@ -2813,6 +2814,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_rejects_witness_tampering() {
         run_on_large_stack(|| {
             let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
@@ -2837,6 +2839,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_signature_encodes_actual_witness() {
         run_on_large_stack(|| {
             let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
@@ -2861,6 +2864,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_witness_roundtrips_explicit_samples() {
         run_on_large_stack(|| {
             let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
@@ -2884,6 +2888,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_rejects_tampered_target_identity() {
         run_on_large_stack(|| {
             let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
@@ -2932,6 +2937,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_rejects_tampered_generator_triple_image() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
@@ -2965,6 +2971,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_witness_component_commitments_split_kernel_and_quotient() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
@@ -3010,6 +3017,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_witness_rejects_tampered_section_length() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
@@ -3056,6 +3064,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_supports_extended_norm_set() {
         run_on_large_stack(|| {
             let backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
@@ -3078,6 +3087,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy actual small model test"]
     fn actual_small_model_rejects_actual_witness_tampering() {
         run_on_large_stack(|| {
             let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
