@@ -44,6 +44,12 @@ impl MontgomeryCurve {
         self.a.modulus()
     }
 
+    pub fn a24(&self) -> Result<Fp2> {
+        let two = Fp2::from_u64(self.modulus(), 2);
+        let four_inv = Fp2::from_u64(self.modulus(), 4).invert()?;
+        Ok(self.a.add(&two)?.mul(&four_inv)?)
+    }
+
     pub fn identity(&self) -> CurvePoint {
         CurvePoint::infinity(self.modulus())
     }

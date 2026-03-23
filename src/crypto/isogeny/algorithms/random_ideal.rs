@@ -28,6 +28,8 @@ pub struct RandomIdealSampler;
 
 impl RandomIdealSampler {
     const EXACT_REDUCED_NORM_SEARCH_LIMIT: u64 = 1 << 12;
+    const SHORT_ELEMENT_ENUMERATION_LIMIT: usize = 256;
+    const SHORT_ELEMENT_ENUMERATION_COEFF_BOUND_MAX: u64 = 4;
 
     pub fn sample_given_norm<R: RngCore>(
         order: &MaximalOrder,
@@ -79,6 +81,34 @@ impl RandomIdealSampler {
             return None;
         }
         let algebra = order.algebra();
+        let coeff_bound = integer_sqrt(target).saturating_add(1);
+        if coeff_bound <= Self::SHORT_ELEMENT_ENUMERATION_COEFF_BOUND_MAX {
+            let order_ideal = LeftIdeal::principal(*order, QuaternionElement::one(algebra)).ok()?;
+            let enumerated = order_ideal
+                .enumerate_short_elements(
+                    i32::try_from(coeff_bound).ok()?,
+                    Self::SHORT_ELEMENT_ENUMERATION_LIMIT,
+                )
+                .ok()?;
+            let mut enumerated_candidates = enumerated
+                .into_iter()
+                .filter(|candidate| candidate.reduced_norm() == target_norm)
+                .collect::<Vec<_>>();
+            if !enumerated_candidates.is_empty() {
+                let primitive = enumerated_candidates
+                    .iter()
+                    .copied()
+                    .filter(is_primitive_generator)
+                    .collect::<Vec<_>>();
+                let candidates = if primitive.is_empty() {
+                    &mut enumerated_candidates
+                } else {
+                    return select_candidate_from_seed(&primitive, seed);
+                };
+                return select_candidate_from_seed(candidates, seed);
+            }
+        }
+
         let ramified_prime = u64::from(algebra.ramified_prime());
         let mut candidates = Vec::new();
         let max_cd = integer_sqrt(target / ramified_prime.max(1));
@@ -120,11 +150,21 @@ impl RandomIdealSampler {
         } else {
             primitive
         };
-        let mut selector_bytes = [0u8; 8];
-        selector_bytes.copy_from_slice(&seed[..8]);
-        let index = (u64::from_le_bytes(selector_bytes) as usize) % candidates.len();
-        candidates.get(index).copied()
+        select_candidate_from_seed(&candidates, seed)
     }
+}
+
+fn select_candidate_from_seed(
+    candidates: &[QuaternionElement],
+    seed: &[u8; 32],
+) -> Option<QuaternionElement> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut selector_bytes = [0u8; 8];
+    selector_bytes.copy_from_slice(&seed[..8]);
+    let index = (u64::from_le_bytes(selector_bytes) as usize) % candidates.len();
+    candidates.get(index).copied()
 }
 
 fn push_signed_candidates(

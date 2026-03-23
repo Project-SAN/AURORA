@@ -1,5 +1,8 @@
 //! Left/right ideal types and operations.
 
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+
 use crate::crypto::isogeny::arith::IsogenyInteger;
 
 use super::lattice::{BasisLattice, LatticeError};
@@ -98,7 +101,10 @@ impl LeftIdeal {
     }
 
     pub fn principal(order: MaximalOrder, generator: QuaternionElement) -> Result<Self> {
-        Self::new(order, order, generator, generator.reduced_norm())
+        let norm = generator
+            .try_reduced_norm()
+            .ok_or(IdealError::NormOverflow)?;
+        Self::new(order, order, generator, norm)
     }
 
     pub const fn left_order(&self) -> MaximalOrder {
@@ -119,6 +125,73 @@ impl LeftIdeal {
 
     pub const fn basis(&self) -> [QuaternionElement; 4] {
         self.basis
+    }
+
+    pub fn normalized_norm(&self, element: &QuaternionElement) -> Result<Option<IsogenyInteger>> {
+        if element.algebra() != self.left_order.algebra() {
+            return Err(IdealError::AlgebraMismatch);
+        }
+        Ok(element
+            .try_reduced_norm()
+            .and_then(|reduced_norm| reduced_norm.checked_div_exact(&self.norm)))
+    }
+
+    pub fn enumerate_short_elements(
+        &self,
+        coeff_bound: i32,
+        limit: usize,
+    ) -> Result<Vec<QuaternionElement>> {
+        if coeff_bound < 0 {
+            return Ok(Vec::new());
+        }
+        let basis = BasisLattice::from_basis(self.basis)
+            .map(|lattice| lattice.basis())
+            .map_err(IdealError::from)?;
+        let mut elements = Vec::new();
+        let range = -(coeff_bound as i128)..=(coeff_bound as i128);
+        for c0 in range.clone() {
+            for c1 in range.clone() {
+                for c2 in range.clone() {
+                    for c3 in range.clone() {
+                        if [c0, c1, c2, c3].iter().all(|coeff| *coeff == 0) {
+                            continue;
+                        }
+                        let Some(candidate) = combine_basis_with_coeffs(&basis, [c0, c1, c2, c3])
+                        else {
+                            continue;
+                        };
+                        let candidate = canonicalize_basis_element(self.left_order, candidate)?;
+                        if elements.iter().any(|existing| existing == &candidate) {
+                            continue;
+                        }
+                        elements.push(candidate);
+                    }
+                }
+            }
+        }
+        elements.sort_by(|lhs, rhs| {
+            let lhs_key = self
+                .normalized_norm(lhs)
+                .ok()
+                .flatten()
+                .or_else(|| lhs.try_reduced_norm());
+            let rhs_key = self
+                .normalized_norm(rhs)
+                .ok()
+                .flatten()
+                .or_else(|| rhs.try_reduced_norm());
+            match (lhs_key, rhs_key) {
+                (Some(lhs_key), Some(rhs_key)) => lhs_key.cmp(&rhs_key),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+            .then_with(|| lhs.coeffs().cmp(&rhs.coeffs()))
+        });
+        if elements.len() > limit {
+            elements.truncate(limit);
+        }
+        Ok(elements)
     }
 
     pub fn is_coprime_to(&self, other: &Self) -> bool {
@@ -215,6 +288,24 @@ fn fallback_basis_element(
     left_order.basis()[index]
         .multiply(generator)
         .map_err(Into::into)
+}
+
+fn combine_basis_with_coeffs(
+    basis: &[QuaternionElement; 4],
+    coeffs: [i128; 4],
+) -> Option<QuaternionElement> {
+    let algebra = basis[0].algebra();
+    let mut acc = QuaternionElement::zero(algebra);
+    let mut used = false;
+    for (basis_element, coeff) in basis.iter().zip(coeffs) {
+        if coeff == 0 {
+            continue;
+        }
+        let scaled = basis_element.scale(coeff).ok()?;
+        acc = acc.add(&scaled).ok()?;
+        used = true;
+    }
+    used.then_some(acc)
 }
 
 fn push_unique_basis_candidate(
@@ -875,5 +966,49 @@ mod tests {
         let canonical_product = canonical_lhs.product(&rhs).unwrap();
         let product = lhs.product(&rhs).unwrap();
         assert_ne!(product.basis(), canonical_product.basis());
+    }
+
+    #[test]
+    fn normalized_norm_divides_reduced_norm_by_ideal_norm() {
+        let order = MaximalOrder::reference(QuaternionAlgebra::new(5).unwrap());
+        let ideal = LeftIdeal::principal(
+            order,
+            QuaternionElement::from_coeffs(order.algebra(), [1, 1, 0, 0]),
+        )
+        .unwrap();
+        let element = ideal.basis()[0];
+        let normalized = ideal.normalized_norm(&element).unwrap().unwrap();
+        assert_eq!(
+            normalized.checked_mul(&ideal.norm()).unwrap(),
+            element.reduced_norm()
+        );
+    }
+
+    #[test]
+    fn short_element_enumeration_uses_explicit_basis() {
+        let order = MaximalOrder::reference(QuaternionAlgebra::new(5).unwrap());
+        let generator = QuaternionElement::from_coeffs(order.algebra(), [1, 0, 0, 0]);
+        let ideal = LeftIdeal::with_basis(
+            order,
+            order,
+            generator,
+            1,
+            [
+                QuaternionElement::from_coeffs(order.algebra(), [2, 0, 0, 0]),
+                QuaternionElement::from_coeffs(order.algebra(), [0, 3, 0, 0]),
+                QuaternionElement::from_coeffs(order.algebra(), [0, 0, 4, 0]),
+                QuaternionElement::from_coeffs(order.algebra(), [0, 0, 0, 5]),
+            ],
+        )
+        .unwrap();
+        let elements = ideal.enumerate_short_elements(1, 16).unwrap();
+        assert!(elements.contains(&QuaternionElement::from_coeffs(
+            order.algebra(),
+            [2, 0, 0, 0]
+        )));
+        assert!(elements.contains(&QuaternionElement::from_coeffs(
+            order.algebra(),
+            [0, 3, 0, 0]
+        )));
     }
 }

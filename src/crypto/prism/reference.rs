@@ -2575,6 +2575,18 @@ mod tests {
         max_signatures_log2: 8,
     };
 
+    fn run_on_large_stack<F>(f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[test]
     fn reference_backend_roundtrip_verifies() {
         let mut backend = ReferencePrismBackend::new(&TEST_PARAMS);
@@ -2779,130 +2791,144 @@ mod tests {
 
     #[test]
     fn actual_small_model_roundtrip_verifies() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([27u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([27u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        assert!(verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap());
-        assert!(!verify_with_backend(&backend, &verifying_key, b"tampered", &signature).unwrap());
+            assert!(verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap());
+            assert!(
+                !verify_with_backend(&backend, &verifying_key, b"tampered", &signature).unwrap()
+            );
+        });
     }
 
     #[test]
     fn actual_small_model_rejects_witness_tampering() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([29u8; 32]);
-        let mut signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([29u8; 32]);
+            let mut signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        let coeff_offset = super::signature_body_fixed_prefix_len();
-        signature.body[coeff_offset] ^= 1;
-        assert!(!verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap());
+            let coeff_offset = super::signature_body_fixed_prefix_len();
+            signature.body[coeff_offset] ^= 1;
+            assert!(
+                !verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap()
+            );
+        });
     }
 
     #[test]
     fn actual_small_model_signature_encodes_actual_witness() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([31u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([31u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        assert_eq!(decoded.ideal_witness.left.norm, decoded.degree);
-        assert_eq!(decoded.ideal_witness.right.norm, decoded.degree);
-        assert!(decoded.actual_witness.is_some());
-        assert_eq!(signature.body, backend.encode_signature_body(&decoded));
+            let decoded = backend.decode_signature_body(&signature.body).unwrap();
+            assert_eq!(decoded.ideal_witness.left.norm, decoded.degree);
+            assert_eq!(decoded.ideal_witness.right.norm, decoded.degree);
+            assert!(decoded.actual_witness.is_some());
+            assert_eq!(signature.body, backend.encode_signature_body(&decoded));
+        });
     }
 
     #[test]
     fn actual_small_model_witness_roundtrips_explicit_samples() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([32u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([32u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        let actual = decoded.actual_witness.clone().unwrap().to_actual().unwrap();
-        let reencoded = ReferenceActualWitness::from_actual(&actual).unwrap();
-        assert_eq!(reencoded, decoded.actual_witness.unwrap());
+            let decoded = backend.decode_signature_body(&signature.body).unwrap();
+            let actual = decoded.actual_witness.clone().unwrap().to_actual().unwrap();
+            let reencoded = ReferenceActualWitness::from_actual(&actual).unwrap();
+            assert_eq!(reencoded, decoded.actual_witness.unwrap());
+        });
     }
 
     #[test]
     fn actual_small_model_rejects_tampered_target_identity() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([33u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([33u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        let actual_witness = decoded.actual_witness.clone().unwrap();
-        let actual = actual_witness.to_actual().unwrap();
-        let left_target = actual.isogeny.left.target;
-        let original = actual_witness.quotient_profile.target_identity.left;
+            let decoded = backend.decode_signature_body(&signature.body).unwrap();
+            let actual_witness = decoded.actual_witness.clone().unwrap();
+            let actual = actual_witness.to_actual().unwrap();
+            let left_target = actual.isogeny.left.target;
+            let original = actual_witness.quotient_profile.target_identity.left;
 
-        let replacement = (1..=8u64)
-            .find_map(|delta| {
-                let x = original
-                    .x
-                    .add(&crate::crypto::isogeny::field::Fp2::from_u64(
-                        left_target.modulus(),
-                        delta,
-                    ))
-                    .ok()?;
-                let candidate =
-                    crate::crypto::isogeny::curve::point::CurvePoint::affine(x, original.y);
-                (!left_target.is_on_curve(&candidate).ok()?).then_some(candidate)
-            })
-            .expect("expected invalid target identity");
+            let replacement = (1..=8u64)
+                .find_map(|delta| {
+                    let x = original
+                        .x
+                        .add(&crate::crypto::isogeny::field::Fp2::from_u64(
+                            left_target.modulus(),
+                            delta,
+                        ))
+                        .ok()?;
+                    let candidate =
+                        crate::crypto::isogeny::curve::point::CurvePoint::affine(x, original.y);
+                    (!left_target.is_on_curve(&candidate).ok()?).then_some(candidate)
+                })
+                .expect("expected invalid target identity");
 
-        let mut tampered = actual_witness;
-        tampered.quotient_profile.target_identity.left = replacement;
-        assert!(matches!(
-            tampered.to_actual(),
-            Err(super::ReferencePrismError::Kani(
-                KaniError::InvalidActualWitness
-            ))
-        ));
+            let mut tampered = actual_witness;
+            tampered.quotient_profile.target_identity.left = replacement;
+            assert!(matches!(
+                tampered.to_actual(),
+                Err(super::ReferencePrismError::Kani(
+                    KaniError::InvalidActualWitness
+                ))
+            ));
+        });
     }
 
     #[test]
@@ -3031,52 +3057,58 @@ mod tests {
 
     #[test]
     fn actual_small_model_supports_extended_norm_set() {
-        let backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let mut norms = Vec::new();
-        for selector in 0u8..7 {
-            let mut seed = [0u8; 32];
-            seed[0] = selector;
-            let chain = backend.derive_actual_small_chain(seed).unwrap();
-            norms.push(
-                chain
-                    .steps
-                    .iter()
-                    .fold(1u128, |acc, step| acc * u128::from(step.degree as u64)),
-            );
-        }
-        norms.sort_unstable();
-        norms.dedup();
-        assert_eq!(norms, vec![2, 3, 4, 5, 7, 8, 9]);
+        run_on_large_stack(|| {
+            let backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let mut norms = Vec::new();
+            for selector in 0u8..7 {
+                let mut seed = [0u8; 32];
+                seed[0] = selector;
+                let chain = backend.derive_actual_small_chain(seed).unwrap();
+                norms.push(
+                    chain
+                        .steps
+                        .iter()
+                        .fold(1u128, |acc, step| acc * u128::from(step.degree as u64)),
+                );
+            }
+            norms.sort_unstable();
+            norms.dedup();
+            assert_eq!(norms, vec![2, 3, 4, 5, 7, 8, 9]);
+        });
     }
 
     #[test]
     fn actual_small_model_rejects_actual_witness_tampering() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([33u8; 32]);
-        let mut signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS).with_actual_small_model(true);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([33u8; 32]);
+            let mut signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        let payload_len = match decoded.encoding {
-            SignatureEncoding::CurveAndBasisCoefficients => {
-                ReferenceBasisCoefficients::scalar_bytes(TEST_PARAMS.challenge_bits) * 4
-            }
-            SignatureEncoding::CurveAndPoints => 96,
-        };
-        let actual_offset = super::signature_body_fixed_prefix_len()
-            + payload_len
-            + 2
-            + decoded.ideal_witness.encoded_len();
-        signature.body[actual_offset] ^= 1;
-        assert!(!verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap());
+            let decoded = backend.decode_signature_body(&signature.body).unwrap();
+            let payload_len = match decoded.encoding {
+                SignatureEncoding::CurveAndBasisCoefficients => {
+                    ReferenceBasisCoefficients::scalar_bytes(TEST_PARAMS.challenge_bits) * 4
+                }
+                SignatureEncoding::CurveAndPoints => 96,
+            };
+            let actual_offset = super::signature_body_fixed_prefix_len()
+                + payload_len
+                + 2
+                + decoded.ideal_witness.encoded_len();
+            signature.body[actual_offset] ^= 1;
+            assert!(
+                !verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap()
+            );
+        });
     }
 
     #[test]

@@ -5,8 +5,14 @@ use alloc::{boxed::Box, vec::Vec};
 use crate::crypto::isogeny::algorithms::ideal_to_isogeny::{
     ActualIsogenyChain, IdealToIsogenyError,
 };
+use crate::crypto::isogeny::algorithms::theta::{
+    theta_product_isogeny_sqrt_no_strategy, ThetaCouplePoint,
+};
+use crate::crypto::isogeny::curve::montgomery::MontgomeryCurve;
 use crate::crypto::isogeny::curve::point::CurvePoint;
+use crate::crypto::isogeny::curve::weierstrass::MontgomeryIsomorphism;
 use crate::crypto::isogeny::curve::weierstrass::ShortWeierstrassCurve;
+use crate::crypto::isogeny::curve::xonly::{x_of_difference, Proj1};
 use crate::crypto::isogeny::field::{Fp, Fp2};
 use sha3::{Digest, Sha3_256};
 
@@ -333,6 +339,9 @@ pub struct ActualProductIsogenyWitnessData {
     pub images: Vec<ProductPoint>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StructuredQuotientBackend;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActualQuotientProfile {
     pub target_identity: ProductPoint,
@@ -352,133 +361,115 @@ pub struct ActualQuotientProfile {
     pub images: Vec<ProductPoint>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalByKaniActualInput {
+    pub generators: [ProductPoint; 2],
+    pub axis_probes: [ProductPoint; 2],
+    pub samples: Vec<ProductPoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalByKaniActualOutput {
+    pub generator_images: [ProductPoint; 2],
+    pub generator_sum_image: ProductPoint,
+    pub generator_diff_image: ProductPoint,
+    pub generator_double_images: [ProductPoint; 2],
+    pub generator_triple_images: Box<[ProductPoint; 2]>,
+    pub axis_probe_images: [ProductPoint; 2],
+    pub axis_probe_sum_image: ProductPoint,
+    pub axis_probe_diff_image: ProductPoint,
+    pub axis_probe_double_images: [ProductPoint; 2],
+    pub axis_probe_triple_images: Box<[ProductPoint; 2]>,
+    pub images: Vec<ProductPoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThetaProductIsogenyInput {
+    pub generators: [ProductPoint; 2],
+    pub axis_probes: [ProductPoint; 2],
+    pub samples: Vec<ProductPoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThetaProductIsogenyOutput {
+    pub generator_images: [ProductPoint; 2],
+    pub generator_sum_image: ProductPoint,
+    pub generator_diff_image: ProductPoint,
+    pub generator_double_images: [ProductPoint; 2],
+    pub generator_triple_images: Box<[ProductPoint; 2]>,
+    pub axis_probe_images: [ProductPoint; 2],
+    pub axis_probe_sum_image: ProductPoint,
+    pub axis_probe_diff_image: ProductPoint,
+    pub axis_probe_double_images: [ProductPoint; 2],
+    pub axis_probe_triple_images: Box<[ProductPoint; 2]>,
+    pub images: Vec<ProductPoint>,
+    pub theta_data: Option<ThetaQuotientData>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThetaQuotientData {
+    pub codomain: [Proj1; 2],
+    pub generator_images_xonly: [ThetaCouplePoint; 2],
+    pub axis_probe_images_xonly: [ThetaCouplePoint; 2],
+    pub sample_images_xonly: Vec<ThetaCouplePoint>,
+}
+
+impl ThetaQuotientData {
+    pub fn commitment(&self) -> [u8; 32] {
+        let mut hasher = Sha3_256::new();
+        hasher.update(b"AURORA:isogeny:kani:theta-quotient:v1");
+        for codomain in &self.codomain {
+            update_proj1_hash(&mut hasher, codomain);
+        }
+        for point in &self.generator_images_xonly {
+            update_theta_couple_hash(&mut hasher, point);
+        }
+        for point in &self.axis_probe_images_xonly {
+            update_theta_couple_hash(&mut hasher, point);
+        }
+        hasher.update((self.sample_images_xonly.len() as u32).to_be_bytes());
+        for point in &self.sample_images_xonly {
+            update_theta_couple_hash(&mut hasher, point);
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&hasher.finalize());
+        out
+    }
+}
+
 impl ActualQuotientProfile {
     pub fn from_witness(witness: &ActualProductIsogenyWitnessData) -> Result<Self> {
         if witness.samples.len() < 2 || witness.images.len() < 2 {
             return Err(KaniError::InvalidActualWitness);
         }
         let generators = [witness.samples[0], witness.samples[1]];
-        let generator_images = [witness.images[0], witness.images[1]];
-        let (axis_probes, axis_probe_images) =
-            derive_axis_probes(&witness.isogeny, &witness.kernel)?;
-        let axis_probe_sum = axis_probes[0].add(
-            &axis_probes[1],
-            &witness.isogeny.left.source,
-            &witness.isogeny.right.source,
+        let (axis_probes, _) = derive_axis_probes(&witness.isogeny, &witness.kernel)?;
+        let evaluation = StructuredQuotientBackend::eval_theta_quotient(
+            &witness.isogeny,
+            &witness.kernel,
+            &ThetaProductIsogenyInput {
+                generators,
+                axis_probes,
+                samples: witness.samples.clone(),
+            },
         )?;
-        let axis_probe_diff = axis_probes[0].add(
-            &axis_probes[1].negate(&witness.isogeny.left.source, &witness.isogeny.right.source)?,
-            &witness.isogeny.left.source,
-            &witness.isogeny.right.source,
-        )?;
-        let axis_probe_sum_image = witness.isogeny.map_point(&axis_probe_sum)?;
-        let axis_probe_diff_image = witness.isogeny.map_point(&axis_probe_diff)?;
-        let axis_probe_double_images = [
-            witness.isogeny.map_point(&axis_probes[0].add(
-                &axis_probes[0],
-                &witness.isogeny.left.source,
-                &witness.isogeny.right.source,
-            )?)?,
-            witness.isogeny.map_point(&axis_probes[1].add(
-                &axis_probes[1],
-                &witness.isogeny.left.source,
-                &witness.isogeny.right.source,
-            )?)?,
-        ];
-        let axis_probe_triple_images = Box::new([
-            witness.isogeny.map_point(
-                &axis_probes[0]
-                    .add(
-                        &axis_probes[0],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?
-                    .add(
-                        &axis_probes[0],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?,
-            )?,
-            witness.isogeny.map_point(
-                &axis_probes[1]
-                    .add(
-                        &axis_probes[1],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?
-                    .add(
-                        &axis_probes[1],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?,
-            )?,
-        ]);
-        let generator_sum = generators[0].add(
-            &generators[1],
-            &witness.isogeny.left.source,
-            &witness.isogeny.right.source,
-        )?;
-        let generator_diff = generators[0].add(
-            &generators[1].negate(&witness.isogeny.left.source, &witness.isogeny.right.source)?,
-            &witness.isogeny.left.source,
-            &witness.isogeny.right.source,
-        )?;
-        let generator_sum_image = witness.isogeny.map_point(&generator_sum)?;
-        let generator_diff_image = witness.isogeny.map_point(&generator_diff)?;
-        let generator_double_images = [
-            witness.isogeny.map_point(&generators[0].add(
-                &generators[0],
-                &witness.isogeny.left.source,
-                &witness.isogeny.right.source,
-            )?)?,
-            witness.isogeny.map_point(&generators[1].add(
-                &generators[1],
-                &witness.isogeny.left.source,
-                &witness.isogeny.right.source,
-            )?)?,
-        ];
-        let generator_triple_images = Box::new([
-            witness.isogeny.map_point(
-                &generators[0]
-                    .add(
-                        &generators[0],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?
-                    .add(
-                        &generators[0],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?,
-            )?,
-            witness.isogeny.map_point(
-                &generators[1]
-                    .add(
-                        &generators[1],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?
-                    .add(
-                        &generators[1],
-                        &witness.isogeny.left.source,
-                        &witness.isogeny.right.source,
-                    )?,
-            )?,
-        ]);
+        if evaluation.images != witness.images {
+            return Err(KaniError::InvalidActualWitness);
+        }
         let profile = Self {
             target_identity: witness.isogeny.target_identity(),
             axis_probes,
-            axis_probe_images,
-            axis_probe_sum_image,
-            axis_probe_diff_image,
-            axis_probe_double_images,
-            axis_probe_triple_images,
+            axis_probe_images: evaluation.axis_probe_images,
+            axis_probe_sum_image: evaluation.axis_probe_sum_image,
+            axis_probe_diff_image: evaluation.axis_probe_diff_image,
+            axis_probe_double_images: evaluation.axis_probe_double_images,
+            axis_probe_triple_images: evaluation.axis_probe_triple_images,
             generators,
-            generator_images,
-            generator_sum_image,
-            generator_diff_image,
-            generator_double_images,
-            generator_triple_images,
+            generator_images: evaluation.generator_images,
+            generator_sum_image: evaluation.generator_sum_image,
+            generator_diff_image: evaluation.generator_diff_image,
+            generator_double_images: evaluation.generator_double_images,
+            generator_triple_images: evaluation.generator_triple_images,
             samples: witness.samples.clone(),
             images: witness.images.clone(),
         };
@@ -839,74 +830,53 @@ impl ActualQuotientProfile {
         for image in &self.images {
             hasher.update(image.commitment());
         }
+        if let Some(theta_commitment) = self.theta_commitment(isogeny, kernel)? {
+            hasher.update([1]);
+            hasher.update(theta_commitment);
+        } else {
+            hasher.update([0]);
+        }
         let mut out = [0u8; 32];
         out.copy_from_slice(&hasher.finalize());
         Ok(out)
+    }
+
+    pub fn theta_commitment(
+        &self,
+        isogeny: &ActualProductIsogeny,
+        kernel: &ActualProductKernel,
+    ) -> Result<Option<[u8; 32]>> {
+        let theta = StructuredQuotientBackend::eval_theta_quotient(
+            isogeny,
+            kernel,
+            &ThetaProductIsogenyInput {
+                generators: self.generators,
+                axis_probes: self.axis_probes,
+                samples: self.samples.clone(),
+            },
+        )?;
+        if let Some(theta_data) = theta.theta_data.as_ref() {
+            if !theta_data_matches_profile(theta_data, self) {
+                return Err(KaniError::InvalidActualWitness);
+            }
+            Ok(Some(theta_data.commitment()))
+        } else {
+            Ok(None)
+        }
     }
 }
 
 impl ActualProductIsogenyWitnessData {
     pub fn from_isogeny(isogeny: ActualProductIsogeny) -> Result<Self> {
-        isogeny.validate()?;
-        let left_generator = isogeny
-            .left
-            .steps
-            .first()
-            .map(|step| step.kernel_generator)
-            .ok_or(KaniError::InvalidActualWitness)?;
-        let right_generator = isogeny
-            .right
-            .steps
-            .first()
-            .map(|step| step.kernel_generator)
-            .ok_or(KaniError::InvalidActualWitness)?;
-
-        let kernel = derive_kernel_basis(&isogeny, left_generator, right_generator)?;
-        let (samples, images) = Self::derive_samples_and_images(&isogeny, &kernel)?;
-        let data = Self {
-            isogeny,
-            kernel,
-            samples,
-            images,
-        };
-        data.validate()?;
-        Ok(data)
+        StructuredQuotientBackend::witness_from_isogeny(isogeny)
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.isogeny.validate()?;
-        self.kernel.validate(&self.isogeny)?;
-        let identity = self.isogeny.target_identity();
-        if self.isogeny.map_point(&self.kernel.p)? != identity
-            || self.isogeny.map_point(&self.kernel.q)? != identity
-        {
-            return Err(KaniError::InvalidActualWitness);
-        }
-        let kernel_sum = self.kernel.p.add(
-            &self.kernel.q,
-            &self.isogeny.left.source,
-            &self.isogeny.right.source,
-        )?;
-        if self.isogeny.map_point(&kernel_sum)? != identity {
-            return Err(KaniError::InvalidActualWitness);
-        }
-        self.quotient_profile()?
-            .validate(&self.isogeny, &self.kernel)?;
-        Ok(())
+        StructuredQuotientBackend::validate_witness(self)
     }
 
     pub fn statement(&self) -> Result<ProductIsogenyStatement> {
-        self.validate()?;
-        Ok(KaniEngine::statement(
-            self.isogeny.source_commitment(),
-            self.kernel.left_commitment(),
-            self.isogeny.target_commitment(),
-            self.kernel.right_commitment(),
-            [0u8; 32],
-            self.quotient_profile()?.probe_commitment(),
-            self.quotient_profile_commitment()?,
-            self.isogeny.commitment(),
-        ))
+        StructuredQuotientBackend::statement(self)
     }
 
     pub fn construct_witness(&self, challenge: &[u8]) -> Result<ProductIsogenyWitness> {
@@ -933,7 +903,99 @@ impl ActualProductIsogenyWitnessData {
     }
 
     pub fn quotient_profile(&self) -> Result<ActualQuotientProfile> {
-        ActualQuotientProfile::from_witness(self)
+        StructuredQuotientBackend::profile_from_witness(self)
+    }
+
+    pub fn sample_commitment(&self) -> [u8; 32] {
+        self.quotient_profile()
+            .expect("validated witness yields a quotient profile")
+            .sample_commitment()
+    }
+
+    pub fn image_commitment(&self) -> [u8; 32] {
+        self.quotient_profile()
+            .expect("validated witness yields a quotient profile")
+            .image_commitment()
+    }
+
+    pub fn coset_commitment(&self) -> Result<[u8; 32]> {
+        self.quotient_profile()?
+            .coset_commitment(&self.isogeny, &self.kernel)
+    }
+
+    pub fn quotient_profile_commitment(&self) -> Result<[u8; 32]> {
+        self.quotient_profile()?
+            .commitment(&self.isogeny, &self.kernel)
+    }
+
+    fn sample_orbit(&self, sample: &ProductPoint) -> Result<[ProductPoint; 4]> {
+        sample_orbit(&self.isogeny, &self.kernel, sample)
+    }
+}
+
+impl StructuredQuotientBackend {
+    pub fn witness_from_isogeny(
+        isogeny: ActualProductIsogeny,
+    ) -> Result<ActualProductIsogenyWitnessData> {
+        isogeny.validate()?;
+        let left_generator = isogeny
+            .left
+            .steps
+            .first()
+            .map(|step| step.kernel_generator)
+            .ok_or(KaniError::InvalidActualWitness)?;
+        let right_generator = isogeny
+            .right
+            .steps
+            .first()
+            .map(|step| step.kernel_generator)
+            .ok_or(KaniError::InvalidActualWitness)?;
+
+        let kernel = derive_kernel_basis(&isogeny, left_generator, right_generator)?;
+        let (samples, images) = Self::derive_samples_and_images(&isogeny, &kernel)?;
+        let data = ActualProductIsogenyWitnessData {
+            isogeny,
+            kernel,
+            samples,
+            images,
+        };
+        Self::validate_witness(&data)?;
+        Ok(data)
+    }
+
+    pub fn validate_witness(witness: &ActualProductIsogenyWitnessData) -> Result<()> {
+        witness.isogeny.validate()?;
+        witness.kernel.validate(&witness.isogeny)?;
+        let identity = witness.isogeny.target_identity();
+        if witness.isogeny.map_point(&witness.kernel.p)? != identity
+            || witness.isogeny.map_point(&witness.kernel.q)? != identity
+        {
+            return Err(KaniError::InvalidActualWitness);
+        }
+        let kernel_sum = witness.kernel.p.add(
+            &witness.kernel.q,
+            &witness.isogeny.left.source,
+            &witness.isogeny.right.source,
+        )?;
+        if witness.isogeny.map_point(&kernel_sum)? != identity {
+            return Err(KaniError::InvalidActualWitness);
+        }
+        Self::profile_from_witness(witness)?.validate(&witness.isogeny, &witness.kernel)?;
+        Ok(())
+    }
+
+    pub fn statement(witness: &ActualProductIsogenyWitnessData) -> Result<ProductIsogenyStatement> {
+        Self::validate_witness(witness)?;
+        Ok(KaniEngine::statement(
+            witness.isogeny.source_commitment(),
+            witness.kernel.left_commitment(),
+            witness.isogeny.target_commitment(),
+            witness.kernel.right_commitment(),
+            [0u8; 32],
+            Self::profile_from_witness(witness)?.probe_commitment(),
+            witness.quotient_profile_commitment()?,
+            witness.isogeny.commitment(),
+        ))
     }
 
     fn derive_samples_and_images(
@@ -1014,31 +1076,264 @@ impl ActualProductIsogenyWitnessData {
         Ok((samples, images))
     }
 
-    pub fn sample_commitment(&self) -> [u8; 32] {
-        self.quotient_profile()
-            .expect("validated witness yields a quotient profile")
-            .sample_commitment()
+    pub fn profile_from_witness(
+        witness: &ActualProductIsogenyWitnessData,
+    ) -> Result<ActualQuotientProfile> {
+        ActualQuotientProfile::from_witness(witness)
     }
 
-    pub fn image_commitment(&self) -> [u8; 32] {
-        self.quotient_profile()
-            .expect("validated witness yields a quotient profile")
-            .image_commitment()
+    pub fn eval_theta_quotient(
+        isogeny: &ActualProductIsogeny,
+        kernel: &ActualProductKernel,
+        input: &ThetaProductIsogenyInput,
+    ) -> Result<ThetaProductIsogenyOutput> {
+        let evaluation = KaniEngine::eval_by_kani_actual(
+            isogeny,
+            &EvalByKaniActualInput {
+                generators: input.generators,
+                axis_probes: input.axis_probes,
+                samples: input.samples.clone(),
+            },
+        )?;
+        let mut output = ThetaProductIsogenyOutput {
+            generator_images: evaluation.generator_images,
+            generator_sum_image: evaluation.generator_sum_image,
+            generator_diff_image: evaluation.generator_diff_image,
+            generator_double_images: evaluation.generator_double_images,
+            generator_triple_images: evaluation.generator_triple_images,
+            axis_probe_images: evaluation.axis_probe_images,
+            axis_probe_sum_image: evaluation.axis_probe_sum_image,
+            axis_probe_diff_image: evaluation.axis_probe_diff_image,
+            axis_probe_double_images: evaluation.axis_probe_double_images,
+            axis_probe_triple_images: evaluation.axis_probe_triple_images,
+            images: evaluation.images,
+            theta_data: None,
+        };
+        if let Some(theta_data) = Self::try_eval_theta_quotient_data(isogeny, kernel, input)? {
+            if !theta_data_matches_affine_output(&theta_data, &output) {
+                return Err(KaniError::InvalidActualWitness);
+            }
+            output.theta_data = Some(theta_data);
+        }
+        Ok(output)
     }
 
-    pub fn coset_commitment(&self) -> Result<[u8; 32]> {
-        self.quotient_profile()?
-            .coset_commitment(&self.isogeny, &self.kernel)
-    }
+    fn try_eval_theta_quotient_data(
+        isogeny: &ActualProductIsogeny,
+        kernel: &ActualProductKernel,
+        input: &ThetaProductIsogenyInput,
+    ) -> Result<Option<ThetaQuotientData>> {
+        if isogeny.left.steps.is_empty()
+            || isogeny.left.steps.len() != isogeny.right.steps.len()
+            || !isogeny.left.steps.iter().all(|step| step.degree == 2)
+            || !isogeny.right.steps.iter().all(|step| step.degree == 2)
+        {
+            return Ok(None);
+        }
 
-    pub fn quotient_profile_commitment(&self) -> Result<[u8; 32]> {
-        self.quotient_profile()?
-            .commitment(&self.isogeny, &self.kernel)
-    }
+        let left = match recover_montgomery_isomorphism(&isogeny.left.source) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        let right = match recover_montgomery_isomorphism(&isogeny.right.source) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
 
-    fn sample_orbit(&self, sample: &ProductPoint) -> Result<[ProductPoint; 4]> {
-        sample_orbit(&self.isogeny, &self.kernel, sample)
+        let p = match product_point_to_theta_couple(&kernel.p, &left, &right) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        let q = match product_point_to_theta_couple(&kernel.q, &left, &right) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+
+        let p_left = left.to_montgomery_point(&kernel.p.left).ok();
+        let q_left = left.to_montgomery_point(&kernel.q.left).ok();
+        let p_right = right.to_montgomery_point(&kernel.p.right).ok();
+        let q_right = right.to_montgomery_point(&kernel.q.right).ok();
+        let diff = match (p_left, q_left, p_right, q_right) {
+            (Some(pl), Some(ql), Some(pr), Some(qr))
+                if !pl.is_infinity()
+                    && !ql.is_infinity()
+                    && !pr.is_infinity()
+                    && !qr.is_infinity() =>
+            {
+                ThetaCouplePoint {
+                    p1: x_of_difference(left.montgomery_curve(), &pl, &ql)
+                        .ok()
+                        .unwrap_or(Proj1::identity(left.montgomery_curve().modulus())),
+                    p2: x_of_difference(right.montgomery_curve(), &pr, &qr)
+                        .ok()
+                        .unwrap_or(Proj1::identity(right.montgomery_curve().modulus())),
+                }
+            }
+            _ => return Ok(None),
+        };
+
+        let mut image_points = Vec::with_capacity(4 + input.samples.len());
+        image_points.push(
+            match product_point_to_theta_couple(&input.generators[0], &left, &right) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+        );
+        image_points.push(
+            match product_point_to_theta_couple(&input.generators[1], &left, &right) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+        );
+        image_points.push(
+            match product_point_to_theta_couple(&input.axis_probes[0], &left, &right) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+        );
+        image_points.push(
+            match product_point_to_theta_couple(&input.axis_probes[1], &left, &right) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+        );
+        for sample in &input.samples {
+            image_points.push(match product_point_to_theta_couple(sample, &left, &right) {
+                Some(value) => value,
+                None => return Ok(None),
+            });
+        }
+
+        let (codomain, mapped) = match theta_product_isogeny_sqrt_no_strategy(
+            left.montgomery_curve(),
+            right.montgomery_curve(),
+            p,
+            q,
+            diff,
+            image_points,
+            isogeny.left.steps.len(),
+        ) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+
+        if mapped.len() < 6 {
+            return Ok(None);
+        }
+        let kernel_base = mapped.len().saturating_sub(2);
+
+        Ok(Some(ThetaQuotientData {
+            codomain,
+            generator_images_xonly: [mapped[0], mapped[1]],
+            axis_probe_images_xonly: [mapped[2], mapped[3]],
+            sample_images_xonly: mapped[4..kernel_base].to_vec(),
+        }))
     }
+}
+
+fn theta_data_matches_affine_output(
+    theta_data: &ThetaQuotientData,
+    output: &ThetaProductIsogenyOutput,
+) -> bool {
+    theta_couple_matches_product_point(
+        &theta_data.generator_images_xonly[0],
+        &output.generator_images[0],
+    ) && theta_couple_matches_product_point(
+        &theta_data.generator_images_xonly[1],
+        &output.generator_images[1],
+    ) && theta_couple_matches_product_point(
+        &theta_data.axis_probe_images_xonly[0],
+        &output.axis_probe_images[0],
+    ) && theta_couple_matches_product_point(
+        &theta_data.axis_probe_images_xonly[1],
+        &output.axis_probe_images[1],
+    ) && theta_data.sample_images_xonly.len() == output.images.len()
+        && theta_data
+            .sample_images_xonly
+            .iter()
+            .zip(output.images.iter())
+            .all(|(lhs, rhs)| theta_couple_matches_product_point(lhs, rhs))
+}
+
+fn theta_data_matches_profile(
+    theta_data: &ThetaQuotientData,
+    profile: &ActualQuotientProfile,
+) -> bool {
+    theta_couple_matches_product_point(
+        &theta_data.generator_images_xonly[0],
+        &profile.generator_images[0],
+    ) && theta_couple_matches_product_point(
+        &theta_data.generator_images_xonly[1],
+        &profile.generator_images[1],
+    ) && theta_couple_matches_product_point(
+        &theta_data.axis_probe_images_xonly[0],
+        &profile.axis_probe_images[0],
+    ) && theta_couple_matches_product_point(
+        &theta_data.axis_probe_images_xonly[1],
+        &profile.axis_probe_images[1],
+    ) && theta_data.sample_images_xonly.len() == profile.images.len()
+        && theta_data
+            .sample_images_xonly
+            .iter()
+            .zip(profile.images.iter())
+            .all(|(lhs, rhs)| theta_couple_matches_product_point(lhs, rhs))
+}
+
+fn theta_couple_matches_product_point(lhs: &ThetaCouplePoint, rhs: &ProductPoint) -> bool {
+    proj_matches_curve_point_x(&lhs.p1, &rhs.left)
+        && proj_matches_curve_point_x(&lhs.p2, &rhs.right)
+}
+
+fn proj_matches_curve_point_x(lhs: &Proj1, rhs: &CurvePoint) -> bool {
+    if lhs.is_identity() || rhs.is_infinity() {
+        return lhs.is_identity() == rhs.is_infinity();
+    }
+    match lhs.to_affine_x() {
+        Ok(x) => x == rhs.x,
+        Err(_) => false,
+    }
+}
+
+fn recover_montgomery_isomorphism(curve: &ShortWeierstrassCurve) -> Option<MontgomeryIsomorphism> {
+    let modulus = curve.modulus();
+    let denominator = Fp2::one(modulus).add(&curve.a.double()).ok()?;
+    if denominator.is_zero() {
+        return None;
+    }
+    let a_param = Fp2::from_u64(modulus, 9)
+        .neg()
+        .mul(&curve.b)
+        .ok()?
+        .mul(&denominator.invert().ok()?)
+        .ok()?;
+    let montgomery = MontgomeryCurve::new(a_param).ok()?;
+    let iso = MontgomeryIsomorphism::new(montgomery).ok()?;
+    if iso.weierstrass_curve() == curve {
+        Some(iso)
+    } else {
+        None
+    }
+}
+
+fn product_point_to_theta_couple(
+    point: &ProductPoint,
+    left: &MontgomeryIsomorphism,
+    right: &MontgomeryIsomorphism,
+) -> Option<ThetaCouplePoint> {
+    let left_point = left.to_montgomery_point(&point.left).ok()?;
+    let right_point = right.to_montgomery_point(&point.right).ok()?;
+    Some(ThetaCouplePoint {
+        p1: if left_point.is_infinity() {
+            Proj1::identity(left.montgomery_curve().modulus())
+        } else {
+            Proj1::from_point(&left_point).ok()?
+        },
+        p2: if right_point.is_infinity() {
+            Proj1::identity(right.montgomery_curve().modulus())
+        } else {
+            Proj1::from_point(&right_point).ok()?
+        },
+    })
 }
 
 fn derive_kernel_basis(
@@ -1195,6 +1490,154 @@ fn derive_axis_probes(
 pub struct KaniEngine;
 
 impl KaniEngine {
+    pub fn eval_by_kani_actual(
+        isogeny: &ActualProductIsogeny,
+        input: &EvalByKaniActualInput,
+    ) -> Result<EvalByKaniActualOutput> {
+        for generator in &input.generators {
+            generator.validate_on(&isogeny.left.source, &isogeny.right.source)?;
+        }
+        for probe in &input.axis_probes {
+            probe.validate_on(&isogeny.left.source, &isogeny.right.source)?;
+        }
+        for sample in &input.samples {
+            sample.validate_on(&isogeny.left.source, &isogeny.right.source)?;
+        }
+
+        let generator_images = [
+            isogeny.map_point(&input.generators[0])?,
+            isogeny.map_point(&input.generators[1])?,
+        ];
+        let generator_sum = input.generators[0].add(
+            &input.generators[1],
+            &isogeny.left.source,
+            &isogeny.right.source,
+        )?;
+        let generator_diff = input.generators[0].add(
+            &input.generators[1].negate(&isogeny.left.source, &isogeny.right.source)?,
+            &isogeny.left.source,
+            &isogeny.right.source,
+        )?;
+        let generator_sum_image = isogeny.map_point(&generator_sum)?;
+        let generator_diff_image = isogeny.map_point(&generator_diff)?;
+        let generator_double_images = [
+            isogeny.map_point(&input.generators[0].add(
+                &input.generators[0],
+                &isogeny.left.source,
+                &isogeny.right.source,
+            )?)?,
+            isogeny.map_point(&input.generators[1].add(
+                &input.generators[1],
+                &isogeny.left.source,
+                &isogeny.right.source,
+            )?)?,
+        ];
+        let generator_triple_images = Box::new([
+            isogeny.map_point(
+                &input.generators[0]
+                    .add(
+                        &input.generators[0],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?
+                    .add(
+                        &input.generators[0],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?,
+            )?,
+            isogeny.map_point(
+                &input.generators[1]
+                    .add(
+                        &input.generators[1],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?
+                    .add(
+                        &input.generators[1],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?,
+            )?,
+        ]);
+
+        let axis_probe_images = [
+            isogeny.map_point(&input.axis_probes[0])?,
+            isogeny.map_point(&input.axis_probes[1])?,
+        ];
+        let axis_probe_sum = input.axis_probes[0].add(
+            &input.axis_probes[1],
+            &isogeny.left.source,
+            &isogeny.right.source,
+        )?;
+        let axis_probe_diff = input.axis_probes[0].add(
+            &input.axis_probes[1].negate(&isogeny.left.source, &isogeny.right.source)?,
+            &isogeny.left.source,
+            &isogeny.right.source,
+        )?;
+        let axis_probe_sum_image = isogeny.map_point(&axis_probe_sum)?;
+        let axis_probe_diff_image = isogeny.map_point(&axis_probe_diff)?;
+        let axis_probe_double_images = [
+            isogeny.map_point(&input.axis_probes[0].add(
+                &input.axis_probes[0],
+                &isogeny.left.source,
+                &isogeny.right.source,
+            )?)?,
+            isogeny.map_point(&input.axis_probes[1].add(
+                &input.axis_probes[1],
+                &isogeny.left.source,
+                &isogeny.right.source,
+            )?)?,
+        ];
+        let axis_probe_triple_images = Box::new([
+            isogeny.map_point(
+                &input.axis_probes[0]
+                    .add(
+                        &input.axis_probes[0],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?
+                    .add(
+                        &input.axis_probes[0],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?,
+            )?,
+            isogeny.map_point(
+                &input.axis_probes[1]
+                    .add(
+                        &input.axis_probes[1],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?
+                    .add(
+                        &input.axis_probes[1],
+                        &isogeny.left.source,
+                        &isogeny.right.source,
+                    )?,
+            )?,
+        ]);
+
+        let mut images = Vec::with_capacity(input.samples.len());
+        for sample in &input.samples {
+            images.push(isogeny.map_point(sample)?);
+        }
+
+        Ok(EvalByKaniActualOutput {
+            generator_images,
+            generator_sum_image,
+            generator_diff_image,
+            generator_double_images,
+            generator_triple_images,
+            axis_probe_images,
+            axis_probe_sum_image,
+            axis_probe_diff_image,
+            axis_probe_double_images,
+            axis_probe_triple_images,
+            images,
+        })
+    }
+
     pub fn statement(
         verifying_codomain_tag: [u8; 32],
         verifying_basis_commitment: [u8; 32],
@@ -1530,6 +1973,16 @@ fn update_point_hash(hasher: &mut Sha3_256, point: &CurvePoint) {
     update_fp2_hash(hasher, &point.y);
 }
 
+fn update_proj1_hash(hasher: &mut Sha3_256, point: &Proj1) {
+    update_fp2_hash(hasher, &point.x);
+    update_fp2_hash(hasher, &point.z);
+}
+
+fn update_theta_couple_hash(hasher: &mut Sha3_256, point: &ThetaCouplePoint) {
+    update_proj1_hash(hasher, &point.p1);
+    update_proj1_hash(hasher, &point.p2);
+}
+
 fn update_fp2_hash(hasher: &mut Sha3_256, value: &crate::crypto::isogeny::field::Fp2) {
     let c0 = value.c0.to_be_bytes();
     let c1 = value.c1.to_be_bytes();
@@ -1571,8 +2024,8 @@ fn enumerate_small_curve_points(curve: &ShortWeierstrassCurve) -> Result<Vec<Cur
 #[cfg(test)]
 mod tests {
     use super::{
-        ActualProductIsogeny, ActualProductIsogenyWitnessData, ActualProductKernel, KaniEngine,
-        KaniError, ProductPoint,
+        ActualProductIsogeny, ActualProductIsogenyWitnessData, ActualProductKernel,
+        EvalByKaniActualInput, KaniEngine, KaniError, ProductPoint,
     };
     use crate::crypto::isogeny::algorithms::IdealToIsogenyEngine;
     use crate::crypto::isogeny::curve::montgomery::MontgomeryCurve;
@@ -1954,6 +2407,289 @@ mod tests {
         assert_ne!(
             original,
             witness_data.quotient_profile_commitment().unwrap()
+        );
+    }
+
+    #[test]
+    fn eval_by_kani_actual_matches_quotient_profile() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 3);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 3)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let profile = witness_data.quotient_profile().unwrap();
+        let evaluation = KaniEngine::eval_by_kani_actual(
+            &witness_data.isogeny,
+            &EvalByKaniActualInput {
+                generators: profile.generators,
+                axis_probes: profile.axis_probes,
+                samples: profile.samples.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(evaluation.generator_images, profile.generator_images);
+        assert_eq!(evaluation.generator_sum_image, profile.generator_sum_image);
+        assert_eq!(
+            evaluation.generator_diff_image,
+            profile.generator_diff_image
+        );
+        assert_eq!(
+            evaluation.generator_double_images,
+            profile.generator_double_images
+        );
+        assert_eq!(
+            &*evaluation.generator_triple_images,
+            &*profile.generator_triple_images
+        );
+        assert_eq!(evaluation.axis_probe_images, profile.axis_probe_images);
+        assert_eq!(
+            evaluation.axis_probe_sum_image,
+            profile.axis_probe_sum_image
+        );
+        assert_eq!(
+            evaluation.axis_probe_diff_image,
+            profile.axis_probe_diff_image
+        );
+        assert_eq!(
+            evaluation.axis_probe_double_images,
+            profile.axis_probe_double_images
+        );
+        assert_eq!(
+            &*evaluation.axis_probe_triple_images,
+            &*profile.axis_probe_triple_images
+        );
+        assert_eq!(evaluation.images, profile.images);
+    }
+
+    #[test]
+    fn structured_quotient_backend_matches_witness_profile() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 3);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 3)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let isogeny = ActualProductIsogeny { left, right };
+        let witness = super::StructuredQuotientBackend::witness_from_isogeny(isogeny).unwrap();
+        let profile = super::StructuredQuotientBackend::profile_from_witness(&witness).unwrap();
+        assert_eq!(profile, witness.quotient_profile().unwrap());
+    }
+
+    #[test]
+    fn theta_quotient_backend_matches_eval_by_kani_actual() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 3);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 3)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let profile = witness_data.quotient_profile().unwrap();
+        let theta = super::StructuredQuotientBackend::eval_theta_quotient(
+            &witness_data.isogeny,
+            &witness_data.kernel,
+            &super::ThetaProductIsogenyInput {
+                generators: profile.generators,
+                axis_probes: profile.axis_probes,
+                samples: profile.samples.clone(),
+            },
+        )
+        .unwrap();
+        let eval = KaniEngine::eval_by_kani_actual(
+            &witness_data.isogeny,
+            &EvalByKaniActualInput {
+                generators: profile.generators,
+                axis_probes: profile.axis_probes,
+                samples: profile.samples.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(theta.generator_images, eval.generator_images);
+        assert_eq!(theta.generator_sum_image, eval.generator_sum_image);
+        assert_eq!(theta.generator_diff_image, eval.generator_diff_image);
+        assert_eq!(theta.generator_double_images, eval.generator_double_images);
+        assert_eq!(
+            &*theta.generator_triple_images,
+            &*eval.generator_triple_images
+        );
+        assert_eq!(theta.axis_probe_images, eval.axis_probe_images);
+        assert_eq!(theta.axis_probe_sum_image, eval.axis_probe_sum_image);
+        assert_eq!(theta.axis_probe_diff_image, eval.axis_probe_diff_image);
+        assert_eq!(
+            theta.axis_probe_double_images,
+            eval.axis_probe_double_images
+        );
+        assert_eq!(
+            &*theta.axis_probe_triple_images,
+            &*eval.axis_probe_triple_images
+        );
+        assert_eq!(theta.images, eval.images);
+    }
+
+    #[test]
+    fn theta_quotient_backend_handles_pure_two_power_case() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 2);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 2)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let profile = witness_data.quotient_profile().unwrap();
+        let theta = super::StructuredQuotientBackend::eval_theta_quotient(
+            &witness_data.isogeny,
+            &witness_data.kernel,
+            &super::ThetaProductIsogenyInput {
+                generators: profile.generators,
+                axis_probes: profile.axis_probes,
+                samples: profile.samples.clone(),
+            },
+        )
+        .unwrap();
+
+        if let Some(theta_data) = &theta.theta_data {
+            assert_eq!(theta_data.sample_images_xonly.len(), profile.samples.len());
+        }
+    }
+
+    #[test]
+    fn quotient_profile_theta_commitment_matches_eval_theta_quotient() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 2);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 2)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let profile = witness_data.quotient_profile().unwrap();
+        let theta = super::StructuredQuotientBackend::eval_theta_quotient(
+            &witness_data.isogeny,
+            &witness_data.kernel,
+            &super::ThetaProductIsogenyInput {
+                generators: profile.generators,
+                axis_probes: profile.axis_probes,
+                samples: profile.samples.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            profile
+                .theta_commitment(&witness_data.isogeny, &witness_data.kernel)
+                .unwrap(),
+            theta
+                .theta_data
+                .as_ref()
+                .map(super::ThetaQuotientData::commitment)
+        );
+    }
+
+    #[test]
+    fn quotient_profile_validate_accepts_theta_capable_profile() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 2);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 2)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let profile = witness_data.quotient_profile().unwrap();
+        profile
+            .validate(&witness_data.isogeny, &witness_data.kernel)
+            .unwrap();
+        let theta = super::StructuredQuotientBackend::eval_theta_quotient(
+            &witness_data.isogeny,
+            &witness_data.kernel,
+            &super::ThetaProductIsogenyInput {
+                generators: profile.generators,
+                axis_probes: profile.axis_probes,
+                samples: profile.samples.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            profile
+                .theta_commitment(&witness_data.isogeny, &witness_data.kernel)
+                .unwrap(),
+            theta
+                .theta_data
+                .as_ref()
+                .map(super::ThetaQuotientData::commitment)
+        );
+    }
+
+    #[test]
+    fn quotient_profile_theta_commitment_is_absent_for_mixed_degree_case() {
+        let modulus = FpModulus::from_u64(19).unwrap();
+        let montgomery = MontgomeryCurve::new(Fp2::from_u64(&modulus, 5)).unwrap();
+        let iso = MontgomeryIsomorphism::new(montgomery).unwrap();
+        let curve = *iso.weierstrass_curve();
+
+        let left_generator = point_of_order(&curve, 19, 3);
+        let left =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(left_generator, 3)]).unwrap();
+        let right_generator = point_of_order(&curve, 19, 2);
+        let right =
+            IdealToIsogenyEngine::realize_small_chain(curve, &[(right_generator, 2)]).unwrap();
+
+        let witness_data =
+            ActualProductIsogenyWitnessData::from_isogeny(ActualProductIsogeny { left, right })
+                .unwrap();
+        let profile = witness_data.quotient_profile().unwrap();
+        assert_eq!(
+            profile
+                .theta_commitment(&witness_data.isogeny, &witness_data.kernel)
+                .unwrap(),
+            None
         );
     }
 

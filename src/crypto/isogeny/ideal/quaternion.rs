@@ -201,29 +201,27 @@ impl QuaternionElement {
             .expect("reduced trace fits in QuaternionInteger")
     }
 
-    pub fn reduced_norm(&self) -> IsogenyInteger {
-        let a_sq = coeff_square(self.coeffs[0]);
-        let b_sq = coeff_square(self.coeffs[1]);
-        let c_sq = coeff_square(self.coeffs[2]);
-        let d_sq = coeff_square(self.coeffs[3]);
+    pub fn try_reduced_norm(&self) -> Option<IsogenyInteger> {
+        let a_sq = coeff_try_square(self.coeffs[0])?;
+        let b_sq = coeff_try_square(self.coeffs[1])?;
+        let c_sq = coeff_try_square(self.coeffs[2])?;
+        let d_sq = coeff_try_square(self.coeffs[3])?;
         let p = IsogenyInteger::from(u64::from(self.algebra.ramified_prime()));
-        let cd = c_sq
-            .checked_add(&d_sq)
-            .expect("reduced norm fits in IsogenyInteger");
-        let pcd = p
-            .checked_mul(&cd)
-            .expect("reduced norm fits in IsogenyInteger");
+        let cd = c_sq.checked_add(&d_sq)?;
+        let pcd = p.checked_mul(&cd)?;
         a_sq.checked_add(&b_sq)
             .and_then(|sum| sum.checked_add(&pcd))
+    }
+
+    pub fn reduced_norm(&self) -> IsogenyInteger {
+        self.try_reduced_norm()
             .expect("reduced norm fits in IsogenyInteger")
     }
 }
 
-fn coeff_square(coeff: QuaternionInteger) -> IsogenyInteger {
-    let abs = IsogenyInteger::from_be_slice(&coeff.unsigned_abs().to_be_bytes_trimmed())
-        .expect("quaternion coefficient magnitude fits in IsogenyInteger");
+fn coeff_try_square(coeff: QuaternionInteger) -> Option<IsogenyInteger> {
+    let abs = IsogenyInteger::from_be_slice(&coeff.unsigned_abs().to_be_bytes_trimmed())?;
     abs.checked_mul(&abs)
-        .expect("coefficient square fits in IsogenyInteger")
 }
 
 fn checked_add_coeff(lhs: QuaternionInteger, rhs: QuaternionInteger) -> Result<QuaternionInteger> {

@@ -3,3 +3,4 @@
 pub mod montgomery;
 pub mod point;
 pub mod weierstrass;
+pub mod xonly;

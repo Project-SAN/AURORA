@@ -303,40 +303,52 @@ impl BaseCurveTwoIsogenyActualWitnessProvider {
         let small = SmallModelActualWitnessProvider::new();
         let mut request = small.build_request(verifying_key, challenge, signature);
         let left_plan_degrees = self.select_plan_degrees(params, &request.left);
-        request.left.selected_degrees = if signature.ideal_witness.left_step_degrees.is_empty() {
-            if left_plan_degrees.is_empty() {
-                vec![IsogenyInteger::from(2u64)]
-            } else {
-                left_plan_degrees
-            }
+        request.left.selected_degrees = if !left_plan_degrees.is_empty() {
+            left_plan_degrees
+        } else if signature.ideal_witness.left_step_degrees.is_empty() {
+            vec![IsogenyInteger::from(2u64)]
         } else {
-            preferred_step_degrees(
-                &signature.ideal_witness.left_step_degrees_integers(),
-                left_plan_degrees
-                    .first()
-                    .copied()
-                    .unwrap_or_else(|| IsogenyInteger::from(2u64)),
-            )
+            signature.ideal_witness.left_step_degrees_integers()
         };
         request.left.selected_degree = request.left.selected_degrees[0];
         let right_plan_degrees = self.select_plan_degrees(params, &request.right);
-        request.right.selected_degrees = if signature.ideal_witness.right_step_degrees.is_empty() {
-            if right_plan_degrees.is_empty() {
-                vec![IsogenyInteger::from(2u64)]
-            } else {
-                right_plan_degrees
-            }
+        request.right.selected_degrees = if !right_plan_degrees.is_empty() {
+            right_plan_degrees
+        } else if signature.ideal_witness.right_step_degrees.is_empty() {
+            vec![IsogenyInteger::from(2u64)]
         } else {
-            preferred_step_degrees(
-                &signature.ideal_witness.right_step_degrees_integers(),
-                right_plan_degrees
-                    .first()
-                    .copied()
-                    .unwrap_or_else(|| IsogenyInteger::from(2u64)),
-            )
+            signature.ideal_witness.right_step_degrees_integers()
         };
         request.right.selected_degree = request.right.selected_degrees[0];
+        self.refresh_stage_traces(params, &mut request.left);
+        self.refresh_stage_traces(params, &mut request.right);
         request
+    }
+
+    fn refresh_stage_traces(
+        &self,
+        params: &'static SaltPrismParameters,
+        request: &mut ActualChainRequest,
+    ) {
+        let Some(ideal_trace) = request.ideal_trace else {
+            return;
+        };
+        let Ok(ideal) = ideal_trace.to_ideal(params) else {
+            return;
+        };
+        let Ok(decomposition) =
+            IdealToIsogenyEngine::derive_stage_decomposition(&ideal, &request.selected_degrees)
+        else {
+            return;
+        };
+        request.stage_traces = decomposition
+            .iter()
+            .map(|stage| ReferenceIdealTrace::from_ideal(&stage.stage))
+            .collect();
+        request.stage_principal_traces = decomposition
+            .iter()
+            .map(|stage| ReferenceIdealTrace::from_ideal(&stage.principal))
+            .collect();
     }
 
     fn select_plan_degrees(
@@ -344,69 +356,50 @@ impl BaseCurveTwoIsogenyActualWitnessProvider {
         params: &'static SaltPrismParameters,
         request: &ActualChainRequest,
     ) -> Vec<IsogenyInteger> {
-        let mut current = match self.base_curve(params) {
-            Ok(curve) => curve,
-            Err(_) => return Vec::new(),
-        };
-        let context = match self.search_context(params, request) {
-            Ok(context) => context,
-            Err(_) => return Vec::new(),
-        };
         let mut supported = Vec::new();
-        let mut stage = 0usize;
         for step in &request.qlapoti_plan.steps {
             match step.strategy {
                 QlapotiStrategy::TwoPower => {
                     for _ in 0..step.exponent {
-                        if let Ok(actual_step) = IdealToIsogenyEngine::realize_bounded_step(
-                            current,
-                            2u64.into(),
-                            stage,
-                            &context,
-                        ) {
-                            supported.push(2u64.into());
-                            current = actual_step.codomain;
-                            stage += 1;
-                        }
+                        supported.push(IsogenyInteger::from(2u64));
                     }
                 }
                 QlapotiStrategy::OddPrimePower => {
                     if let (Some(step_degree), Some(step_prime)) =
                         (step.degree.try_to_u64(), step.prime.try_to_u64())
                     {
-                        if step_degree <= Self::MAX_STEP_DEGREE
-                            && step_degree > 1
-                            && u64::from(params.base.cofactor) % step_prime == 0
-                        {
-                            if let Ok(actual_step) = IdealToIsogenyEngine::realize_bounded_step(
-                                current,
-                                step_degree.into(),
-                                stage,
-                                &context,
-                            ) {
-                                supported.push(step_degree.into());
-                                current = actual_step.codomain;
-                                stage += 1;
-                                continue;
-                            }
-                        }
-
+                        let Ok(step_exponent) = usize::try_from(step.exponent) else {
+                            continue;
+                        };
                         if step_prime <= Self::MAX_STEP_DEGREE
                             && step_prime > 1
                             && u64::from(params.base.cofactor) % step_prime == 0
                         {
-                            for _ in 0..step.exponent {
-                                if let Ok(actual_step) = IdealToIsogenyEngine::realize_bounded_step(
-                                    current,
-                                    step_prime.into(),
-                                    stage,
-                                    &context,
-                                ) {
-                                    supported.push(step_prime.into());
-                                    current = actual_step.codomain;
-                                    stage += 1;
+                            let available_exponent =
+                                prime_exponent_in_u32(params.base.cofactor, step_prime);
+                            let decomposition = if step_exponent <= available_exponent
+                                && step_degree <= Self::MAX_STEP_DEGREE
+                            {
+                                vec![IsogenyInteger::from(step_degree)]
+                            } else if available_exponent >= 2
+                                && step_prime.saturating_mul(step_prime) <= Self::MAX_STEP_DEGREE
+                            {
+                                let mut remaining = step_exponent;
+                                let mut degrees = Vec::new();
+                                while remaining >= 2 {
+                                    degrees.push(IsogenyInteger::from(step_prime * step_prime));
+                                    remaining -= 2;
                                 }
-                            }
+                                while remaining > 0 {
+                                    degrees.push(IsogenyInteger::from(step_prime));
+                                    remaining -= 1;
+                                }
+                                degrees
+                            } else {
+                                core::iter::repeat_n(IsogenyInteger::from(step_prime), step_exponent)
+                                    .collect()
+                            };
+                            supported.extend(decomposition);
                         }
                     }
                 }
@@ -432,7 +425,10 @@ impl BaseCurveTwoIsogenyActualWitnessProvider {
         params: &'static SaltPrismParameters,
         request: &ActualChainRequest,
     ) -> core::result::Result<ActualKernelSearchContext, ActualPrismError> {
-        let stage_bindings = if !request.stage_principal_traces.is_empty() {
+        let (stage_bindings, stage_input_ideals, stage_principal_ideals, stage_ideals, stage_next_ideals) = if !request
+            .stage_principal_traces
+            .is_empty()
+        {
             let ideal_trace = request.ideal_trace.ok_or(ActualPrismError::Reference(
                 ReferencePrismError::IdealToIsogeny(IdealToIsogenyError::InvalidChain),
             ))?;
@@ -462,11 +458,23 @@ impl BaseCurveTwoIsogenyActualWitnessProvider {
                     ReferencePrismError::IdealToIsogeny(IdealToIsogenyError::InvalidChain),
                 ));
             }
-            let stage_ideals = decomposition
-                .into_iter()
-                .map(|stage| stage.stage)
-                .collect::<Vec<_>>();
-            IdealToIsogenyEngine::stage_bindings_for_ideals(&stage_ideals)
+            let mut stage_inputs = Vec::with_capacity(decomposition.len());
+            let mut stage_principals = Vec::with_capacity(decomposition.len());
+            let mut stage_ideals = Vec::with_capacity(decomposition.len());
+            let mut stage_next_ideals = Vec::with_capacity(decomposition.len());
+            for stage in decomposition {
+                stage_inputs.push(stage.input);
+                stage_principals.push(stage.principal);
+                stage_ideals.push(stage.stage);
+                stage_next_ideals.push(stage.next);
+            }
+            (
+                IdealToIsogenyEngine::stage_bindings_for_ideals(&stage_ideals),
+                stage_inputs,
+                stage_principals,
+                stage_ideals,
+                stage_next_ideals,
+            )
         } else if !request.stage_traces.is_empty() {
             let stage_ideals = request
                 .stage_traces
@@ -474,21 +482,32 @@ impl BaseCurveTwoIsogenyActualWitnessProvider {
                 .map(|trace| trace.to_ideal(params))
                 .collect::<core::result::Result<Vec<_>, _>>()
                 .map_err(ActualPrismError::from)?;
-            IdealToIsogenyEngine::stage_bindings_for_ideals(&stage_ideals)
-        } else if let Some(ideal_trace) = request.ideal_trace {
-            let ideal = ideal_trace
-                .to_ideal(params)
-                .map_err(ActualPrismError::from)?;
-            IdealToIsogenyEngine::derive_stage_bindings(&ideal, &request.selected_degrees)
-                .map_err(ReferencePrismError::from)
-                .map_err(ActualPrismError::from)?
+            (
+                IdealToIsogenyEngine::stage_bindings_for_ideals(&stage_ideals),
+                Vec::new(),
+                Vec::new(),
+                stage_ideals,
+                Vec::new(),
+            )
+        } else if request.ideal_trace.is_some() {
+            // During plan probing we only have the root ideal; deriving a stage
+            // decomposition from the provisional selected degrees overconstrains
+            // the search and can suppress valid later steps.
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
         Ok(ActualKernelSearchContext {
             seed: request.seed,
             binding: request_binding(request),
+            root_ideal: request
+                .ideal_trace
+                .and_then(|trace| trace.to_ideal(params).ok()),
             stage_bindings,
+            stage_input_ideals,
+            stage_principal_ideals,
+            stage_ideals,
+            stage_next_ideals,
             cofactor: params.base.cofactor,
             two_torsion_bits: u16::try_from(params.base.two_torsion_bits).map_err(|_| {
                 ActualPrismError::Reference(ReferencePrismError::IdealToIsogeny(
@@ -867,6 +886,22 @@ fn preferred_step_degrees(
     }
 }
 
+fn prime_exponent_in_u32(mut value: u32, prime: u64) -> usize {
+    if prime <= 1 {
+        return 0;
+    }
+    let prime_u32 = match u32::try_from(prime) {
+        Ok(v) if v > 1 => v,
+        _ => return 0,
+    };
+    let mut exponent = 0usize;
+    while value % prime_u32 == 0 {
+        value /= prime_u32;
+        exponent += 1;
+    }
+    exponent
+}
+
 #[cfg(test)]
 fn test_step_degrees(values: &[u128]) -> Vec<IsogenyInteger> {
     values.iter().copied().map(IsogenyInteger::from).collect()
@@ -1006,7 +1041,8 @@ mod tests {
     use crate::crypto::isogeny::params::SupersingularParameters;
     use crate::crypto::prism::{
         keygen_with_backend, sign_with_backend, verify_with_backend, PrismBackend,
-        ReferencePrismBackend, SaltPrismParameters, SignatureEncoding,
+        ReferencePrismBackend, SaltPrismParameters, SignatureEncoding, SALT_PRISM_LEVEL1,
+        SALT_PRISM_LEVEL3, SALT_PRISM_LEVEL5,
     };
 
     use super::{
@@ -1037,69 +1073,132 @@ mod tests {
         max_signatures_log2: 8,
     };
 
-    #[test]
-    fn actual_backend_roundtrip_verifies() {
-        let mut backend = ActualPrismBackend::new(&TEST_PARAMS)
+    fn smoke_roundtrip_for_params(params: &'static SaltPrismParameters, seed: [u8; 32]) {
+        let mut backend = ActualPrismBackend::new(params)
             .with_signature_encoding(SignatureEncoding::CurveAndPoints);
         let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+        let mut rng = ChaCha20Rng::from_seed(seed);
         let signature = sign_with_backend(
             &mut backend,
             &verifying_key,
             &signing_key,
-            b"message",
+            b"paper-smoke",
             &mut rng,
             256,
         )
         .unwrap();
-
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        let challenge = crate::crypto::prism::hash_to_prime_with_salt(
-            &TEST_PARAMS.hash_to_prime_config(256),
-            &backend.encode_verifying_key(&verifying_key),
-            b"message",
-            &signature.salt,
+        assert!(verify_with_backend(&backend, &verifying_key, b"paper-smoke", &signature).unwrap());
+        assert!(!verify_with_backend(
+            &backend,
+            &verifying_key,
+            b"paper-smoke-tampered",
+            &signature
         )
-        .unwrap()
-        .unwrap();
-        assert!(decoded.actual_witness.is_some());
-        assert!(!backend.inner().actual_small_model());
-        assert_eq!(
-            decoded.ideal_witness.left_stage_traces.len(),
-            decoded.ideal_witness.left_step_degrees.len()
-        );
-        assert_eq!(
-            decoded.ideal_witness.left_stage_principal_traces.len(),
-            decoded.ideal_witness.left_step_degrees.len()
-        );
-        let actual = decoded.actual_witness.clone().unwrap().to_actual().unwrap();
-        assert_eq!(
-            actual.isogeny.left.source.modulus(),
-            &TEST_PARAMS.base.modulus
-        );
-        assert_eq!(actual.isogeny.left.steps.len(), 1);
-        assert!([2u128, 5].contains(&(actual.isogeny.left.steps[0].degree as u128)));
-        assert!(
-            backend
-                .inner()
-                .verify_public_consistency(&verifying_key, &challenge, &decoded,)
-                .unwrap(),
-            "degree={:?} left={:?} right={:?}",
-            decoded.degree,
-            decoded.ideal_witness.left_step_degrees,
-            decoded.ideal_witness.right_step_degrees
-        );
-        let expected = backend
-            .derive_actual_witness(
-                &verifying_key,
-                &challenge,
-                &ActualPrismBackend::<BaseCurveTwoIsogenyActualWitnessProvider>::unsigned_signature(
-                    &decoded,
-                ),
-            )
+        .unwrap());
+    }
+
+    fn run_on_large_stack<F>(f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
             .unwrap();
-        assert_eq!(expected, decoded.actual_witness.clone().unwrap());
-        assert!(verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap());
+    }
+
+    #[test]
+    #[ignore = "paper-sized actual backend smoke test"]
+    fn actual_backend_smoke_roundtrip_level1_parameters() {
+        smoke_roundtrip_for_params(&SALT_PRISM_LEVEL1, [0xA1; 32]);
+    }
+
+    #[test]
+    #[ignore = "paper-sized actual backend smoke test"]
+    fn actual_backend_smoke_roundtrip_level3_parameters() {
+        smoke_roundtrip_for_params(&SALT_PRISM_LEVEL3, [0xB3; 32]);
+    }
+
+    #[test]
+    #[ignore = "paper-sized actual backend smoke test"]
+    fn actual_backend_smoke_roundtrip_level5_parameters() {
+        smoke_roundtrip_for_params(&SALT_PRISM_LEVEL5, [0xC5; 32]);
+    }
+
+    #[test]
+    fn actual_backend_roundtrip_verifies() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut backend = ActualPrismBackend::new(&TEST_PARAMS)
+                    .with_signature_encoding(SignatureEncoding::CurveAndPoints);
+                let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+                let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+                let signature = sign_with_backend(
+                    &mut backend,
+                    &verifying_key,
+                    &signing_key,
+                    b"message",
+                    &mut rng,
+                    256,
+                )
+                .unwrap();
+
+                let decoded = backend.decode_signature_body(&signature.body).unwrap();
+                let challenge = crate::crypto::prism::hash_to_prime_with_salt(
+                    &TEST_PARAMS.hash_to_prime_config(256),
+                    &backend.encode_verifying_key(&verifying_key),
+                    b"message",
+                    &signature.salt,
+                )
+                .unwrap()
+                .unwrap();
+                assert!(decoded.actual_witness.is_some());
+                assert!(!backend.inner().actual_small_model());
+                assert_eq!(
+                    decoded.ideal_witness.left_stage_traces.len(),
+                    decoded.ideal_witness.left_step_degrees.len()
+                );
+                assert_eq!(
+                    decoded.ideal_witness.left_stage_principal_traces.len(),
+                    decoded.ideal_witness.left_step_degrees.len()
+                );
+                let actual = decoded.actual_witness.clone().unwrap().to_actual().unwrap();
+                assert_eq!(
+                    actual.isogeny.left.source.modulus(),
+                    &TEST_PARAMS.base.modulus
+                );
+                assert_eq!(actual.isogeny.left.steps.len(), 1);
+                assert!([2u128, 5].contains(&(actual.isogeny.left.steps[0].degree as u128)));
+                assert!(
+                    backend
+                        .inner()
+                        .verify_public_consistency(&verifying_key, &challenge, &decoded,)
+                        .unwrap(),
+                    "degree={:?} left={:?} right={:?}",
+                    decoded.degree,
+                    decoded.ideal_witness.left_step_degrees,
+                    decoded.ideal_witness.right_step_degrees
+                );
+                let expected = backend
+                    .derive_actual_witness(
+                        &verifying_key,
+                        &challenge,
+                        &ActualPrismBackend::<
+                            BaseCurveTwoIsogenyActualWitnessProvider,
+                        >::unsigned_signature(&decoded),
+                    )
+                    .unwrap();
+                assert_eq!(expected, decoded.actual_witness.clone().unwrap());
+                assert!(
+                    verify_with_backend(&backend, &verifying_key, b"message", &signature).unwrap()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -1144,204 +1243,229 @@ mod tests {
 
     #[test]
     fn actual_kani_statement_is_bound_to_ideal_witness() {
-        let mut backend = ActualPrismBackend::new(&TEST_PARAMS)
-            .with_signature_encoding(SignatureEncoding::CurveAndPoints);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([77u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        let challenge = crate::crypto::prism::hash_to_prime_with_salt(
-            &TEST_PARAMS.hash_to_prime_config(256),
-            &backend.encode_verifying_key(&verifying_key),
-            b"message",
-            &signature.salt,
-        )
-        .unwrap()
-        .unwrap();
-        let actual_witness = decoded.actual_witness.clone().unwrap();
-        let actual = actual_witness.to_actual().unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ActualPrismBackend::new(&TEST_PARAMS)
+                .with_signature_encoding(SignatureEncoding::CurveAndPoints);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([77u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
+            let decoded = backend.decode_signature_body(&signature.body).unwrap();
+            let challenge = crate::crypto::prism::hash_to_prime_with_salt(
+                &TEST_PARAMS.hash_to_prime_config(256),
+                &backend.encode_verifying_key(&verifying_key),
+                b"message",
+                &signature.salt,
+            )
+            .unwrap()
+            .unwrap();
+            let actual_witness = decoded.actual_witness.clone().unwrap();
+            let actual = actual_witness.to_actual().unwrap();
 
-        let honest_statement =
-            super::public_kani_statement(&TEST_PARAMS, &verifying_key, &decoded, &actual_witness)
-                .unwrap();
-        let mut tampered = decoded.clone();
-        tampered.ideal_witness.left.generator_coeffs[0] =
-            tampered.ideal_witness.left.generator_coeffs[0]
-                .checked_add(&QuaternionInteger::from(1i32))
-                .unwrap();
-        let tampered_statement =
-            super::public_kani_statement(&TEST_PARAMS, &verifying_key, &tampered, &actual_witness)
-                .unwrap();
+            let honest_statement = super::public_kani_statement(
+                &TEST_PARAMS,
+                &verifying_key,
+                &decoded,
+                &actual_witness,
+            )
+            .unwrap();
+            let mut tampered = decoded.clone();
+            tampered.ideal_witness.left.generator_coeffs[0] =
+                tampered.ideal_witness.left.generator_coeffs[0]
+                    .checked_add(&QuaternionInteger::from(1i32))
+                    .unwrap();
+            let tampered_statement = super::public_kani_statement(
+                &TEST_PARAMS,
+                &verifying_key,
+                &tampered,
+                &actual_witness,
+            )
+            .unwrap();
 
-        assert_ne!(
-            honest_statement.witness_commitment,
-            tampered_statement.witness_commitment
-        );
-        assert_eq!(
-            KaniEngine::verify_actual(
-                &decoded.kani,
-                tampered_statement,
-                &actual,
-                challenge.as_bytes()
-            ),
-            Err(KaniError::InvalidTranscript)
-        );
+            assert_ne!(
+                honest_statement.witness_commitment,
+                tampered_statement.witness_commitment
+            );
+            assert_eq!(
+                KaniEngine::verify_actual(
+                    &decoded.kani,
+                    tampered_statement,
+                    &actual,
+                    challenge.as_bytes()
+                ),
+                Err(KaniError::InvalidTranscript)
+            );
+        });
     }
 
     #[test]
     fn stage_commitment_is_separate_from_root_commitment() {
-        let mut backend = ReferencePrismBackend::new(&TEST_PARAMS_ODD3);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let challenge = crate::crypto::prism::ChallengePrime::new(vec![0x80, 0x03]);
-        let mut signature = backend
-            .sign_challenge(&verifying_key, &signing_key, &challenge)
-            .unwrap();
-        signature.degree = 36u128.into();
+        run_on_large_stack(|| {
+            let mut backend = ReferencePrismBackend::new(&TEST_PARAMS_ODD3);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let challenge = crate::crypto::prism::ChallengePrime::new(vec![0x80, 0x03]);
+            let mut signature = backend
+                .sign_challenge(&verifying_key, &signing_key, &challenge)
+                .unwrap();
+            signature.degree = 36u128.into();
 
-        let provider = BaseCurveTwoIsogenyActualWitnessProvider::new();
-        provider
-            .prepare_signature(
-                &TEST_PARAMS_ODD3,
-                &verifying_key,
-                &challenge,
-                &mut signature,
-            )
-            .unwrap();
-        let actual_witness = provider
-            .derive_witness(&TEST_PARAMS_ODD3, &verifying_key, &challenge, &signature)
-            .unwrap();
-
-        let mut tampered = signature.clone();
-        assert!(!tampered
-            .ideal_witness
-            .left_stage_principal_traces
-            .is_empty());
-        tampered.ideal_witness.left_stage_principal_traces[0].basis_coeffs[0][0] =
-            tampered.ideal_witness.left_stage_principal_traces[0].basis_coeffs[0][0]
-                .checked_add(&QuaternionInteger::from(1i32))
+            let provider = BaseCurveTwoIsogenyActualWitnessProvider::new();
+            provider
+                .prepare_signature(
+                    &TEST_PARAMS_ODD3,
+                    &verifying_key,
+                    &challenge,
+                    &mut signature,
+                )
+                .unwrap();
+            let actual_witness = provider
+                .derive_witness(&TEST_PARAMS_ODD3, &verifying_key, &challenge, &signature)
                 .unwrap();
 
-        assert_eq!(
-            signature.ideal_witness.root_commitment(),
-            tampered.ideal_witness.root_commitment()
-        );
-        assert_ne!(
-            signature.ideal_witness.stage_commitment(),
-            tampered.ideal_witness.stage_commitment()
-        );
-        assert_ne!(
-            super::public_kani_statement(
-                &TEST_PARAMS_ODD3,
-                &verifying_key,
-                &signature,
-                &actual_witness
-            )
-            .unwrap()
-            .decomposition_commitment,
-            super::public_kani_statement(
-                &TEST_PARAMS_ODD3,
-                &verifying_key,
-                &tampered,
-                &actual_witness
-            )
-            .unwrap()
-            .decomposition_commitment
-        );
-        assert_ne!(
-            super::public_kani_statement(
-                &TEST_PARAMS_ODD3,
-                &verifying_key,
-                &signature,
-                &actual_witness
-            )
-            .unwrap()
-            .witness_commitment,
-            super::public_kani_statement(
-                &TEST_PARAMS_ODD3,
-                &verifying_key,
-                &tampered,
-                &actual_witness
-            )
-            .unwrap()
-            .witness_commitment
-        );
+            let mut tampered = signature.clone();
+            assert!(!tampered
+                .ideal_witness
+                .left_stage_principal_traces
+                .is_empty());
+            tampered.ideal_witness.left_stage_principal_traces[0].basis_coeffs[0][0] =
+                tampered.ideal_witness.left_stage_principal_traces[0].basis_coeffs[0][0]
+                    .checked_add(&QuaternionInteger::from(1i32))
+                    .unwrap();
+
+            assert_eq!(
+                signature.ideal_witness.root_commitment(),
+                tampered.ideal_witness.root_commitment()
+            );
+            assert_ne!(
+                signature.ideal_witness.stage_commitment(),
+                tampered.ideal_witness.stage_commitment()
+            );
+            assert_ne!(
+                super::public_kani_statement(
+                    &TEST_PARAMS_ODD3,
+                    &verifying_key,
+                    &signature,
+                    &actual_witness
+                )
+                .unwrap()
+                .decomposition_commitment,
+                super::public_kani_statement(
+                    &TEST_PARAMS_ODD3,
+                    &verifying_key,
+                    &tampered,
+                    &actual_witness
+                )
+                .unwrap()
+                .decomposition_commitment
+            );
+            assert_ne!(
+                super::public_kani_statement(
+                    &TEST_PARAMS_ODD3,
+                    &verifying_key,
+                    &signature,
+                    &actual_witness
+                )
+                .unwrap()
+                .witness_commitment,
+                super::public_kani_statement(
+                    &TEST_PARAMS_ODD3,
+                    &verifying_key,
+                    &tampered,
+                    &actual_witness
+                )
+                .unwrap()
+                .witness_commitment
+            );
+        });
     }
 
     #[test]
     fn quotient_commitment_is_publicly_separate_from_decomposition_commitment() {
-        let mut backend = ActualPrismBackend::new(&TEST_PARAMS);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([48u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
-        let decoded = backend.decode_signature_body(&signature.body).unwrap();
-        let actual_witness = decoded.actual_witness.clone().unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ActualPrismBackend::new(&TEST_PARAMS);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([48u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
+            let decoded = backend.decode_signature_body(&signature.body).unwrap();
+            let actual_witness = decoded.actual_witness.clone().unwrap();
 
-        let honest_statement =
-            super::public_kani_statement(&TEST_PARAMS, &verifying_key, &decoded, &actual_witness)
-                .unwrap();
-        let mut tampered_actual = actual_witness.to_actual().unwrap();
-        assert!(tampered_actual.samples.len() > 1);
-        tampered_actual.samples.swap(0, 1);
-        tampered_actual.images.swap(0, 1);
-        let tampered_witness =
-            crate::crypto::prism::ReferenceActualWitness::from_actual(&tampered_actual).unwrap();
-        let tampered_statement =
-            super::public_kani_statement(&TEST_PARAMS, &verifying_key, &decoded, &tampered_witness)
-                .unwrap();
+            let honest_statement = super::public_kani_statement(
+                &TEST_PARAMS,
+                &verifying_key,
+                &decoded,
+                &actual_witness,
+            )
+            .unwrap();
+            let mut tampered_actual = actual_witness.to_actual().unwrap();
+            assert!(tampered_actual.samples.len() > 1);
+            tampered_actual.samples.swap(0, 1);
+            tampered_actual.images.swap(0, 1);
+            let tampered_witness =
+                crate::crypto::prism::ReferenceActualWitness::from_actual(&tampered_actual)
+                    .unwrap();
+            let tampered_statement = super::public_kani_statement(
+                &TEST_PARAMS,
+                &verifying_key,
+                &decoded,
+                &tampered_witness,
+            )
+            .unwrap();
 
-        assert_eq!(
-            honest_statement.decomposition_commitment,
-            tampered_statement.decomposition_commitment
-        );
-        assert_ne!(
-            honest_statement.probe_commitment,
-            tampered_statement.probe_commitment
-        );
-        assert_ne!(
-            honest_statement.quotient_commitment,
-            tampered_statement.quotient_commitment
-        );
-        assert_ne!(
-            honest_statement.witness_commitment,
-            tampered_statement.witness_commitment
-        );
+            assert_eq!(
+                honest_statement.decomposition_commitment,
+                tampered_statement.decomposition_commitment
+            );
+            assert_ne!(
+                honest_statement.probe_commitment,
+                tampered_statement.probe_commitment
+            );
+            assert_ne!(
+                honest_statement.quotient_commitment,
+                tampered_statement.quotient_commitment
+            );
+            assert_ne!(
+                honest_statement.witness_commitment,
+                tampered_statement.witness_commitment
+            );
+        });
     }
 
     #[test]
     fn actual_backend_rejects_reference_only_signature() {
-        let mut actual = ActualPrismBackend::new(&TEST_PARAMS);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut actual).unwrap();
+        run_on_large_stack(|| {
+            let mut actual = ActualPrismBackend::new(&TEST_PARAMS);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut actual).unwrap();
 
-        let mut reference = ReferencePrismBackend::new(&TEST_PARAMS);
-        let mut rng = ChaCha20Rng::from_seed([43u8; 32]);
-        let signature = sign_with_backend(
-            &mut reference,
-            &verifying_key,
-            &signing_key,
-            b"message",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+            let mut reference = ReferencePrismBackend::new(&TEST_PARAMS);
+            let mut rng = ChaCha20Rng::from_seed([43u8; 32]);
+            let signature = sign_with_backend(
+                &mut reference,
+                &verifying_key,
+                &signing_key,
+                b"message",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        assert!(actual.decode_signature_body(&signature.body).is_none());
-        assert!(!verify_with_backend(&actual, &verifying_key, b"message", &signature).unwrap());
+            assert!(actual.decode_signature_body(&signature.body).is_none());
+            assert!(!verify_with_backend(&actual, &verifying_key, b"message", &signature).unwrap());
+        });
     }
 
     #[test]
@@ -1386,21 +1510,25 @@ mod tests {
 
     #[test]
     fn actual_backend_supports_explicit_provider_injection() {
-        let mut backend = ActualPrismBackend::with_provider(&TEST_PARAMS, EchoProvider)
-            .with_signature_encoding(SignatureEncoding::CurveAndBasisCoefficients);
-        let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
-        let mut rng = ChaCha20Rng::from_seed([45u8; 32]);
-        let signature = sign_with_backend(
-            &mut backend,
-            &verifying_key,
-            &signing_key,
-            b"provider",
-            &mut rng,
-            256,
-        )
-        .unwrap();
+        run_on_large_stack(|| {
+            let mut backend = ActualPrismBackend::with_provider(&TEST_PARAMS, EchoProvider)
+                .with_signature_encoding(SignatureEncoding::CurveAndBasisCoefficients);
+            let (verifying_key, signing_key) = keygen_with_backend(&mut backend).unwrap();
+            let mut rng = ChaCha20Rng::from_seed([45u8; 32]);
+            let signature = sign_with_backend(
+                &mut backend,
+                &verifying_key,
+                &signing_key,
+                b"provider",
+                &mut rng,
+                256,
+            )
+            .unwrap();
 
-        assert!(verify_with_backend(&backend, &verifying_key, b"provider", &signature).unwrap());
+            assert!(
+                verify_with_backend(&backend, &verifying_key, b"provider", &signature).unwrap()
+            );
+        });
     }
 
     #[test]
@@ -1572,11 +1700,11 @@ mod tests {
             provider.build_request(&TEST_PARAMS_ODD3, &verifying_key, &challenge, &signature);
         assert_eq!(
             request.left.selected_degrees,
-            test_step_degrees(&[2, 2, 3, 3, 3])
+            test_step_degrees(&[2, 2, 9, 3])
         );
         assert_eq!(
             request.right.selected_degrees,
-            test_step_degrees(&[2, 2, 3, 3, 3])
+            test_step_degrees(&[2, 2, 9, 3])
         );
 
         let witness = provider
@@ -1597,8 +1725,8 @@ mod tests {
             .iter()
             .map(|step| step.degree)
             .collect();
-        assert_eq!(left_degrees, vec![2, 2, 3, 3, 3]);
-        assert_eq!(right_degrees, vec![2, 2, 3, 3, 3]);
+        assert_eq!(left_degrees, vec![2, 2, 9, 3]);
+        assert_eq!(right_degrees, vec![2, 2, 9, 3]);
     }
 
     #[test]
@@ -1621,7 +1749,6 @@ mod tests {
             base_context.stage_bindings.len(),
             request.left.selected_degrees.len()
         );
-        assert!(!base_context.stage_bindings.is_empty());
 
         let mut different_ideal = request.left.clone();
         let algebra =
@@ -1638,6 +1765,8 @@ mod tests {
         different_ideal.ideal_trace = Some(crate::crypto::prism::ReferenceIdealTrace::from_ideal(
             &alternate_ideal,
         ));
+        different_ideal.stage_traces.clear();
+        different_ideal.stage_principal_traces.clear();
         let different_ideal_binding = provider
             .search_context(&TEST_PARAMS, &different_ideal)
             .unwrap()
@@ -1646,6 +1775,8 @@ mod tests {
         let mut different_steps = request.left.clone();
         different_steps.selected_degrees = test_step_degrees(&[5, 2, 2, 2]);
         different_steps.selected_degree = IsogenyInteger::from(5u64);
+        different_steps.stage_traces.clear();
+        different_steps.stage_principal_traces.clear();
         let different_steps_binding = provider
             .search_context(&TEST_PARAMS, &different_steps)
             .unwrap()
