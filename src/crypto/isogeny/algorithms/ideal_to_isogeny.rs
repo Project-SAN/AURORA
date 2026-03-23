@@ -6,7 +6,7 @@ use sha3::{Digest, Sha3_256};
 
 use crate::crypto::isogeny::algorithms::kernel_action::{
     element_prime_to, kernel_coefficients_e0_from_element, kernel_generator_curve_raw,
-    mul_action_matrices_mod, ActionMatrix, TorsionActionMatrices,
+    inv_action_matrix_mod, mul_action_matrices_mod, ActionMatrix, TorsionActionMatrices,
 };
 use crate::crypto::isogeny::algorithms::qlapoti::{QlapotiEngine, QlapotiPlan, QlapotiStrategy};
 use crate::crypto::isogeny::algorithms::velu::{VeluError, VeluIsogeny};
@@ -1126,10 +1126,6 @@ fn try_transported_exact_kernel_generator(
     Ok(None)
 }
 
-fn identity_action_matrix() -> ActionMatrix {
-    [[1, 0], [0, 1]]
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StagePrimePowerProfile {
     prime: u64,
@@ -1148,6 +1144,12 @@ struct TransportedTorsionFrame {
     basis_p: CurvePoint,
     basis_q: CurvePoint,
     basis_change: ActionMatrix,
+    image_i_p: CurvePoint,
+    image_i_q: CurvePoint,
+    image_j_p: CurvePoint,
+    image_j_q: CurvePoint,
+    image_k_p: CurvePoint,
+    image_k_q: CurvePoint,
     basis_i: ActionMatrix,
     basis_j: ActionMatrix,
     basis_k: ActionMatrix,
@@ -1216,14 +1218,6 @@ fn u64_prime_power(prime: u64, exponent: usize) -> Option<u64> {
     Some(acc)
 }
 
-fn scale_point(curve: &ShortWeierstrassCurve, point: &CurvePoint, scalar: u64) -> Result<CurvePoint> {
-    if scalar <= 1 {
-        Ok(*point)
-    } else {
-        Ok(curve.scalar_mul_u64(point, scalar)?)
-    }
-}
-
 fn action_matrix_from_images(
     curve: &ShortWeierstrassCurve,
     basis_p: CurvePoint,
@@ -1232,11 +1226,55 @@ fn action_matrix_from_images(
     image_q: CurvePoint,
     degree: u64,
 ) -> Result<Option<ActionMatrix>> {
-    let (a00, a10) = match express_in_basis(curve, basis_p, basis_q, image_p, degree)? {
+    let (a00, a10) = match ec_bi_dlog_e0(curve, basis_p, basis_q, image_p, degree)? {
         Some(value) => value,
         None => return Ok(None),
     };
-    let (a01, a11) = match express_in_basis(curve, basis_p, basis_q, image_q, degree)? {
+    let (a01, a11) = match ec_bi_dlog_e0(curve, basis_p, basis_q, image_q, degree)? {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    Ok(Some([[a00, a01], [a10, a11]]))
+}
+
+fn ec_bi_dlog_e0(
+    curve: &ShortWeierstrassCurve,
+    basis_p: CurvePoint,
+    basis_q: CurvePoint,
+    target: CurvePoint,
+    degree: u64,
+) -> Result<Option<(i128, i128)>> {
+    express_in_basis(curve, basis_p, basis_q, target, degree)
+}
+
+fn ec_bi_dlog_e0d(
+    curve: &ShortWeierstrassCurve,
+    basis_p: CurvePoint,
+    basis_q: CurvePoint,
+    target: CurvePoint,
+    degree: u64,
+) -> Result<Option<(i128, i128)>> {
+    express_in_basis(curve, basis_p, basis_q, target, degree)
+}
+
+fn invmod_2x2(matrix: ActionMatrix, modulus: i128) -> Result<ActionMatrix> {
+    inv_action_matrix_mod(matrix, modulus)
+        .map_err(|_| IdealToIsogenyError::UnsupportedActualDegree)
+}
+
+fn refresh_action_matrix_from_images(
+    curve: &ShortWeierstrassCurve,
+    basis_p: CurvePoint,
+    basis_q: CurvePoint,
+    image_p: CurvePoint,
+    image_q: CurvePoint,
+    degree: u64,
+) -> Result<Option<ActionMatrix>> {
+    let (a00, a10) = match ec_bi_dlog_e0d(curve, basis_p, basis_q, image_p, degree)? {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let (a01, a11) = match ec_bi_dlog_e0d(curve, basis_p, basis_q, image_q, degree)? {
         Some(value) => value,
         None => return Ok(None),
     };
@@ -1309,6 +1347,12 @@ fn build_transported_torsion_frame(
             basis_p: base_p_total,
             basis_q: base_q_total,
             basis_change: [[1, 0], [0, 1]],
+            image_i_p: base_i_p_total,
+            image_i_q: base_i_q_total,
+            image_j_p: base_j_p_total,
+            image_j_q: base_j_q_total,
+            image_k_p: base_k_p_total,
+            image_k_q: base_k_q_total,
             basis_i: match action_matrix_from_images(
                 base_source,
                 base_p_total,
@@ -1405,6 +1449,12 @@ fn advance_transported_torsion_frame(
 
     let mapped_p = step.map_point(&frame.basis_p)?;
     let mapped_q = step.map_point(&frame.basis_q)?;
+    let mapped_i_p = step.map_point(&frame.image_i_p)?;
+    let mapped_i_q = step.map_point(&frame.image_i_q)?;
+    let mapped_j_p = step.map_point(&frame.image_j_p)?;
+    let mapped_j_q = step.map_point(&frame.image_j_q)?;
+    let mapped_k_p = step.map_point(&frame.image_k_p)?;
+    let mapped_k_q = step.map_point(&frame.image_k_q)?;
     if step.codomain.validate_point(&mapped_p).is_err() || step.codomain.validate_point(&mapped_q).is_err()
     {
         return Ok(None);
@@ -1430,6 +1480,40 @@ fn advance_transported_torsion_frame(
         let change = [[a00, a01], [a10, a11]];
         let basis_change = mul_action_matrices_mod(change, frame.basis_change, modulus)
             .map_err(|_| IdealToIsogenyError::UnsupportedActualDegree)?;
+        let _basis_change_inv = invmod_2x2(basis_change, modulus)?;
+        let basis_i = match refresh_action_matrix_from_images(
+            &step.codomain,
+            next_p,
+            next_q,
+            mapped_i_p,
+            mapped_i_q,
+            next_degree,
+        )? {
+            Some(value) => value,
+            None => continue,
+        };
+        let basis_j = match refresh_action_matrix_from_images(
+            &step.codomain,
+            next_p,
+            next_q,
+            mapped_j_p,
+            mapped_j_q,
+            next_degree,
+        )? {
+            Some(value) => value,
+            None => continue,
+        };
+        let basis_k = match refresh_action_matrix_from_images(
+            &step.codomain,
+            next_p,
+            next_q,
+            mapped_k_p,
+            mapped_k_q,
+            next_degree,
+        )? {
+            Some(value) => value,
+            None => continue,
+        };
         return Ok(Some(TransportedTorsionFrame {
             curve: step.codomain,
             prime: frame.prime,
@@ -1437,10 +1521,16 @@ fn advance_transported_torsion_frame(
             remaining_exponent: frame.remaining_exponent,
             basis_p: next_p,
             basis_q: next_q,
-            basis_change,
-            basis_i: frame.basis_i,
-            basis_j: frame.basis_j,
-            basis_k: frame.basis_k,
+            basis_change: [[1, 0], [0, 1]],
+            image_i_p: mapped_i_p,
+            image_i_q: mapped_i_q,
+            image_j_p: mapped_j_p,
+            image_j_q: mapped_j_q,
+            image_k_p: mapped_k_p,
+            image_k_q: mapped_k_q,
+            basis_i,
+            basis_j,
+            basis_k,
         }));
     }
     Ok(None)
@@ -1493,15 +1583,6 @@ fn projected_e0_exact_order_basis(
     Ok(projected_exact_order_basis_candidates(curve, degree, cofactor, two_torsion_bits)?
         .into_iter()
         .next())
-}
-
-fn projected_e0_exact_order_basis_candidates(
-    curve: &ShortWeierstrassCurve,
-    degree: u64,
-    cofactor: u32,
-    two_torsion_bits: usize,
-) -> Result<Vec<(CurvePoint, CurvePoint)>> {
-    projected_exact_order_basis_candidates(curve, degree, cofactor, two_torsion_bits)
 }
 
 fn projected_exact_order_basis_candidates(
@@ -3447,60 +3528,6 @@ fn stage_ideal_binding(stage_ideal: &LeftIdeal, stage: usize) -> [u8; 32] {
     out
 }
 
-fn bounded_exact_order_candidates(
-    curve: &ShortWeierstrassCurve,
-    degree: usize,
-    stage: usize,
-    context: &ActualKernelSearchContext,
-) -> Result<Vec<CurvePoint>> {
-    if degree < 2 {
-        return Err(IdealToIsogenyError::UnsupportedActualDegree);
-    }
-    let degree_u64 =
-        u64::try_from(degree).map_err(|_| IdealToIsogenyError::UnsupportedActualDegree)?;
-    let mut candidates = Vec::new();
-    if context.use_base_two_torsion && stage == 0 && degree == 2 {
-        if let Some(point) = base_two_torsion_candidate(curve)? {
-            candidates.push(point);
-        }
-    }
-
-    let start = bounded_search_start(curve, stage, degree_u64, context);
-    for x_offset in 0..BOUNDED_SEARCH_X_BOUND {
-        for x1 in 0..BOUNDED_SEARCH_Y_BOUND {
-            let x = crate::crypto::isogeny::field::Fp2::new(
-                crate::crypto::isogeny::field::Fp::from_u64(
-                    curve.modulus(),
-                    start.wrapping_add(x_offset),
-                ),
-                crate::crypto::isogeny::field::Fp::from_u64(curve.modulus(), x1),
-            )
-            .expect("constructed from same modulus");
-            let rhs = curve.rhs(&x)?;
-            if let Some(y) = rhs.sqrt() {
-                for y in [y, y.neg()] {
-                    let point = CurvePoint::affine(x, y);
-                    curve.validate_point(&point)?;
-                    let projected = project_point_to_order(
-                        curve,
-                        &point,
-                        degree_u64,
-                        context.cofactor,
-                        usize::from(context.two_torsion_bits),
-                    )?;
-                    if has_exact_order_u64(curve, &projected, degree_u64)?
-                        && !candidates.contains(&projected)
-                    {
-                        candidates.push(projected);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(candidates)
-}
-
 fn base_two_torsion_candidate(curve: &ShortWeierstrassCurve) -> Result<Option<CurvePoint>> {
     let point = CurvePoint::affine(
         crate::crypto::isogeny::field::Fp2::zero(curve.modulus()),
@@ -4054,27 +4081,6 @@ fn recover_e0_montgomery_isomorphism(
     let modulus = curve.modulus();
     let montgomery =
         MontgomeryCurve::new(crate::crypto::isogeny::field::Fp2::zero(modulus)).ok()?;
-    let iso = MontgomeryIsomorphism::new(montgomery).ok()?;
-    if iso.weierstrass_curve() == curve {
-        Some(iso)
-    } else {
-        None
-    }
-}
-
-fn recover_montgomery_isomorphism(curve: &ShortWeierstrassCurve) -> Option<MontgomeryIsomorphism> {
-    let modulus = curve.modulus();
-    let denominator = Fp2::one(modulus).add(&curve.a.double()).ok()?;
-    if denominator.is_zero() {
-        return None;
-    }
-    let a_param = Fp2::from_u64(modulus, 9)
-        .neg()
-        .mul(&curve.b)
-        .ok()?
-        .mul(&denominator.invert().ok()?)
-        .ok()?;
-    let montgomery = MontgomeryCurve::new(a_param).ok()?;
     let iso = MontgomeryIsomorphism::new(montgomery).ok()?;
     if iso.weierstrass_curve() == curve {
         Some(iso)
