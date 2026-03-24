@@ -6,4 +6,7 @@ config/
 *.log
 
 qemu-img/
-scripts/
+scripts/*
+!scripts/localnet_up.sh
+!scripts/localnet_down.sh
+!scripts/localnet_send.sh
