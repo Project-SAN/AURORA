@@ -102,6 +102,11 @@ dependencies = [
 [[package]]
 name = "authority"
 version = "0.1.0"
+dependencies = [
+ "aurora",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "autocfg"

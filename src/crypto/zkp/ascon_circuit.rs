@@ -1,5 +1,6 @@
 use crate::crypto::ascon::{MIX_DOMAIN_KEYBIND, MIX_DOMAIN_PAYLOAD};
 use crate::crypto::zkp::{Circuit, WireId};
+use crate::types::Error;
 use alloc::vec::Vec;
 
 type Word = [WireId; 64];
@@ -91,6 +92,64 @@ pub fn build_policy_allow_host_circuit(
     circuit
 }
 
+pub fn build_policy_blocklist_host_circuit(
+    payload_len_bytes: usize,
+    host_header_offset: usize,
+    exact_hosts: &[Vec<u8>],
+    prefix_hosts: &[Vec<u8>],
+) -> core::result::Result<Circuit, Error> {
+    let n_inputs = payload_len_bytes * 8;
+    let mut circuit = Circuit::new(n_inputs);
+    let (zero, one) = const_zero_one(&mut circuit);
+
+    let payload_bits = input_bits(0, payload_len_bytes);
+    let payload_hash_bits = mix_fold_bits(
+        &mut circuit,
+        zero,
+        one,
+        MIX_DOMAIN_PAYLOAD,
+        payload_len_bytes,
+        &payload_bits,
+    );
+
+    let host_value_offset = host_header_offset.checked_add(6).ok_or(Error::Length)?;
+    if host_value_offset > payload_len_bytes {
+        return Err(Error::Length);
+    }
+
+    let mut allow = one;
+    for host in exact_hosts {
+        let mut expected = Vec::with_capacity(8 + host.len());
+        expected.extend_from_slice(b"Host: ");
+        expected.extend_from_slice(host);
+        expected.extend_from_slice(b"\r\n");
+        if host_header_offset + expected.len() > payload_len_bytes {
+            return Err(Error::Length);
+        }
+        let blocked = eq_bytes(
+            &mut circuit,
+            one,
+            &payload_bits,
+            host_header_offset,
+            &expected,
+        );
+        allow = and_not(&mut circuit, allow, blocked);
+    }
+    for prefix in prefix_hosts {
+        if host_value_offset + prefix.len() > payload_len_bytes {
+            return Err(Error::Length);
+        }
+        let blocked = eq_bytes(&mut circuit, one, &payload_bits, host_value_offset, prefix);
+        allow = and_not(&mut circuit, allow, blocked);
+    }
+
+    let mut outputs = Vec::with_capacity(payload_hash_bits.len() + 1);
+    outputs.extend_from_slice(&payload_hash_bits);
+    outputs.push(allow);
+    circuit.set_outputs(&outputs);
+    Ok(circuit)
+}
+
 fn build_mix_fold_circuit(payload_len_bytes: usize, domain: u64) -> Circuit {
     let n_inputs = payload_len_bytes * 8;
     let mut circuit = Circuit::new(n_inputs);
@@ -99,6 +158,11 @@ fn build_mix_fold_circuit(payload_len_bytes: usize, domain: u64) -> Circuit {
     let out_bits = mix_fold_bits(&mut circuit, zero, one, domain, payload_len_bytes, &bits);
     circuit.set_outputs(&out_bits);
     circuit
+}
+
+fn and_not(circuit: &mut Circuit, lhs: WireId, rhs: WireId) -> WireId {
+    let rhs_not = circuit.add_not(rhs);
+    circuit.add_and(lhs, rhs_not)
 }
 
 fn const_zero_one(circuit: &mut Circuit) -> (WireId, WireId) {
@@ -264,6 +328,7 @@ fn eq_bytes(
 mod tests {
     use super::*;
     use crate::crypto::ascon::mix_fold;
+    use alloc::vec;
 
     fn bytes_to_bits_lsb(bytes: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len() * 8);
@@ -325,5 +390,49 @@ Connection: close\r\n\
             hash_bytes.as_slice(),
             mix_fold(MIX_DOMAIN_PAYLOAD, &payload).as_slice()
         );
+    }
+
+    fn fixed_payload_with_host(host: &str) -> Vec<u8> {
+        let payload_len = 96usize;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"GET / HTTP/1.1\r\n");
+        out.extend_from_slice(b"Host: ");
+        out.extend_from_slice(host.as_bytes());
+        out.extend_from_slice(b"\r\nConnection: close\r\nX-Pad: ");
+        let pad_len = payload_len - out.len() - 4;
+        out.extend(core::iter::repeat_n(b'a', pad_len));
+        out.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(out.len(), payload_len);
+        out
+    }
+
+    #[test]
+    fn policy_blocklist_exact_host_denies_blocked_target() {
+        let blocked = vec![b"blocked.example".to_vec()];
+        let circuit = build_policy_blocklist_host_circuit(96, 16, &blocked, &[]).expect("circuit");
+        let payload = fixed_payload_with_host("blocked.example");
+        let out_bits = circuit.eval(&bytes_to_bits_lsb(&payload)).expect("eval");
+        let (_hash_bits, allow_bits) = out_bits.split_at(32 * 8);
+        assert_eq!(allow_bits, &[0u8]);
+    }
+
+    #[test]
+    fn policy_blocklist_exact_host_allows_non_blocked_target() {
+        let blocked = vec![b"blocked.example".to_vec()];
+        let circuit = build_policy_blocklist_host_circuit(96, 16, &blocked, &[]).expect("circuit");
+        let payload = fixed_payload_with_host("example.org");
+        let out_bits = circuit.eval(&bytes_to_bits_lsb(&payload)).expect("eval");
+        let (_hash_bits, allow_bits) = out_bits.split_at(32 * 8);
+        assert_eq!(allow_bits, &[1u8]);
+    }
+
+    #[test]
+    fn policy_blocklist_prefix_denies_matching_target() {
+        let prefixes = vec![b"ads.".to_vec()];
+        let circuit = build_policy_blocklist_host_circuit(96, 16, &[], &prefixes).expect("circuit");
+        let payload = fixed_payload_with_host("ads.example.org");
+        let out_bits = circuit.eval(&bytes_to_bits_lsb(&payload)).expect("eval");
+        let (_hash_bits, allow_bits) = out_bits.split_at(32 * 8);
+        assert_eq!(allow_bits, &[0u8]);
     }
 }

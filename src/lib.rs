@@ -10,6 +10,7 @@ pub mod config;
 pub mod control;
 pub mod core;
 pub mod crypto;
+pub mod demo;
 pub mod forward;
 pub mod fragment;
 pub mod node;

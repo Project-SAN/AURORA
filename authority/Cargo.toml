@@ -5,3 +5,12 @@ edition = "2021"
 
 [lib]
 name = "authority"
+
+[[bin]]
+name = "aurora_authority"
+path = "src/main.rs"
+
+[dependencies]
+aurora = { path = ".." }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
