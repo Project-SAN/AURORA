@@ -30,8 +30,12 @@ ls config/localnet
 # ルータ 3 台 + proxy の起動
 scripts/localnet_up.sh
 
+# PA から bootstrap する版
+scripts/localnet_pa_up.sh
+
 # blocklist に載っていないホストへ HTTP GET
 curl -x http://127.0.0.1:18080 http://example.org/
+curl -x http://127.0.0.1:18081 http://example.com/
 
 # helper script で送る場合
 scripts/localnet_send.sh
@@ -39,9 +43,11 @@ scripts/localnet_send.sh config/localnet/policy-info.json example.org:80
 
 # ルータの停止
 scripts/localnet_down.sh
+scripts/localnet_pa_down.sh
 ```
 
 ログは `target/localnet/router-*.log` と `target/localnet/proxy.log` に出ます。
+PA 版のログは `target/localnet-pa/authority.log`, `target/localnet-pa/router-*.log`, `target/localnet-pa/proxy.log` に出ます。
 
 ## 手動起動
 
