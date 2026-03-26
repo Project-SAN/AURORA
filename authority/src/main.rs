@@ -14,9 +14,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = parse_config_path(env::args().skip(1))?;
     let config = AuthorityConfig::load(&config_path)?;
     let published = config.publish()?;
-    let listener = TcpListener::bind(&published.bind_addr)?;
+    let listener = TcpListener::bind(&config.bind_addr)?;
 
-    eprintln!("authority: listening on {}", published.bind_addr);
+    eprintln!("authority: listening on {}", config.bind_addr);
     eprintln!("authority: signature_scheme={}", published.signature_scheme);
     eprintln!("authority: issued_at={}", published.issued_at);
     eprintln!(

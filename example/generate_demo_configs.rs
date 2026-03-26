@@ -189,7 +189,7 @@ fn route(interface: &str, ip: [u8; 4], port: u16, exit: bool) -> RouteAnnounceme
     RouteAnnouncement {
         policy_id: [0u8; 32],
         segment: routing::segment_from_elems(&[elem]),
-        interface: Some(interface.to_string()),
+        interface: interface.to_string(),
     }
 }
 

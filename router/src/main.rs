@@ -12,6 +12,7 @@ use aurora::router::runtime::RouterRuntime;
 use aurora::router::storage::{RouterStorage, StoredState};
 use aurora::router::Router;
 use aurora::setup::wire;
+use aurora::types::Error;
 use aurora::types::{self, Packet};
 use config::RouterConfig;
 use exit::TcpExitTransport;
@@ -20,6 +21,8 @@ use std::env;
 use std::io::Write;
 use std::net::TcpStream;
 use storage::FileRouterStorage;
+#[cfg(feature = "http-client")]
+use sync::HttpDirectoryClient;
 use sync::{sync_once, DirectoryClient};
 
 fn main() {
@@ -34,10 +37,16 @@ fn main() {
     let storage = FileRouterStorage::new(&config.storage_path);
     let mut router = Router::with_node_id(config.router_id.clone());
     let secrets = load_state(&storage, &mut router);
-    let directory_path =
-        env::var("HORNET_DIRECTORY_PATH").unwrap_or_else(|_| "directory.json".into());
-    let file_client = LocalFileClient::new(directory_path);
-    if let Err(err) = sync_once(&mut router, &config, &file_client) {
+    let directory_path = env::var("HORNET_DIRECTORY_PATH")
+        .ok()
+        .filter(|path| !path.is_empty());
+    let explicit_dir_url = env::var_os("HORNET_DIR_URL").is_some();
+    if let Err(err) = sync_initial_directory(
+        &mut router,
+        &config,
+        directory_path.as_deref(),
+        explicit_dir_url,
+    ) {
         eprintln!("directory sync failed: {:?}", err);
     } else {
         persist_state(&storage, &router, &secrets);
@@ -259,6 +268,32 @@ impl DirectoryClient for LocalFileClient {
     }
 }
 
+fn sync_initial_directory(
+    router: &mut Router,
+    config: &RouterConfig,
+    directory_path: Option<&str>,
+    explicit_dir_url: bool,
+) -> core::result::Result<(), Error> {
+    if let Some(path) = directory_path {
+        let file_client = LocalFileClient::new(path);
+        return sync_once(router, config, &file_client);
+    }
+
+    #[cfg(feature = "http-client")]
+    if explicit_dir_url {
+        let http_client = HttpDirectoryClient::new(config);
+        return sync_once(router, config, &http_client);
+    }
+
+    #[cfg(not(feature = "http-client"))]
+    if explicit_dir_url {
+        return Err(Error::NotImplemented);
+    }
+
+    let file_client = LocalFileClient::new("directory.json");
+    sync_once(router, config, &file_client)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +306,12 @@ mod tests {
     use serde_json;
     use std::sync::Mutex;
     use x25519_dalek::x25519;
+    #[cfg(feature = "http-client")]
+    use {
+        authority::{serve_once, AuthorityConfig, RouteHopSpec, RouteSpec, SignatureScheme},
+        std::net::TcpListener,
+        std::thread,
+    };
 
     #[derive(Default)]
     struct MemoryStorage {
@@ -310,7 +351,7 @@ mod tests {
         let route = RouteAnnouncement {
             policy_id: policy.policy_id,
             segment: RoutingSegment(vec![0x01, 0x02, 0x03]),
-            interface: None,
+            interface: "router-entry".into(),
         };
         router.install_routes(&[route]).expect("install route");
 
@@ -343,5 +384,52 @@ mod tests {
         handle_setup_packet(incoming, &mut router, &storage, &secrets).expect("setup");
         assert!(router.registry().get(&policy.policy_id).is_some());
         assert!(storage.blob.lock().unwrap().is_some());
+    }
+
+    #[cfg(feature = "http-client")]
+    #[test]
+    #[ignore = "requires loopback socket permissions"]
+    fn router_http_directory_sync_installs_policy() {
+        let policy = PolicyMetadata {
+            policy_id: [0x42; 32],
+            version: 1,
+            expiry: 600,
+            flags: 0,
+            verifiers: vec![aurora::policy::VerifierEntry {
+                kind: aurora::core::policy::ProofKind::Policy as u8,
+                verifier_blob: vec![0xAA, 0xBB, 0xCC],
+            }],
+        };
+        let config = AuthorityConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            signature_scheme: SignatureScheme::Ed25519,
+            issued_at: Some(1_700_000_000),
+            signing_key_seed_hex: "11".repeat(32),
+            policies: vec![policy.clone()],
+            routes: vec![RouteSpec {
+                policy_id: aurora::utils::encode_hex(&policy.policy_id),
+                interface: "router-entry".into(),
+                segments: vec![RouteHopSpec::NextHop4 {
+                    ip: "127.0.0.1".into(),
+                    port: 7102,
+                }],
+            }],
+        };
+        let published = config.publish().expect("publish");
+        let public_key = config.key_pair().expect("key pair").public_key_hex();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let handle = thread::spawn(move || serve_once(&listener, &published));
+
+        let mut router = Router::with_node_id(Some("router-entry".into()));
+        let router_config = RouterConfig::new(format!("http://{addr}/directory"), public_key);
+        sync_initial_directory(&mut router, &router_config, None, true).expect("http sync");
+
+        handle.join().expect("join").expect("serve once");
+
+        assert!(router.registry().get(&policy.policy_id).is_some());
+        assert_eq!(router.routes().len(), 1);
+        assert_eq!(router.routes()[0].policy_id, policy.policy_id);
     }
 }

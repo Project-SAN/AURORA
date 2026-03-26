@@ -145,14 +145,13 @@ pub fn from_signed_json(
 pub struct RouteAnnouncement {
     pub policy_id: PolicyId,
     pub segment: RoutingSegment,
-    pub interface: Option<String>,
+    pub interface: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct RouteMessage {
     policy_id: String,
-    #[serde(default)]
-    interface: Option<String>,
+    interface: String,
     segments: Vec<RouteElemMessage>,
 }
 
@@ -483,7 +482,7 @@ mod tests {
         directory.push_route(RouteAnnouncement {
             policy_id: meta.policy_id,
             segment: segment.clone(),
-            interface: Some("wan0".to_string()),
+            interface: "wan0".to_string(),
         });
         let secret = [0x33u8; 32];
         let body = to_signed_json(&directory, &secret, 123).expect("sign");
@@ -497,6 +496,6 @@ mod tests {
             routing::elems_from_segment(&first.segment).unwrap().len(),
             1
         );
-        assert_eq!(first.interface.as_deref(), Some("wan0"));
+        assert_eq!(first.interface, "wan0");
     }
 }

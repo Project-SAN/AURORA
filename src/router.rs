@@ -122,7 +122,7 @@ impl Router {
         if let Some(node_id) = self.node_id.as_deref() {
             self.routes.clear();
             for route in routes {
-                if route.interface.as_deref() == Some(node_id) {
+                if route.interface == node_id {
                     self.routes.insert(route.policy_id, route.clone());
                 }
             }
@@ -390,7 +390,7 @@ impl Router {
         for (policy_id, list) in grouped {
             if let Some(index) = list
                 .iter()
-                .position(|route| route.interface.as_deref() == Some(node_id))
+                .position(|route| route.interface == node_id)
             {
                 let role = if index == 0 {
                     PolicyRole::Entry
