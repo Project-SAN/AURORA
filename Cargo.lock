@@ -82,6 +82,7 @@ name = "aurora-router"
 version = "0.1.0"
 dependencies = [
  "aurora",
+ "authority",
  "rand_chacha",
  "rand_core 0.6.4",
  "serde_json",
@@ -102,6 +103,11 @@ dependencies = [
 [[package]]
 name = "authority"
 version = "0.1.0"
+dependencies = [
+ "aurora",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "autocfg"

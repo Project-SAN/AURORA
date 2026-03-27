@@ -1498,13 +1498,10 @@ fn fresh_session_id() -> Result<u64, String> {
 }
 
 fn normalize_http_request_for_policy(
-    req: &[u8],
+    _req: &[u8],
     host: &str,
     cfg: &SenderConfig,
 ) -> Result<Vec<u8>, String> {
-    if req.len() == cfg.payload_len {
-        return Ok(req.to_vec());
-    }
     build_fixed_http_get(host, cfg.payload_len, cfg.host_offset)
 }
 
@@ -1513,6 +1510,7 @@ fn build_fixed_http_get(
     payload_len: usize,
     host_offset: usize,
 ) -> Result<Vec<u8>, String> {
+    let host = canonical_policy_host(host);
     let prefix = b"GET / HTTP/1.1\r\n";
     if host_offset != prefix.len() {
         return Err(format!(
@@ -1536,6 +1534,14 @@ fn build_fixed_http_get(
         return Err("failed to construct fixed payload length request".into());
     }
     Ok(out)
+}
+
+fn canonical_policy_host(host: &str) -> String {
+    if host.parse::<std::net::Ipv4Addr>().is_ok() || host.parse::<std::net::Ipv6Addr>().is_ok() {
+        host.to_string()
+    } else {
+        host.to_ascii_lowercase()
+    }
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, String> {

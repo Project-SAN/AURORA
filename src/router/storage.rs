@@ -17,7 +17,7 @@ pub struct StoredState {
 struct StoredRoute {
     policy_id: [u8; 32],
     segment: Vec<u8>,
-    interface: Option<String>,
+    interface: String,
 }
 
 pub trait RouterStorage {

@@ -1,6 +1,6 @@
 # QEMU 3 ノード送信テスト
 
-`setup` から始めて、QEMU 上の 3 ノード `entry -> middle -> exit` を通し、policy 有効のまま HTTP リクエストを送る手順です。チェックイン済みの `config/qemu/` を使い、ホスト側で state を bootstrap し、その state / directory / router config を各 QEMU 用 FAT イメージへ注入してから起動します。
+`setup` から始めて、QEMU 上の 3 ノード `entry -> middle -> exit` を通し、policy 有効のまま HTTP リクエストを送る手順です。チェックイン済みの `config/qemu/` を使い、ホスト側で state を bootstrap し、その state / directory / router config を各 QEMU 用 FAT イメージへ注入してから起動します。現在のデモ policy は固定 allow-host ではなく、`config/blocklist.json` に載っていない HTTP Host を許可します。
 
 ## 前提
 
@@ -35,26 +35,28 @@ scripts/qemu-localnet-send.sh
 
 proxy は起動時に自動で `setup` を流します。デフォルトでは proxy に対して `GET / HTTP/1.0` を流し、proxy 自身が policy capsule 付きの通常送信でターゲットへ送ります。レスポンスは `target/qemu-logs/http-response.bin` に保存されます。
 
-`example.com` を確認する最短手順:
+blocklist 非掲載ホストを確認する最短手順:
 
 ```bash
 scripts/qemu-localnet-up.sh
-curl -x http://127.0.0.1:18080 http://example.com/
+curl -x http://127.0.0.1:18080 http://example.org/
 ```
 
 proxy に直接流す場合:
 
 ```bash
-curl -x http://127.0.0.1:18080 http://example.com/
+curl -x http://127.0.0.1:18080 http://example.org/
 ```
 
 helper script で任意ターゲットを送る場合:
 
 ```bash
-scripts/qemu-localnet-send.sh config/qemu/policy-info.host.json example.com:80 /absolute/path/to/request.bin /absolute/path/to/response.bin
+scripts/qemu-localnet-send.sh config/qemu/policy-info.host.json example.org:80 /absolute/path/to/request.bin /absolute/path/to/response.bin
 ```
 
 固定長 payload を policy と合わせる必要があるので、独自 request を渡す場合は `LOCALNET_ZKBOO_PAYLOAD_LEN_BYTES` と整合する長さにしてください。デフォルトは 96 bytes です。
+
+`config/blocklist.json` を更新した場合は、QEMU 用 artifact も `cargo run --example generate_demo_configs` で再生成してください。
 
 ## 停止
 
@@ -73,5 +75,5 @@ scripts/qemu-localnet-down.sh
 
 - policy は有効 (`skip_policy=false`)
 - proxy は通常送信モード (`HORNET_PROXY_ROUTE_ONLY=0`)
-- 許可ホストは `example.com`
+- deny-list は `config/blocklist.json`
 - policy payload 長は 96 bytes

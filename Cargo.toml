@@ -52,3 +52,7 @@ harness = false
 [[example]]
 name = "routing"
 path = "example/routing.rs"
+
+[[example]]
+name = "generate_demo_configs"
+path = "example/generate_demo_configs.rs"
