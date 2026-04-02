@@ -13,6 +13,16 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
+    pub fn depth_for_leaves(leaves_len: usize) -> usize {
+        let mut width = next_pow2(leaves_len.max(1));
+        let mut depth = 0usize;
+        while width > 1 {
+            width >>= 1;
+            depth += 1;
+        }
+        depth
+    }
+
     pub fn build(leaves: &[[u8; 32]]) -> Self {
         let leaf_count = next_pow2(leaves.len().max(1));
         let mut nodes = vec![[0u8; 32]; leaf_count * 2];

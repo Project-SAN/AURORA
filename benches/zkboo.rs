@@ -107,7 +107,8 @@ fn bench_zkboo_proof_serdes(c: &mut Criterion) {
     });
     group.bench_function(BenchmarkId::from_parameter("decode_rounds16"), |b| {
         b.iter(|| {
-            let (decoded, consumed) = Proof::decode(black_box(&encoded)).expect("decode");
+            let (decoded, consumed) =
+                Proof::decode_with_circuit(&circuit, black_box(&encoded)).expect("decode");
             black_box(decoded);
             black_box(consumed);
         });

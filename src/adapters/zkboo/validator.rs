@@ -126,7 +126,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         let Some(circuit) = self.load_circuit(metadata, expected_kind)? else {
             return Err(Error::PolicyViolation);
         };
-        let proof = Proof::from_part(part).map_err(|_| Error::PolicyViolation)?;
+        let proof = Proof::from_part(part, circuit.as_ref()).map_err(|_| Error::PolicyViolation)?;
         let outputs = self.output_bits_for_part(expected_kind, part.aux())?;
         if outputs.len() != circuit.outputs.len() {
             return Err(Error::PolicyViolation);
