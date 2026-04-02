@@ -9,4 +9,4 @@ pub use chain::{ChainInputs, ChainState, ChunkMeta, Witness};
 pub use circuit::{Circuit, Gate, WireId};
 pub use commitment::{AsconCommitment, CommitmentScheme, COMMIT_LEN};
 pub use merkle::MerkleTree;
-pub use zkboo::{Engine, Proof, ProverConfig, VerifierConfig};
+pub use zkboo::{Engine, NormalizedProof, Proof, ProverConfig, VerifierConfig};

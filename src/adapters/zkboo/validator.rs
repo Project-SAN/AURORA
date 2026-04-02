@@ -6,7 +6,7 @@ use crate::core::policy::{
     find_extension, CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRole, ProofKind,
     EXT_TAG_KEY_HASH, EXT_TAG_PAYLOAD_HASH,
 };
-use crate::crypto::zkp::{Circuit, Engine, Proof, VerifierConfig};
+use crate::crypto::zkp::{Circuit, Engine, NormalizedProof, VerifierConfig};
 use crate::types::Error;
 use spin::Mutex;
 
@@ -126,7 +126,8 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         let Some(circuit) = self.load_circuit(metadata, expected_kind)? else {
             return Err(Error::PolicyViolation);
         };
-        let proof = Proof::from_part(part, circuit.as_ref()).map_err(|_| Error::PolicyViolation)?;
+        let proof = NormalizedProof::from_part(part, circuit.as_ref())
+            .map_err(|_| Error::PolicyViolation)?;
         let outputs = self.output_bits_for_part(expected_kind, part.aux())?;
         if outputs.len() != circuit.outputs.len() {
             return Err(Error::PolicyViolation);
@@ -138,7 +139,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
                 &outputs,
                 &proof,
                 VerifierConfig {
-                    rounds: proof.rounds,
+                    rounds: proof.rounds(),
                 },
             )
             .map_err(|_| Error::PolicyViolation)?;

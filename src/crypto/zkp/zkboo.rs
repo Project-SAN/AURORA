@@ -21,6 +21,14 @@ pub struct Proof {
     pub openings: Vec<RoundOpening>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NormalizedProof {
+    rounds: u16,
+    commit_root: [u8; 32],
+    shape: ProofShape,
+    openings: Vec<NormalizedRoundOpening>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProofShape {
     rounds: usize,
@@ -70,10 +78,52 @@ impl Proof {
         Ok(out)
     }
 
+    pub fn to_part(&self, kind: ProofKind) -> core::result::Result<ProofPart, Error> {
+        let encoded = self.encode()?;
+        Ok(ProofPart {
+            kind,
+            proof: encoded,
+            commitment: self.commit_root,
+            aux: Vec::new(),
+        })
+    }
+
+    pub fn normalize(
+        &self,
+        circuit: &Circuit,
+        cfg: VerifierConfig,
+    ) -> core::result::Result<NormalizedProof, Error> {
+        let shape = ProofShape::new(circuit, cfg.rounds);
+        if self.rounds != cfg.rounds || self.openings.len() != shape.rounds {
+            return Err(Error::Length);
+        }
+        let mut openings = Vec::with_capacity(shape.rounds);
+        for opening in &self.openings {
+            openings.push(NormalizedRoundOpening {
+                seed_e: opening.seed_e,
+                seed_e1: opening.seed_e1,
+                view_e: normalize_view(&opening.view_e, shape.wire_count, shape.merkle_depth)?,
+                view_e1: normalize_view(&opening.view_e1, shape.wire_count, shape.merkle_depth)?,
+            });
+        }
+        Ok(NormalizedProof {
+            rounds: self.rounds,
+            commit_root: self.commit_root,
+            shape,
+            openings,
+        })
+    }
+}
+
+impl NormalizedProof {
+    pub fn rounds(&self) -> u16 {
+        self.rounds
+    }
+
     pub fn decode_with_circuit(
         circuit: &Circuit,
         buf: &[u8],
-    ) -> core::result::Result<(Proof, usize), Error> {
+    ) -> core::result::Result<(Self, usize), Error> {
         let mut cursor = 0usize;
         let rounds = read_u16(buf, &mut cursor)?;
         let _version = read_u8(buf, &mut cursor)?;
@@ -87,7 +137,7 @@ impl Proof {
             let view_e = decode_view_fixed(buf, &mut cursor, shape.wire_count, shape.merkle_depth)?;
             let view_e1 =
                 decode_view_fixed(buf, &mut cursor, shape.wire_count, shape.merkle_depth)?;
-            openings.push(RoundOpening {
+            openings.push(NormalizedRoundOpening {
                 seed_e,
                 seed_e1,
                 view_e,
@@ -95,27 +145,18 @@ impl Proof {
             });
         }
         Ok((
-            Proof {
+            Self {
                 rounds,
                 commit_root,
+                shape,
                 openings,
             },
             cursor,
         ))
     }
 
-    pub fn to_part(&self, kind: ProofKind) -> core::result::Result<ProofPart, Error> {
-        let encoded = self.encode()?;
-        Ok(ProofPart {
-            kind,
-            proof: encoded,
-            commitment: self.commit_root,
-            aux: Vec::new(),
-        })
-    }
-
-    pub fn from_part(part: &ProofPart, circuit: &Circuit) -> core::result::Result<Proof, Error> {
-        let (proof, consumed) = Proof::decode_with_circuit(circuit, &part.proof)?;
+    pub fn from_part(part: &ProofPart, circuit: &Circuit) -> core::result::Result<Self, Error> {
+        let (proof, consumed) = Self::decode_with_circuit(circuit, &part.proof)?;
         if consumed != part.proof.len() {
             return Err(Error::Length);
         }
@@ -138,6 +179,20 @@ pub struct RoundOpening {
 pub struct ViewOpening {
     pub wires: Vec<u8>,
     pub merkle_path: Vec<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NormalizedRoundOpening {
+    seed_e: [u8; SEED_LEN],
+    seed_e1: [u8; SEED_LEN],
+    view_e: NormalizedViewOpening,
+    view_e1: NormalizedViewOpening,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NormalizedViewOpening {
+    wires: Vec<u8>,
+    merkle_path: Vec<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,76 +270,61 @@ impl Engine {
         &self,
         circuit: &Circuit,
         public_output: &[u8],
-        proof: &Proof,
+        proof: &NormalizedProof,
         cfg: VerifierConfig,
     ) -> core::result::Result<(), Error> {
         if public_output.len() != circuit.outputs.len() {
             return Err(Error::Length);
         }
         let shape = ProofShape::new(circuit, cfg.rounds);
+        if proof.rounds != cfg.rounds || proof.shape != shape {
+            return Err(Error::Length);
+        }
         let mut branch_calc = vec![0u8; shape.wire_count];
-        let mut shape_bad = u8::from(proof.rounds != cfg.rounds);
-        shape_bad |= u8::from(proof.openings.len() != shape.rounds);
-        let zero_view = ViewOpening {
-            wires: Vec::new(),
-            merkle_path: Vec::new(),
-        };
-        let zero_opening = RoundOpening {
-            seed_e: [0u8; SEED_LEN],
-            seed_e1: [0u8; SEED_LEN],
-            view_e: zero_view.clone(),
-            view_e1: zero_view,
-        };
         let mut crypto_bad = 0u8;
 
         for round in 0..shape.rounds {
             let expected_e = derive_challenge(public_output, proof.commit_root, round);
-            let opening = proof.openings.get(round).unwrap_or(&zero_opening);
+            let opening = &proof.openings[round];
             let e = expected_e as usize;
             let e1 = (e + 1) % 3;
-            let (view_e, view_e_shape_bad) =
-                normalize_view_for_verify(&opening.view_e, shape.wire_count, shape.merkle_depth);
-            let (view_e1, view_e1_shape_bad) =
-                normalize_view_for_verify(&opening.view_e1, shape.wire_count, shape.merkle_depth);
-            shape_bad |= view_e_shape_bad | view_e1_shape_bad;
 
-            let com_e = commit_view(&opening.seed_e, &view_e.wires);
-            let com_e1 = commit_view(&opening.seed_e1, &view_e1.wires);
+            let com_e = commit_view(&opening.seed_e, &opening.view_e.wires);
+            let com_e1 = commit_view(&opening.seed_e1, &opening.view_e1.wires);
             let leaf_e = round * 3 + e;
             let leaf_e1 = round * 3 + e1;
             crypto_bad |= u8::from(!MerkleTree::verify(
                 proof.commit_root,
                 com_e,
                 leaf_e,
-                &view_e.merkle_path,
+                &opening.view_e.merkle_path,
             ));
             crypto_bad |= u8::from(!MerkleTree::verify(
                 proof.commit_root,
                 com_e1,
                 leaf_e1,
-                &view_e1.merkle_path,
+                &opening.view_e1.merkle_path,
             ));
             for (idx, &bit) in public_output.iter().enumerate() {
                 let wire = circuit.outputs[idx];
-                crypto_bad |= u8::from((view_e.wires[wire] & !1) != 0);
-                crypto_bad |= u8::from((view_e1.wires[wire] & !1) != 0);
-                let _recombined = (view_e.wires[wire] ^ view_e1.wires[wire] ^ bit) & 1;
+                crypto_bad |= u8::from((opening.view_e.wires[wire] & !1) != 0);
+                crypto_bad |= u8::from((opening.view_e1.wires[wire] & !1) != 0);
+                let _recombined =
+                    (opening.view_e.wires[wire] ^ opening.view_e1.wires[wire] ^ bit) & 1;
             }
 
             crypto_bad |= u8::from(!check_branch_constant_work(
                 circuit,
                 e,
-                &view_e.wires,
-                &view_e1.wires,
+                &opening.view_e.wires,
+                &opening.view_e1.wires,
                 &opening.seed_e,
                 &opening.seed_e1,
                 &mut branch_calc,
             ));
         }
 
-        if shape_bad != 0 {
-            Err(Error::Length)
-        } else if crypto_bad != 0 {
+        if crypto_bad != 0 {
             Err(Error::Crypto)
         } else {
             Ok(())
@@ -459,33 +499,28 @@ fn decode_view_fixed(
     cursor: &mut usize,
     wire_count: usize,
     merkle_depth: usize,
-) -> core::result::Result<ViewOpening, Error> {
+) -> core::result::Result<NormalizedViewOpening, Error> {
     let wires = read_bytes(buf, cursor, wire_count)?;
     let mut merkle_path = Vec::with_capacity(merkle_depth);
     for _ in 0..merkle_depth {
         let node = read_fixed(buf, cursor)?;
         merkle_path.push(node);
     }
-    Ok(ViewOpening { wires, merkle_path })
+    Ok(NormalizedViewOpening { wires, merkle_path })
 }
 
-fn normalize_view_for_verify(
+fn normalize_view(
     view: &ViewOpening,
     wire_count: usize,
     merkle_depth: usize,
-) -> (ViewOpening, u8) {
-    let mut shape_bad = u8::from(view.wires.len() != wire_count);
-    shape_bad |= u8::from(view.merkle_path.len() != merkle_depth);
-
-    let mut wires = vec![0u8; wire_count];
-    let wires_to_copy = core::cmp::min(view.wires.len(), wire_count);
-    wires[..wires_to_copy].copy_from_slice(&view.wires[..wires_to_copy]);
-
-    let mut merkle_path = vec![[0u8; 32]; merkle_depth];
-    let path_to_copy = core::cmp::min(view.merkle_path.len(), merkle_depth);
-    merkle_path[..path_to_copy].copy_from_slice(&view.merkle_path[..path_to_copy]);
-
-    (ViewOpening { wires, merkle_path }, shape_bad)
+) -> core::result::Result<NormalizedViewOpening, Error> {
+    if view.wires.len() != wire_count || view.merkle_path.len() != merkle_depth {
+        return Err(Error::Length);
+    }
+    Ok(NormalizedViewOpening {
+        wires: view.wires.clone(),
+        merkle_path: view.merkle_path.clone(),
+    })
 }
 
 fn add_len(total: &mut usize, add: usize) -> core::result::Result<(), Error> {
@@ -591,7 +626,7 @@ impl Tape {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, Proof, ProverConfig, VerifierConfig};
+    use super::{Engine, NormalizedProof, ProverConfig, VerifierConfig};
     use crate::crypto::zkp::circuit::Circuit;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
@@ -609,8 +644,11 @@ mod tests {
         let proof = engine
             .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
+        let normalized = proof
+            .normalize(&circuit, VerifierConfig { rounds: 8 })
+            .expect("normalize");
         engine
-            .verify(&circuit, &output, &proof, VerifierConfig { rounds: 8 })
+            .verify(&circuit, &output, &normalized, VerifierConfig { rounds: 8 })
             .expect("verify");
     }
 
@@ -628,7 +666,15 @@ mod tests {
             .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let bad_output = [0u8];
-        let res = engine.verify(&circuit, &bad_output, &proof, VerifierConfig { rounds: 6 });
+        let normalized = proof
+            .normalize(&circuit, VerifierConfig { rounds: 6 })
+            .expect("normalize");
+        let res = engine.verify(
+            &circuit,
+            &bad_output,
+            &normalized,
+            VerifierConfig { rounds: 6 },
+        );
         assert!(res.is_err());
     }
 
@@ -647,7 +693,8 @@ mod tests {
             .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let encoded = proof.encode().expect("encode");
-        let (decoded, consumed) = Proof::decode_with_circuit(&circuit, &encoded).expect("decode");
+        let (decoded, consumed) =
+            NormalizedProof::decode_with_circuit(&circuit, &encoded).expect("decode");
         assert_eq!(consumed, encoded.len());
         engine
             .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 4 })
@@ -670,7 +717,7 @@ mod tests {
         let part = proof
             .to_part(crate::core::policy::ProofKind::Policy)
             .expect("to part");
-        let decoded = Proof::from_part(&part, &circuit).expect("from part");
+        let decoded = NormalizedProof::from_part(&part, &circuit).expect("from part");
         engine
             .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
             .expect("verify");
@@ -691,7 +738,7 @@ mod tests {
             .expect("prove");
         proof.openings[1].view_e.wires.pop();
 
-        let res = engine.verify(&circuit, &output, &proof, VerifierConfig { rounds: 4 });
+        let res = proof.normalize(&circuit, VerifierConfig { rounds: 4 });
         assert!(matches!(res, Err(crate::types::Error::Length)));
     }
 }
