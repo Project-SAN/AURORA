@@ -41,7 +41,7 @@ impl ZkBooPolicy {
         &self.circuit
     }
 
-    pub fn metadata(&self, expiry: u32, flags: u16) -> PolicyMetadata {
+    pub fn metadata(&self, expiry: u32, flags: u16, min_rounds: u16) -> PolicyMetadata {
         PolicyMetadata {
             policy_id: self.policy_id,
             version: 1,
@@ -49,6 +49,7 @@ impl ZkBooPolicy {
             flags: flags | POLICY_FLAG_ZKBOO,
             verifiers: vec![crate::core::policy::VerifierEntry {
                 kind: ProofKind::Policy as u8,
+                min_rounds,
                 verifier_blob: self.circuit.encode(),
             }],
         }
@@ -115,7 +116,7 @@ impl ZkBooProofService {
     }
 
     pub fn metadata(&self, expiry: u32, flags: u16) -> PolicyMetadata {
-        self.policy.metadata(expiry, flags)
+        self.policy.metadata(expiry, flags, self.rounds)
     }
 
     pub fn prove_payload_lsb_first(
@@ -179,7 +180,8 @@ mod tests {
         let out = circuit.add_and(0, 1);
         circuit.set_outputs(&[out]);
         let policy = ZkBooPolicy::new(circuit);
-        let metadata = policy.metadata(0, 0);
+        let metadata = policy.metadata(0, 0, 0);
+        assert_eq!(metadata.verifiers[0].min_rounds, 0);
         assert!(metadata.supports_zkboo());
         assert_eq!(metadata.verifiers.len(), 1);
         assert_eq!(metadata.verifiers[0].kind, ProofKind::Policy as u8);
@@ -192,7 +194,7 @@ mod tests {
         let out = circuit.add_and(0, 1);
         circuit.set_outputs(&[out]);
         let policy = ZkBooPolicy::new(circuit);
-        let metadata = policy.metadata(0, 0);
+        let metadata = policy.metadata(0, 0, 4);
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let capsule = policy.prove_with_rng(&[1, 1], 4, &mut rng).expect("prove");
         let validator = ZkBooCapsuleValidator::new();

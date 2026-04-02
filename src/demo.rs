@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 pub const DEFAULT_DEMO_POLICY_EXPIRY: u32 = 900;
 pub const DEFAULT_DEMO_POLICY_PAYLOAD_LEN: usize = 96;
 pub const DEFAULT_DEMO_HOST_HEADER_OFFSET: usize = 16;
+pub const DEFAULT_DEMO_MIN_ROUNDS: u16 = 8;
 pub const DEMO_DIRECTORY_SEED: [u8; 32] = [0x44; 32];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -62,14 +63,17 @@ pub fn demo_policy_metadata_for_blocklist(
         verifiers: vec![
             VerifierEntry {
                 kind: ProofKind::KeyBinding as u8,
+                min_rounds: DEFAULT_DEMO_MIN_ROUNDS,
                 verifier_blob: keybinding.encode(),
             },
             VerifierEntry {
                 kind: ProofKind::Consistency as u8,
+                min_rounds: DEFAULT_DEMO_MIN_ROUNDS,
                 verifier_blob: consistency.encode(),
             },
             VerifierEntry {
                 kind: ProofKind::Policy as u8,
+                min_rounds: DEFAULT_DEMO_MIN_ROUNDS,
                 verifier_blob: policy_circuit.encode(),
             },
         ],
@@ -122,6 +126,7 @@ mod tests {
             DEFAULT_DEMO_HOST_HEADER_OFFSET,
         )
         .expect("metadata");
+        assert_eq!(metadata.verifiers[0].min_rounds, DEFAULT_DEMO_MIN_ROUNDS);
         let policy = metadata
             .verifiers
             .iter()

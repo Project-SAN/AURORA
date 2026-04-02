@@ -6,7 +6,7 @@ use crate::core::policy::{
     find_extension, CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRole, ProofKind,
     EXT_TAG_KEY_HASH, EXT_TAG_PAYLOAD_HASH,
 };
-use crate::crypto::zkp::{Circuit, Engine, NormalizedProof};
+use crate::crypto::zkp::{Circuit, Engine, NormalizedProof, VerifierConfig};
 use crate::types::Error;
 use spin::Mutex;
 
@@ -25,7 +25,7 @@ impl ZkBooCapsuleValidator {
         &self,
         metadata: &PolicyMetadata,
         kind: ProofKind,
-    ) -> core::result::Result<Option<Arc<Circuit>>, Error> {
+    ) -> core::result::Result<Option<(Arc<Circuit>, u16)>, Error> {
         let Some(entry) = metadata
             .verifiers
             .iter()
@@ -36,15 +36,16 @@ impl ZkBooCapsuleValidator {
         if entry.verifier_blob.is_empty() {
             return Ok(None);
         }
+        let min_rounds = entry.min_rounds;
         let mut cache = self.cache.lock();
         let key = (metadata.policy_id, kind as u8);
         if let Some(circuit) = cache.get(&key) {
-            return Ok(Some(circuit.clone()));
+            return Ok(Some((circuit.clone(), min_rounds)));
         }
         let circuit = Circuit::decode(entry.verifier_blob.as_slice())?;
         let circuit = Arc::new(circuit);
         cache.insert(key, circuit.clone());
-        Ok(Some(circuit))
+        Ok(Some((circuit, min_rounds)))
     }
 
     fn output_bits_for_part(
@@ -123,7 +124,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
             PolicyRole::Exit | PolicyRole::All => ProofKind::Policy,
         };
         let part = capsule.part(expected_kind).ok_or(Error::PolicyViolation)?;
-        let Some(circuit) = self.load_circuit(metadata, expected_kind)? else {
+        let Some((circuit, min_rounds)) = self.load_circuit(metadata, expected_kind)? else {
             return Err(Error::PolicyViolation);
         };
         let proof = NormalizedProof::from_part(part, circuit.as_ref())
@@ -134,7 +135,12 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         }
         let engine = Engine;
         engine
-            .verify(circuit.as_ref(), &outputs, &proof)
+            .verify_with_config(
+                circuit.as_ref(),
+                &outputs,
+                &proof,
+                VerifierConfig::require_min_rounds(min_rounds),
+            )
             .map_err(|_| Error::PolicyViolation)?;
 
         // Cross-part linkage checks for the 3-part ZKBoo capsule:
@@ -238,6 +244,7 @@ mod tests {
             flags: crate::core::policy::metadata::POLICY_FLAG_ZKBOO,
             verifiers: vec![crate::core::policy::VerifierEntry {
                 kind: ProofKind::KeyBinding as u8,
+                min_rounds: rounds,
                 verifier_blob: circuit.encode(),
             }],
         };

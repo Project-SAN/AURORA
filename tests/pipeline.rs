@@ -22,7 +22,7 @@ fn demo_zkboo_policy() -> (aurora::policy::zkboo::ZkBooPolicy, PolicyMetadata) {
     let one = circuit.add_not(0);
     circuit.set_outputs(&[one]);
     let policy = aurora::policy::zkboo::ZkBooPolicy::new(circuit);
-    let metadata = policy.metadata(900, 0);
+    let metadata = policy.metadata(900, 0, 16);
     (policy, metadata)
 }
 

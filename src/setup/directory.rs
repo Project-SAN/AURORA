@@ -428,6 +428,7 @@ mod tests {
             flags: 0,
             verifiers: vec![crate::policy::VerifierEntry {
                 kind: crate::core::policy::ProofKind::Policy as u8,
+                min_rounds: 0,
                 verifier_blob: vec![0x10, 0x20],
             }],
         };
@@ -448,6 +449,7 @@ mod tests {
             flags: 0,
             verifiers: vec![crate::policy::VerifierEntry {
                 kind: crate::core::policy::ProofKind::Policy as u8,
+                min_rounds: 0,
                 verifier_blob: vec![0xAA],
             }],
         };
@@ -470,6 +472,7 @@ mod tests {
             flags: 0,
             verifiers: vec![crate::policy::VerifierEntry {
                 kind: crate::core::policy::ProofKind::Policy as u8,
+                min_rounds: 0,
                 verifier_blob: vec![0x01, 0x02],
             }],
         };
