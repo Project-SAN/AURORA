@@ -5,7 +5,6 @@ use crate::core::policy::{ProofKind, ProofPart};
 use crate::crypto::ascon::AsconHash256;
 use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
-use crate::crypto::zkp::seed_tree::{SeedDeriver, SeedRevealSet, SeedTree};
 use crate::types::Error;
 use rand_core::{CryptoRng, RngCore};
 
@@ -19,7 +18,6 @@ pub struct Proof {
     pub rounds: u16,
     pub commit_root: [u8; 32],
     pub openings: Vec<RoundOpening>,
-    pub seed_reveals: Vec<SeedRevealSet>,
 }
 
 impl Proof {
@@ -27,16 +25,9 @@ impl Proof {
         let mut total = 0usize;
         add_len(&mut total, 2 + 1 + 1 + 32 + 4)?;
         for opening in &self.openings {
-            add_len(&mut total, 1)?;
+            add_len(&mut total, 1 + SEED_LEN + SEED_LEN)?;
             add_len(&mut total, view_len(&opening.view_e)?)?;
             add_len(&mut total, view_len(&opening.view_e1)?)?;
-        }
-        add_len(&mut total, 1)?;
-        for reveal in &self.seed_reveals {
-            add_len(&mut total, 4 + 4 + 4)?;
-            for _ in &reveal.nodes {
-                add_len(&mut total, 4 + 32)?;
-            }
         }
         Ok(total)
     }
@@ -51,19 +42,10 @@ impl Proof {
         encode_u32(&mut out, self.openings.len() as u32);
         for opening in &self.openings {
             out.push(opening.e);
+            out.extend_from_slice(&opening.seed_e);
+            out.extend_from_slice(&opening.seed_e1);
             encode_view(&mut out, &opening.view_e)?;
             encode_view(&mut out, &opening.view_e1)?;
-        }
-
-        out.push(self.seed_reveals.len() as u8);
-        for reveal in &self.seed_reveals {
-            encode_u32(&mut out, reveal.leaf_count);
-            encode_u32(&mut out, reveal.rounds);
-            encode_u32(&mut out, reveal.nodes.len() as u32);
-            for node in &reveal.nodes {
-                encode_u32(&mut out, node.node);
-                out.extend_from_slice(&node.seed);
-            }
         }
         Ok(out)
     }
@@ -78,26 +60,16 @@ impl Proof {
         let mut openings = Vec::with_capacity(opening_count);
         for _ in 0..opening_count {
             let e = read_u8(buf, &mut cursor)?;
+            let seed_e = read_fixed(buf, &mut cursor)?;
+            let seed_e1 = read_fixed(buf, &mut cursor)?;
             let view_e = decode_view(buf, &mut cursor)?;
             let view_e1 = decode_view(buf, &mut cursor)?;
-            openings.push(RoundOpening { e, view_e, view_e1 });
-        }
-        let seed_count = read_u8(buf, &mut cursor)? as usize;
-        let mut seed_reveals = Vec::with_capacity(seed_count);
-        for _ in 0..seed_count {
-            let leaf_count = read_u32(buf, &mut cursor)?;
-            let rounds_count = read_u32(buf, &mut cursor)?;
-            let node_count = read_u32(buf, &mut cursor)? as usize;
-            let mut nodes = Vec::with_capacity(node_count);
-            for _ in 0..node_count {
-                let node = read_u32(buf, &mut cursor)?;
-                let seed = read_fixed(buf, &mut cursor)?;
-                nodes.push(crate::crypto::zkp::seed_tree::SeedReveal { node, seed });
-            }
-            seed_reveals.push(SeedRevealSet {
-                leaf_count,
-                rounds: rounds_count,
-                nodes,
+            openings.push(RoundOpening {
+                e,
+                seed_e,
+                seed_e1,
+                view_e,
+                view_e1,
             });
         }
         Ok((
@@ -105,7 +77,6 @@ impl Proof {
                 rounds,
                 commit_root,
                 openings,
-                seed_reveals,
             },
             cursor,
         ))
@@ -136,6 +107,8 @@ impl Proof {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoundOpening {
     pub e: u8,
+    pub seed_e: [u8; SEED_LEN],
+    pub seed_e1: [u8; SEED_LEN],
     pub view_e: ViewOpening,
     pub view_e1: ViewOpening,
 }
@@ -172,25 +145,14 @@ impl Engine {
             return Err(Error::Length);
         }
         let rounds = cfg.rounds as usize;
-        let mut root_seeds = [[0u8; SEED_LEN]; 3];
-        for seed in &mut root_seeds {
-            rng.fill_bytes(seed);
-        }
-        let seed_trees = [
-            SeedTree::new(root_seeds[0], rounds),
-            SeedTree::new(root_seeds[1], rounds),
-            SeedTree::new(root_seeds[2], rounds),
-        ];
-
         let mut round_states = Vec::with_capacity(rounds);
         let mut commitments = Vec::with_capacity(rounds * 3);
 
-        for round in 0..rounds {
-            let seeds = [
-                seed_trees[0].seed_for_round(round).ok_or(Error::Length)?,
-                seed_trees[1].seed_for_round(round).ok_or(Error::Length)?,
-                seed_trees[2].seed_for_round(round).ok_or(Error::Length)?,
-            ];
+        for _round in 0..rounds {
+            let mut seeds = [[0u8; SEED_LEN]; 3];
+            for seed in &mut seeds {
+                rng.fill_bytes(seed);
+            }
             let state = simulate_round(circuit, input_bits, public_output, seeds)?;
             commitments.extend_from_slice(&state.commitments);
             round_states.push(state);
@@ -200,16 +162,18 @@ impl Engine {
         let root = merkle.root();
 
         let mut openings = Vec::with_capacity(rounds);
-        let mut opened_by_party = vec![vec![false; rounds]; 3];
         for round in 0..rounds {
             let e = derive_challenge(public_output, root, round);
             let e1 = (e + 1) % 3;
-            let view_e = &round_states[round].views[e as usize];
-            let view_e1 = &round_states[round].views[e1 as usize];
+            let state = &round_states[round];
+            let view_e = &state.views[e as usize];
+            let view_e1 = &state.views[e1 as usize];
             let leaf_e = round * 3 + e as usize;
             let leaf_e1 = round * 3 + e1 as usize;
             openings.push(RoundOpening {
                 e,
+                seed_e: state.seeds[e as usize],
+                seed_e1: state.seeds[e1 as usize],
                 view_e: ViewOpening {
                     party: e,
                     wires: view_e.clone(),
@@ -221,20 +185,12 @@ impl Engine {
                     merkle_path: merkle.open(leaf_e1),
                 },
             });
-            opened_by_party[e as usize][round] = true;
-            opened_by_party[e1 as usize][round] = true;
-        }
-
-        let mut seed_reveals = Vec::with_capacity(3);
-        for (party, tree) in seed_trees.iter().enumerate() {
-            seed_reveals.push(tree.reveal_for_opened(&opened_by_party[party]));
         }
 
         Ok(Proof {
             rounds: cfg.rounds,
             commit_root: root,
             openings,
-            seed_reveals,
         })
     }
 
@@ -252,15 +208,9 @@ impl Engine {
             return Err(Error::Length);
         }
         let rounds = proof.rounds as usize;
-        if proof.openings.len() != rounds || proof.seed_reveals.len() != 3 {
+        if proof.openings.len() != rounds {
             return Err(Error::Length);
         }
-
-        let seed_derivers = [
-            SeedDeriver::new(&proof.seed_reveals[0]),
-            SeedDeriver::new(&proof.seed_reveals[1]),
-            SeedDeriver::new(&proof.seed_reveals[2]),
-        ];
         let mut branch_calc = vec![0u8; circuit.wire_count()];
 
         for round in 0..rounds {
@@ -275,15 +225,8 @@ impl Engine {
                 return Err(Error::Crypto);
             }
 
-            let seed_e = seed_derivers[e]
-                .seed_for_round(round)
-                .ok_or(Error::Crypto)?;
-            let seed_e1 = seed_derivers[e1]
-                .seed_for_round(round)
-                .ok_or(Error::Crypto)?;
-
-            let com_e = commit_view(&seed_e, &opening.view_e.wires);
-            let com_e1 = commit_view(&seed_e1, &opening.view_e1.wires);
+            let com_e = commit_view(&opening.seed_e, &opening.view_e.wires);
+            let com_e1 = commit_view(&opening.seed_e1, &opening.view_e1.wires);
             let leaf_e = round * 3 + e;
             let leaf_e1 = round * 3 + e1;
             if !MerkleTree::verify(
@@ -325,8 +268,8 @@ impl Engine {
                 e,
                 &opening.view_e.wires,
                 &opening.view_e1.wires,
-                &seed_e,
-                &seed_e1,
+                &opening.seed_e,
+                &opening.seed_e1,
                 &mut branch_calc,
             )? {
                 return Err(Error::Crypto);
@@ -338,6 +281,7 @@ impl Engine {
 }
 
 struct RoundState {
+    seeds: [[u8; SEED_LEN]; 3],
     views: [Vec<u8>; 3],
     commitments: [[u8; 32]; 3],
 }
@@ -418,7 +362,11 @@ fn simulate_round(
         commitments[i] = commit_view(&seeds[i], &views[i]);
     }
 
-    Ok(RoundState { views, commitments })
+    Ok(RoundState {
+        seeds,
+        views,
+        commitments,
+    })
 }
 
 fn check_branch(
