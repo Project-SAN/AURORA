@@ -2,6 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::crypto::ascon::AsconHash256;
+use subtle::ConstantTimeEq;
 
 const LEAF_DOMAIN: &[u8] = b"LEAF";
 const NODE_DOMAIN: &[u8] = b"NODE";
@@ -59,14 +60,13 @@ impl MerkleTree {
         let mut hash = hash_leaf(&leaf);
         let mut idx = index;
         for sibling in path {
-            if idx % 2 == 0 {
-                hash = hash_node(&hash, sibling);
-            } else {
-                hash = hash_node(sibling, &hash);
-            }
+            let even_mask = 0u8.wrapping_sub(u8::from(idx % 2 == 0));
+            let left = select_hash(&hash, sibling, even_mask);
+            let right = select_hash(sibling, &hash, even_mask);
+            hash = hash_node(&left, &right);
             idx /= 2;
         }
-        hash == root
+        hash.ct_eq(&root).unwrap_u8() == 1
     }
 
     pub fn leaf_count(&self) -> usize {
@@ -87,6 +87,14 @@ fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     hasher.update(left);
     hasher.update(right);
     hasher.finalize()
+}
+
+fn select_hash(when_masked: &[u8; 32], when_unmasked: &[u8; 32], mask: u8) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for idx in 0..out.len() {
+        out[idx] = (when_masked[idx] & mask) | (when_unmasked[idx] & !mask);
+    }
+    out
 }
 
 fn next_pow2(mut n: usize) -> usize {

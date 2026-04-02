@@ -7,6 +7,7 @@ use crate::crypto::zkp::circuit::{Circuit, Gate};
 use crate::crypto::zkp::merkle::MerkleTree;
 use crate::types::Error;
 use rand_core::{CryptoRng, RngCore};
+use subtle::ConstantTimeEq;
 
 const SEED_LEN: usize = 32;
 const TAPE_DOMAIN: &[u8] = b"TAPE";
@@ -217,76 +218,77 @@ impl Engine {
         proof: &Proof,
         cfg: VerifierConfig,
     ) -> core::result::Result<(), Error> {
-        if proof.rounds != cfg.rounds {
-            return Err(Error::Length);
-        }
         if public_output.len() != circuit.outputs.len() {
             return Err(Error::Length);
         }
-        let rounds = proof.rounds as usize;
-        if proof.openings.len() != rounds {
-            return Err(Error::Length);
-        }
-        let mut branch_calc = vec![0u8; circuit.wire_count()];
+        let shape = ProofShape::new(circuit, cfg.rounds);
+        let mut branch_calc = vec![0u8; shape.wire_count];
+        let mut shape_bad = u8::from(proof.rounds != cfg.rounds);
+        shape_bad |= u8::from(proof.openings.len() != shape.rounds);
+        let zero_view = ViewOpening {
+            wires: Vec::new(),
+            merkle_path: Vec::new(),
+        };
+        let zero_opening = RoundOpening {
+            seed_e: [0u8; SEED_LEN],
+            seed_e1: [0u8; SEED_LEN],
+            view_e: zero_view.clone(),
+            view_e1: zero_view,
+        };
+        let mut crypto_bad = 0u8;
 
-        for round in 0..rounds {
+        for round in 0..shape.rounds {
             let expected_e = derive_challenge(public_output, proof.commit_root, round);
-            let opening = &proof.openings[round];
+            let opening = proof.openings.get(round).unwrap_or(&zero_opening);
             let e = expected_e as usize;
             let e1 = (e + 1) % 3;
+            let (view_e, view_e_shape_bad) =
+                normalize_view_for_verify(&opening.view_e, shape.wire_count, shape.merkle_depth);
+            let (view_e1, view_e1_shape_bad) =
+                normalize_view_for_verify(&opening.view_e1, shape.wire_count, shape.merkle_depth);
+            shape_bad |= view_e_shape_bad | view_e1_shape_bad;
 
-            let com_e = commit_view(&opening.seed_e, &opening.view_e.wires);
-            let com_e1 = commit_view(&opening.seed_e1, &opening.view_e1.wires);
+            let com_e = commit_view(&opening.seed_e, &view_e.wires);
+            let com_e1 = commit_view(&opening.seed_e1, &view_e1.wires);
             let leaf_e = round * 3 + e;
             let leaf_e1 = round * 3 + e1;
-            if !MerkleTree::verify(
+            crypto_bad |= u8::from(!MerkleTree::verify(
                 proof.commit_root,
                 com_e,
                 leaf_e,
-                &opening.view_e.merkle_path,
-            ) {
-                return Err(Error::Crypto);
-            }
-            if !MerkleTree::verify(
+                &view_e.merkle_path,
+            ));
+            crypto_bad |= u8::from(!MerkleTree::verify(
                 proof.commit_root,
                 com_e1,
                 leaf_e1,
-                &opening.view_e1.merkle_path,
-            ) {
-                return Err(Error::Crypto);
-            }
-
-            if opening.view_e.wires.len() != circuit.wire_count()
-                || opening.view_e1.wires.len() != circuit.wire_count()
-            {
-                return Err(Error::Length);
-            }
+                &view_e1.merkle_path,
+            ));
             for (idx, &bit) in public_output.iter().enumerate() {
                 let wire = circuit.outputs[idx];
-                if wire >= opening.view_e.wires.len() {
-                    return Err(Error::Length);
-                }
-                let recombined =
-                    (opening.view_e.wires[wire] ^ opening.view_e1.wires[wire] ^ bit) & 1;
-                if recombined > 1 {
-                    return Err(Error::Crypto);
-                }
+                crypto_bad |= u8::from((view_e.wires[wire] & !1) != 0);
+                crypto_bad |= u8::from((view_e1.wires[wire] & !1) != 0);
+                let _recombined = (view_e.wires[wire] ^ view_e1.wires[wire] ^ bit) & 1;
             }
 
-            if !check_branch(
+            crypto_bad |= u8::from(!check_branch_constant_work(
                 circuit,
                 e,
-                &opening.view_e.wires,
-                &opening.view_e1.wires,
+                &view_e.wires,
+                &view_e1.wires,
                 &opening.seed_e,
                 &opening.seed_e1,
                 &mut branch_calc,
-            )? {
-                return Err(Error::Crypto);
-            }
+            ));
         }
 
-        Ok(())
+        if shape_bad != 0 {
+            Err(Error::Length)
+        } else if crypto_bad != 0 {
+            Err(Error::Crypto)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -379,7 +381,7 @@ fn simulate_round(
     })
 }
 
-fn check_branch(
+fn check_branch_constant_work(
     circuit: &Circuit,
     branch: usize,
     view_i: &[u8],
@@ -387,42 +389,32 @@ fn check_branch(
     seed_i: &[u8; SEED_LEN],
     seed_i1: &[u8; SEED_LEN],
     calc: &mut [u8],
-) -> core::result::Result<bool, Error> {
-    let n_wires = circuit.wire_count();
-    if view_i.len() != n_wires || view_i1.len() != n_wires || calc.len() != n_wires {
-        return Err(Error::Length);
-    }
+) -> bool {
     let mut tape_i = Tape::new(*seed_i);
     let mut tape_i1 = Tape::new(*seed_i1);
     tape_i.skip_bits(circuit.n_inputs);
     tape_i1.skip_bits(circuit.n_inputs);
 
     calc[..circuit.n_inputs].copy_from_slice(&view_i[..circuit.n_inputs]);
+    let mut ok = true;
+    let branch_is_zero = (branch as u8).ct_eq(&0).unwrap_u8();
 
     for (g_idx, gate) in circuit.gates.iter().enumerate() {
         let out = circuit.n_inputs + g_idx;
         let expected = match *gate {
             Gate::Xor { a, b } => calc[a] ^ calc[b],
-            Gate::Not { a } => {
-                if branch == 0 {
-                    calc[a] ^ 1
-                } else {
-                    calc[a]
-                }
-            }
+            Gate::Not { a } => calc[a] ^ branch_is_zero,
             Gate::And { a, b } => {
                 let r_i = tape_i.next_bit();
                 let r_i1 = tape_i1.next_bit();
                 (calc[a] & calc[b]) ^ (view_i1[a] & calc[b]) ^ (calc[a] & view_i1[b]) ^ r_i ^ r_i1
             }
         };
-        if (view_i[out] & 1) != (expected & 1) {
-            return Ok(false);
-        }
+        ok &= (view_i[out] & 1) == (expected & 1);
         calc[out] = expected & 1;
     }
 
-    Ok(true)
+    ok
 }
 
 fn derive_challenge(public_output: &[u8], root: [u8; 32], round: usize) -> u8 {
@@ -475,6 +467,25 @@ fn decode_view_fixed(
         merkle_path.push(node);
     }
     Ok(ViewOpening { wires, merkle_path })
+}
+
+fn normalize_view_for_verify(
+    view: &ViewOpening,
+    wire_count: usize,
+    merkle_depth: usize,
+) -> (ViewOpening, u8) {
+    let mut shape_bad = u8::from(view.wires.len() != wire_count);
+    shape_bad |= u8::from(view.merkle_path.len() != merkle_depth);
+
+    let mut wires = vec![0u8; wire_count];
+    let wires_to_copy = core::cmp::min(view.wires.len(), wire_count);
+    wires[..wires_to_copy].copy_from_slice(&view.wires[..wires_to_copy]);
+
+    let mut merkle_path = vec![[0u8; 32]; merkle_depth];
+    let path_to_copy = core::cmp::min(view.merkle_path.len(), merkle_depth);
+    merkle_path[..path_to_copy].copy_from_slice(&view.merkle_path[..path_to_copy]);
+
+    (ViewOpening { wires, merkle_path }, shape_bad)
 }
 
 fn add_len(total: &mut usize, add: usize) -> core::result::Result<(), Error> {
@@ -663,5 +674,24 @@ mod tests {
         engine
             .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
             .expect("verify");
+    }
+
+    #[test]
+    fn verify_rejects_malformed_shape_without_panicking() {
+        let mut circuit = Circuit::new(2);
+        let w = circuit.add_and(0, 1);
+        circuit.set_outputs(&[w]);
+        let input = [1u8, 1u8];
+        let output = [1u8];
+        let cfg = ProverConfig { rounds: 4 };
+        let mut rng = ChaCha20Rng::seed_from_u64(99);
+        let engine = Engine;
+        let mut proof = engine
+            .prove(&circuit, &input, &output, cfg, &mut rng)
+            .expect("prove");
+        proof.openings[1].view_e.wires.pop();
+
+        let res = engine.verify(&circuit, &output, &proof, VerifierConfig { rounds: 4 });
+        assert!(matches!(res, Err(crate::types::Error::Length)));
     }
 }
