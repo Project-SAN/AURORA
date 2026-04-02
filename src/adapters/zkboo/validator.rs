@@ -6,7 +6,7 @@ use crate::core::policy::{
     find_extension, CapsuleValidator, PolicyCapsule, PolicyMetadata, PolicyRole, ProofKind,
     EXT_TAG_KEY_HASH, EXT_TAG_PAYLOAD_HASH,
 };
-use crate::crypto::zkp::{Circuit, Engine, NormalizedProof, VerifierConfig};
+use crate::crypto::zkp::{Circuit, Engine, NormalizedProof};
 use crate::types::Error;
 use spin::Mutex;
 
@@ -134,14 +134,7 @@ impl CapsuleValidator for ZkBooCapsuleValidator {
         }
         let engine = Engine;
         engine
-            .verify(
-                circuit.as_ref(),
-                &outputs,
-                &proof,
-                VerifierConfig {
-                    rounds: proof.rounds(),
-                },
-            )
+            .verify(circuit.as_ref(), &outputs, &proof)
             .map_err(|_| Error::PolicyViolation)?;
 
         // Cross-part linkage checks for the 3-part ZKBoo capsule:

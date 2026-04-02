@@ -88,13 +88,9 @@ impl Proof {
         })
     }
 
-    pub fn normalize(
-        &self,
-        circuit: &Circuit,
-        cfg: VerifierConfig,
-    ) -> core::result::Result<NormalizedProof, Error> {
-        let shape = ProofShape::new(circuit, cfg.rounds);
-        if self.rounds != cfg.rounds || self.openings.len() != shape.rounds {
+    pub fn normalize(&self, circuit: &Circuit) -> core::result::Result<NormalizedProof, Error> {
+        let shape = ProofShape::new(circuit, self.rounds);
+        if self.openings.len() != shape.rounds {
             return Err(Error::Length);
         }
         let mut openings = Vec::with_capacity(shape.rounds);
@@ -202,7 +198,19 @@ pub struct ProverConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VerifierConfig {
-    pub rounds: u16,
+    pub min_rounds: u16,
+}
+
+impl VerifierConfig {
+    pub const fn require_min_rounds(min_rounds: u16) -> Self {
+        Self { min_rounds }
+    }
+}
+
+impl Default for VerifierConfig {
+    fn default() -> Self {
+        Self { min_rounds: 0 }
+    }
 }
 
 pub struct Engine;
@@ -271,14 +279,26 @@ impl Engine {
         circuit: &Circuit,
         public_output: &[u8],
         proof: &NormalizedProof,
+    ) -> core::result::Result<(), Error> {
+        self.verify_with_config(circuit, public_output, proof, VerifierConfig::default())
+    }
+
+    pub fn verify_with_config(
+        &self,
+        circuit: &Circuit,
+        public_output: &[u8],
+        proof: &NormalizedProof,
         cfg: VerifierConfig,
     ) -> core::result::Result<(), Error> {
         if public_output.len() != circuit.outputs.len() {
             return Err(Error::Length);
         }
-        let shape = ProofShape::new(circuit, cfg.rounds);
-        if proof.rounds != cfg.rounds || proof.shape != shape {
+        let shape = ProofShape::new(circuit, proof.rounds);
+        if proof.shape != shape {
             return Err(Error::Length);
+        }
+        if proof.rounds < cfg.min_rounds {
+            return Err(Error::Crypto);
         }
         let mut branch_calc = vec![0u8; shape.wire_count];
         let mut crypto_bad = 0u8;
@@ -644,11 +664,9 @@ mod tests {
         let proof = engine
             .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
-        let normalized = proof
-            .normalize(&circuit, VerifierConfig { rounds: 8 })
-            .expect("normalize");
+        let normalized = proof.normalize(&circuit).expect("normalize");
         engine
-            .verify(&circuit, &output, &normalized, VerifierConfig { rounds: 8 })
+            .verify(&circuit, &output, &normalized)
             .expect("verify");
     }
 
@@ -666,15 +684,8 @@ mod tests {
             .prove(&circuit, &input, &output, cfg, &mut rng)
             .expect("prove");
         let bad_output = [0u8];
-        let normalized = proof
-            .normalize(&circuit, VerifierConfig { rounds: 6 })
-            .expect("normalize");
-        let res = engine.verify(
-            &circuit,
-            &bad_output,
-            &normalized,
-            VerifierConfig { rounds: 6 },
-        );
+        let normalized = proof.normalize(&circuit).expect("normalize");
+        let res = engine.verify(&circuit, &bad_output, &normalized);
         assert!(res.is_err());
     }
 
@@ -696,9 +707,7 @@ mod tests {
         let (decoded, consumed) =
             NormalizedProof::decode_with_circuit(&circuit, &encoded).expect("decode");
         assert_eq!(consumed, encoded.len());
-        engine
-            .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 4 })
-            .expect("verify");
+        engine.verify(&circuit, &output, &decoded).expect("verify");
     }
 
     #[test]
@@ -718,9 +727,7 @@ mod tests {
             .to_part(crate::core::policy::ProofKind::Policy)
             .expect("to part");
         let decoded = NormalizedProof::from_part(&part, &circuit).expect("from part");
-        engine
-            .verify(&circuit, &output, &decoded, VerifierConfig { rounds: 5 })
-            .expect("verify");
+        engine.verify(&circuit, &output, &decoded).expect("verify");
     }
 
     #[test]
@@ -738,7 +745,31 @@ mod tests {
             .expect("prove");
         proof.openings[1].view_e.wires.pop();
 
-        let res = proof.normalize(&circuit, VerifierConfig { rounds: 4 });
+        let res = proof.normalize(&circuit);
         assert!(matches!(res, Err(crate::types::Error::Length)));
+    }
+
+    #[test]
+    fn verify_with_config_rejects_insufficient_rounds() {
+        let mut circuit = Circuit::new(2);
+        let w = circuit.add_and(0, 1);
+        circuit.set_outputs(&[w]);
+        let input = [1u8, 1u8];
+        let output = [1u8];
+        let cfg = ProverConfig { rounds: 4 };
+        let mut rng = ChaCha20Rng::seed_from_u64(123);
+        let engine = Engine;
+        let proof = engine
+            .prove(&circuit, &input, &output, cfg, &mut rng)
+            .expect("prove");
+        let normalized = proof.normalize(&circuit).expect("normalize");
+
+        let res = engine.verify_with_config(
+            &circuit,
+            &output,
+            &normalized,
+            VerifierConfig::require_min_rounds(5),
+        );
+        assert!(matches!(res, Err(crate::types::Error::Crypto)));
     }
 }

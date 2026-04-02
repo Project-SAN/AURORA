@@ -1,5 +1,5 @@
 use aurora::crypto::zkp::ascon_circuit;
-use aurora::crypto::zkp::{Engine, NormalizedProof, ProverConfig, VerifierConfig};
+use aurora::crypto::zkp::{Engine, NormalizedProof, ProverConfig};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -70,20 +70,13 @@ fn bench_zkboo_verify_round_scaling(c: &mut Criterion) {
         let proof = Engine
             .prove(&circuit, &input, &output, ProverConfig { rounds }, &mut rng)
             .expect("prove");
-        let normalized = proof
-            .normalize(&circuit, VerifierConfig { rounds })
-            .expect("normalize");
+        let normalized = proof.normalize(&circuit).expect("normalize");
         group.bench_function(
             BenchmarkId::from_parameter(format!("rounds{rounds}")),
             |b| {
                 b.iter(|| {
                     Engine
-                        .verify(
-                            &circuit,
-                            black_box(&output),
-                            black_box(&normalized),
-                            VerifierConfig { rounds },
-                        )
+                        .verify(&circuit, black_box(&output), black_box(&normalized))
                         .expect("verify");
                 });
             },
