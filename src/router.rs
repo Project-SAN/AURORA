@@ -425,6 +425,7 @@ mod tests {
             flags: 0,
             verifiers: alloc::vec![crate::policy::VerifierEntry {
                 kind: crate::core::policy::ProofKind::Policy as u8,
+                min_rounds: 0,
                 verifier_blob: alloc::vec![0xAA, 0xBB, 0xCC],
             }],
         }

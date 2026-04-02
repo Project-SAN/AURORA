@@ -24,6 +24,7 @@ pub struct PolicyMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifierEntry {
     pub kind: u8,
+    pub min_rounds: u16,
     pub verifier_blob: Vec<u8>,
 }
 
@@ -53,6 +54,7 @@ impl PolicyMetadata {
         out.push(self.verifiers.len().min(u8::MAX as usize) as u8);
         for entry in &self.verifiers {
             out.push(entry.kind);
+            out.extend_from_slice(&entry.min_rounds.to_be_bytes());
             out.extend_from_slice(&(entry.verifier_blob.len() as u32).to_be_bytes());
             out.extend_from_slice(&entry.verifier_blob);
         }
@@ -85,17 +87,18 @@ impl PolicyMetadata {
         cursor += 1;
         let mut verifiers = Vec::with_capacity(count);
         for _ in 0..count {
-            if bytes.len() < cursor + 5 {
+            if bytes.len() < cursor + 7 {
                 return Err(Error::Length);
             }
             let kind = bytes[cursor];
+            let min_rounds = u16::from_be_bytes([bytes[cursor + 1], bytes[cursor + 2]]);
             let blob_len = u32::from_be_bytes([
-                bytes[cursor + 1],
-                bytes[cursor + 2],
                 bytes[cursor + 3],
                 bytes[cursor + 4],
+                bytes[cursor + 5],
+                bytes[cursor + 6],
             ]) as usize;
-            cursor += 5;
+            cursor += 7;
             if bytes.len() < cursor + blob_len {
                 return Err(Error::Length);
             }
@@ -103,6 +106,7 @@ impl PolicyMetadata {
             cursor += blob_len;
             verifiers.push(VerifierEntry {
                 kind,
+                min_rounds,
                 verifier_blob,
             });
         }
@@ -131,6 +135,7 @@ mod tests {
             flags: 0xAA55,
             verifiers: vec![VerifierEntry {
                 kind: 1,
+                min_rounds: 12,
                 verifier_blob: vec![0xDE, 0xAD, 0xBE, 0xEF],
             }],
         };

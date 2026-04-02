@@ -151,18 +151,21 @@ fn demo_zkboo_policy() -> (aurora::crypto::zkp::Circuit, PolicyMetadata) {
     let mut policy_circuit = aurora::crypto::zkp::Circuit::new(8);
     policy_circuit.set_outputs(&[2]);
     let policy = ZkBooPolicy::new(policy_circuit.clone());
-    let mut metadata = policy.metadata(1_700_000_600, 0);
+    let mut metadata = policy.metadata(1_700_000_600, 0, 16);
     metadata.verifiers = vec![
         VerifierEntry {
             kind: ProofKind::KeyBinding as u8,
+            min_rounds: 16,
             verifier_blob: keybinding.encode(),
         },
         VerifierEntry {
             kind: ProofKind::Consistency as u8,
+            min_rounds: 16,
             verifier_blob: consistency.encode(),
         },
         VerifierEntry {
             kind: ProofKind::Policy as u8,
+            min_rounds: 16,
             verifier_blob: policy_circuit.encode(),
         },
     ];
