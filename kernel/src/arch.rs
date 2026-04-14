@@ -1,12 +1,27 @@
+#[cfg(target_arch = "x86_64")]
 pub mod gdt;
 pub mod syscall;
 
+#[cfg(target_arch = "x86_64")]
 pub fn init(kernel_stack_top: u64) {
     gdt::init(kernel_stack_top);
     enable_fpu_sse();
     syscall::init(kernel_stack_top);
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+pub fn init(kernel_stack_top: u64) {
+    let _ = kernel_stack_top;
+    syscall::init(kernel_stack_top);
+}
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+)))]
+pub fn init(_kernel_stack_top: u64) {}
+
+#[cfg(target_arch = "x86_64")]
 fn enable_fpu_sse() {
     unsafe {
         let mut cr0: u64;

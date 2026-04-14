@@ -8,7 +8,10 @@ extern crate alloc;
 mod acpi;
 #[cfg(target_arch = "x86_64")]
 mod apic;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod arch;
 #[cfg(target_arch = "x86_64")]
 mod fs;
@@ -17,7 +20,10 @@ mod heap;
 mod hpet;
 #[cfg(target_arch = "x86_64")]
 mod interrupts;
-#[cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi")))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod memory;
 #[cfg(target_arch = "x86_64")]
 mod net;
@@ -28,9 +34,15 @@ mod pci;
 #[cfg(target_arch = "x86_64")]
 mod port;
 mod serial;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod syscall;
-#[cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi")))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod time;
 #[cfg(target_arch = "x86_64")]
 mod user;
@@ -39,9 +51,15 @@ mod virtio;
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
-#[cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi")))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use uefi::table::boot::MemoryType;
-#[cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi")))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
 
 #[entry]
@@ -61,7 +79,10 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         boot_aarch64(system_table)
     }
 
-    #[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi"))))]
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_os = "uefi")
+    )))]
     {
         let _ = system_table;
         serial::write(format_args!("unsupported architecture\n"));
@@ -69,7 +90,10 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     }
 }
 
-#[cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi")))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 fn log_uefi_time(system_table: &SystemTable<Boot>) {
     let ticks_now = {
         #[cfg(target_arch = "x86_64")]
@@ -194,6 +218,13 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
         stats.region_count
     ));
 
+    arch::init(0);
+    serial::write(format_args!(
+        "AArch64 exception state: el={} vbar={:#x}\n",
+        arch::syscall::current_el(),
+        arch::syscall::vector_base()
+    ));
+
     if let Some(buf) = memory::alloc_dma_pages(2) {
         serial::write(format_args!(
             "DMA test: phys={:#x} size={} bytes\n",
@@ -222,6 +253,12 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
         serial::write(format_args!("Scratch page free: ok\n"));
     } else {
         serial::write(format_args!("Scratch page alloc: failed\n"));
+    }
+
+    if arch::syscall::self_test() {
+        serial::write(format_args!("AArch64 SVC self-test: ok\n"));
+    } else {
+        serial::write(format_args!("AArch64 SVC self-test: failed\n"));
     }
 
     if rsdp_addr == 0 {
@@ -464,7 +501,10 @@ fn halt_once() {
     unsafe {
         core::arch::asm!("wfe", options(nomem, nostack, preserves_flags));
     }
-    #[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi"))))]
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_os = "uefi")
+    )))]
     core::hint::spin_loop();
 }
 
@@ -479,7 +519,10 @@ fn schedule_next_poll(now_ticks: u64, delay_ms: Option<u64>) -> Option<u64> {
     })
 }
 
-#[cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", target_os = "uefi")))]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
     for entry in system_table.config_table() {
         if entry.guid == ACPI2_GUID || entry.guid == ACPI_GUID {

@@ -1,48 +1,80 @@
 use crate::arch::syscall::SyscallFrame;
+#[cfg(target_arch = "x86_64")]
 use crate::interrupts;
 use crate::serial;
-use crate::{fs, net, time, virtio};
+use crate::time;
+#[cfg(target_arch = "x86_64")]
+use crate::{fs, net, virtio};
 #[cfg(target_arch = "x86_64")]
 use core::arch::asm;
+#[cfg(target_arch = "x86_64")]
 use core::cell::UnsafeCell;
+#[cfg(target_arch = "x86_64")]
 use core::mem::MaybeUninit;
+#[cfg(target_arch = "x86_64")]
 use core::str;
+#[cfg(target_arch = "x86_64")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const SYS_WRITE: u64 = 1;
+#[cfg(target_arch = "x86_64")]
 const SYS_EXIT: u64 = 2;
+#[cfg(target_arch = "x86_64")]
 const SYS_YIELD: u64 = 3;
+#[cfg(target_arch = "x86_64")]
 const SYS_SLEEP: u64 = 4;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_SOCKET: u64 = 9;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_LISTEN: u64 = 10;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_ACCEPT: u64 = 11;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_RECV: u64 = 12;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_SEND: u64 = 13;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_CLOSE: u64 = 14;
+#[cfg(target_arch = "x86_64")]
 const SYS_NET_CONNECT: u64 = 15;
 const SYS_TIME_EPOCH: u64 = 16;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_OPEN: u64 = 32;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_READ: u64 = 33;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_WRITE: u64 = 34;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_CLOSE: u64 = 35;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_MKDIR: u64 = 36;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_OPENDIR: u64 = 37;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_READDIR: u64 = 38;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_SYNC: u64 = 39;
+#[cfg(target_arch = "x86_64")]
 const TICK_MS: u64 = 10;
 
+#[cfg(target_arch = "x86_64")]
 struct YieldContext {
     stack: *mut net::NetStack,
     device: *mut net::VirtioDevice,
 }
 
+#[cfg(target_arch = "x86_64")]
 struct YieldContextCell(UnsafeCell<MaybeUninit<YieldContext>>);
 
+#[cfg(target_arch = "x86_64")]
 unsafe impl Sync for YieldContextCell {}
 
+#[cfg(target_arch = "x86_64")]
 static YIELD_CTX: YieldContextCell = YieldContextCell(UnsafeCell::new(MaybeUninit::uninit()));
+#[cfg(target_arch = "x86_64")]
 static YIELD_READY: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_arch = "x86_64")]
 pub fn install_yield(stack: *mut net::NetStack, device: *mut net::VirtioDevice) {
     unsafe {
         (*YIELD_CTX.0.get()).write(YieldContext { stack, device });
@@ -51,30 +83,49 @@ pub fn install_yield(stack: *mut net::NetStack, device: *mut net::VirtioDevice) 
 }
 
 pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
-    let num = frame.rax;
-    frame.rax = match num {
-        SYS_WRITE => sys_write(frame.rdi, frame.rsi, frame.rdx),
-        SYS_EXIT => sys_exit(frame.rdi),
-        SYS_YIELD => sys_yield(),
-        SYS_SLEEP => sys_sleep(frame.rdi),
-        SYS_NET_SOCKET => sys_net_socket(),
-        SYS_NET_LISTEN => sys_net_listen(frame.rdi, frame.rsi),
-        SYS_NET_ACCEPT => sys_net_accept(frame.rdi),
-        SYS_NET_RECV => sys_net_recv(frame.rdi, frame.rsi, frame.rdx),
-        SYS_NET_SEND => sys_net_send(frame.rdi, frame.rsi, frame.rdx),
-        SYS_NET_CLOSE => sys_net_close(frame.rdi),
-        SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi, frame.rdx),
+    let num = frame.number();
+    let ret = match num {
+        SYS_WRITE => sys_write(frame.arg0(), frame.arg1(), frame.arg2()),
         SYS_TIME_EPOCH => sys_time_epoch(),
-        SYS_FS_OPEN => sys_fs_open(frame.rdi, frame.rsi, frame.rdx as u32),
-        SYS_FS_READ => sys_fs_read(frame.rdi, frame.rsi, frame.rdx),
-        SYS_FS_WRITE => sys_fs_write(frame.rdi, frame.rsi, frame.rdx),
-        SYS_FS_CLOSE => sys_fs_close(frame.rdi),
-        SYS_FS_MKDIR => sys_fs_mkdir(frame.rdi, frame.rsi),
-        SYS_FS_OPENDIR => sys_fs_opendir(frame.rdi, frame.rsi),
-        SYS_FS_READDIR => sys_fs_readdir(frame.rdi, frame.rsi, frame.rdx),
+        #[cfg(target_arch = "x86_64")]
+        SYS_EXIT => sys_exit(frame.arg0()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_YIELD => sys_yield(),
+        #[cfg(target_arch = "x86_64")]
+        SYS_SLEEP => sys_sleep(frame.arg0()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_SOCKET => sys_net_socket(),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_LISTEN => sys_net_listen(frame.arg0(), frame.arg1()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_ACCEPT => sys_net_accept(frame.arg0()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_RECV => sys_net_recv(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_SEND => sys_net_send(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_CLOSE => sys_net_close(frame.arg0()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_NET_CONNECT => sys_net_connect(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_OPEN => sys_fs_open(frame.arg0(), frame.arg1(), frame.arg2() as u32),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_READ => sys_fs_read(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_WRITE => sys_fs_write(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_CLOSE => sys_fs_close(frame.arg0()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_MKDIR => sys_fs_mkdir(frame.arg0(), frame.arg1()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_OPENDIR => sys_fs_opendir(frame.arg0(), frame.arg1()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_READDIR => sys_fs_readdir(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(target_arch = "x86_64")]
         SYS_FS_SYNC => sys_fs_sync(),
         _ => u64::MAX,
     };
+    frame.set_ret(ret);
 }
 
 fn sys_write(_fd: u64, buf: u64, len: u64) -> u64 {
@@ -88,17 +139,29 @@ fn sys_write(_fd: u64, buf: u64, len: u64) -> u64 {
     len
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_exit(_code: u64) -> u64 {
     0
 }
 
 fn sys_time_epoch() -> u64 {
-    match time::epoch_seconds_now(interrupts::ticks()) {
+    match time::epoch_seconds_now(current_ticks()) {
         Some(val) => val,
         None => u64::MAX,
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn current_ticks() -> u64 {
+    interrupts::ticks()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn current_ticks() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_open(path: u64, len: u64, flags: u32) -> u64 {
     let path = match get_user_str(path, len) {
         Some(p) => p,
@@ -110,6 +173,7 @@ fn sys_fs_open(path: u64, len: u64, flags: u32) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_read(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -122,6 +186,7 @@ fn sys_fs_read(handle: u64, buf: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_write(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -134,6 +199,7 @@ fn sys_fs_write(handle: u64, buf: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_close(handle: u64) -> u64 {
     if fs::close(handle) {
         0
@@ -142,6 +208,7 @@ fn sys_fs_close(handle: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_mkdir(path: u64, len: u64) -> u64 {
     let path = match get_user_str(path, len) {
         Some(p) => p,
@@ -154,6 +221,7 @@ fn sys_fs_mkdir(path: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_opendir(path: u64, len: u64) -> u64 {
     let path = match get_user_str(path, len) {
         Some(p) => p,
@@ -165,6 +233,7 @@ fn sys_fs_opendir(path: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_readdir(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len < core::mem::size_of::<fs::Dirent>() as u64 {
         return u64::MAX;
@@ -177,6 +246,7 @@ fn sys_fs_readdir(handle: u64, buf: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_sync() -> u64 {
     if fs::sync() {
         0
@@ -185,6 +255,7 @@ fn sys_fs_sync() -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_yield() -> u64 {
     let result = with_net_ctx(0, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -194,6 +265,7 @@ fn sys_yield() -> u64 {
     result
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_sleep(ms: u64) -> u64 {
     if ms == 0 {
         return 0;
@@ -223,6 +295,7 @@ fn sys_sleep(ms: u64) -> u64 {
     0
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_socket() -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -230,6 +303,7 @@ fn sys_net_socket() -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_listen(handle: u64, port: u64) -> u64 {
     if port == 0 || port > u16::MAX as u64 {
         return u64::MAX;
@@ -249,6 +323,7 @@ fn sys_net_listen(handle: u64, port: u64) -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_accept(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -266,6 +341,7 @@ fn sys_net_accept(handle: u64) -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_recv(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -282,6 +358,7 @@ fn sys_net_recv(handle: u64, buf: u64, len: u64) -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_send(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -310,6 +387,7 @@ fn sys_net_send(handle: u64, buf: u64, len: u64) -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_close(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -327,6 +405,7 @@ fn sys_net_close(handle: u64) -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_net_connect(handle: u64, ip: u64, port: u64) -> u64 {
     if port == 0 || port > u16::MAX as u64 || ip == 0 {
         return u64::MAX;
@@ -345,6 +424,7 @@ fn sys_net_connect(handle: u64, ip: u64, port: u64) -> u64 {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn with_net_ctx<F, R>(default: R, f: F) -> R
 where
     F: FnOnce(&mut net::NetStack, &mut net::VirtioDevice) -> R,
@@ -367,11 +447,7 @@ fn read_rflags() -> u64 {
     rflags
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn read_rflags() -> u64 {
-    0
-}
-
+#[cfg(target_arch = "x86_64")]
 fn get_user_str(ptr: u64, len: u64) -> Option<&'static str> {
     if ptr == 0 || len == 0 {
         return None;
