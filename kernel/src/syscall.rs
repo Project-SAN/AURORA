@@ -3,15 +3,23 @@ use crate::arch::syscall::SyscallFrame;
 use crate::interrupts;
 use crate::serial;
 use crate::time;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
+use crate::fs;
 #[cfg(target_arch = "x86_64")]
-use crate::{fs, net, virtio};
+use crate::{net, virtio};
 #[cfg(target_arch = "x86_64")]
 use core::arch::asm;
 #[cfg(target_arch = "x86_64")]
 use core::cell::UnsafeCell;
 #[cfg(target_arch = "x86_64")]
 use core::mem::MaybeUninit;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::str;
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -38,21 +46,19 @@ const SYS_NET_CLOSE: u64 = 14;
 #[cfg(target_arch = "x86_64")]
 const SYS_NET_CONNECT: u64 = 15;
 const SYS_TIME_EPOCH: u64 = 16;
-#[cfg(target_arch = "x86_64")]
 const SYS_FS_OPEN: u64 = 32;
-#[cfg(target_arch = "x86_64")]
 const SYS_FS_READ: u64 = 33;
-#[cfg(target_arch = "x86_64")]
 const SYS_FS_WRITE: u64 = 34;
-#[cfg(target_arch = "x86_64")]
 const SYS_FS_CLOSE: u64 = 35;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_FS_MKDIR: u64 = 36;
 #[cfg(target_arch = "x86_64")]
 const SYS_FS_OPENDIR: u64 = 37;
 #[cfg(target_arch = "x86_64")]
 const SYS_FS_READDIR: u64 = 38;
-#[cfg(target_arch = "x86_64")]
 const SYS_FS_SYNC: u64 = 39;
 #[cfg(target_arch = "x86_64")]
 const TICK_MS: u64 = 10;
@@ -107,21 +113,39 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
         SYS_NET_CLOSE => sys_net_close(frame.arg0()),
         #[cfg(target_arch = "x86_64")]
         SYS_NET_CONNECT => sys_net_connect(frame.arg0(), frame.arg1(), frame.arg2()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_OPEN => sys_fs_open(frame.arg0(), frame.arg1(), frame.arg2() as u32),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_READ => sys_fs_read(frame.arg0(), frame.arg1(), frame.arg2()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_WRITE => sys_fs_write(frame.arg0(), frame.arg1(), frame.arg2()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_CLOSE => sys_fs_close(frame.arg0()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_MKDIR => sys_fs_mkdir(frame.arg0(), frame.arg1()),
         #[cfg(target_arch = "x86_64")]
         SYS_FS_OPENDIR => sys_fs_opendir(frame.arg0(), frame.arg1()),
         #[cfg(target_arch = "x86_64")]
         SYS_FS_READDIR => sys_fs_readdir(frame.arg0(), frame.arg1(), frame.arg2()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_SYNC => sys_fs_sync(),
         _ => u64::MAX,
     };
@@ -161,7 +185,6 @@ fn current_ticks() -> u64 {
     0
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_fs_open(path: u64, len: u64, flags: u32) -> u64 {
     let path = match get_user_str(path, len) {
         Some(p) => p,
@@ -173,7 +196,6 @@ fn sys_fs_open(path: u64, len: u64, flags: u32) -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_fs_read(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -186,7 +208,6 @@ fn sys_fs_read(handle: u64, buf: u64, len: u64) -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_fs_write(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -199,7 +220,6 @@ fn sys_fs_write(handle: u64, buf: u64, len: u64) -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_fs_close(handle: u64) -> u64 {
     if fs::close(handle) {
         0
@@ -208,7 +228,6 @@ fn sys_fs_close(handle: u64) -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_fs_mkdir(path: u64, len: u64) -> u64 {
     let path = match get_user_str(path, len) {
         Some(p) => p,
@@ -246,7 +265,6 @@ fn sys_fs_readdir(handle: u64, buf: u64, len: u64) -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_fs_sync() -> u64 {
     if fs::sync() {
         0
@@ -447,7 +465,6 @@ fn read_rflags() -> u64 {
     rflags
 }
 
-#[cfg(target_arch = "x86_64")]
 fn get_user_str(ptr: u64, len: u64) -> Option<&'static str> {
     if ptr == 0 || len == 0 {
         return None;

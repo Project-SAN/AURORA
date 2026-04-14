@@ -7,7 +7,6 @@ use core::arch::asm;
 mod allocator;
 #[cfg(target_arch = "x86_64")]
 mod echo;
-#[cfg(target_arch = "x86_64")]
 mod fs;
 #[cfg(target_arch = "x86_64")]
 mod http;
@@ -52,7 +51,6 @@ const HTTP_PATH: &str = "/";
 const HTTP_HOST: &str = "10.0.2.2";
 #[cfg(target_arch = "x86_64")]
 const ECHO_PORT: u16 = 1234;
-#[cfg(target_arch = "x86_64")]
 const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 #[cfg(target_arch = "x86_64")]
 const RUN_HTTP_CLIENT: bool = true;
@@ -124,6 +122,7 @@ fn run_x86_userland() -> ! {
 
 #[cfg(target_arch = "aarch64")]
 fn run_aarch64_userland() -> ! {
+    fs_persist_test();
     let _ = sys::write(1, b"userland: aarch64 loop\n");
     loop {
         arch_relax();
@@ -147,9 +146,9 @@ fn run_userland() -> ! {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn fs_persist_test() {
     let _ = sys::write(1, b"fs: persist test\n");
+    let _ = fs::mkdir("/HELLO");
 
     if let Some(fd) = fs::open(FS_TEST_PATH, fs::O_READ) {
         let mut buf = [0u8; 128];

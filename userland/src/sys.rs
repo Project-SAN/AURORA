@@ -13,7 +13,7 @@ mod imp;
 #[cfg(target_arch = "x86_64")]
 pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 #[cfg(target_arch = "aarch64")]
-pub use self::imp::{syscall0, syscall3};
+pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 
@@ -35,15 +35,14 @@ pub const SYS_NET_CLOSE: u64 = 14;
 #[cfg(target_arch = "x86_64")]
 pub const SYS_NET_CONNECT: u64 = 15;
 pub const SYS_TIME_EPOCH: u64 = 16;
-#[cfg(target_arch = "x86_64")]
 pub const SYS_FS_OPEN: u64 = 32;
-#[cfg(target_arch = "x86_64")]
 pub const SYS_FS_READ: u64 = 33;
-#[cfg(target_arch = "x86_64")]
 pub const SYS_FS_WRITE: u64 = 34;
-#[cfg(target_arch = "x86_64")]
 pub const SYS_FS_CLOSE: u64 = 35;
+pub const SYS_FS_MKDIR: u64 = 36;
 #[cfg(target_arch = "x86_64")]
+pub const SYS_FS_SYNC: u64 = 39;
+#[cfg(target_arch = "aarch64")]
 pub const SYS_FS_SYNC: u64 = 39;
 
 pub fn write(fd: u64, buf: &[u8]) -> u64 {

@@ -13,7 +13,10 @@ mod apic;
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 mod arch;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod fs;
 mod heap;
 #[cfg(target_arch = "x86_64")]
@@ -51,6 +54,8 @@ mod time;
 mod user;
 #[cfg(target_arch = "x86_64")]
 mod virtio;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+mod virtio_mmio;
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
@@ -324,6 +329,9 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
                 serial::write(format_args!("AArch64 user map activation failed\n"));
                 halt_loop();
             }
+            serial::write(format_args!("boot: before fs::init\n"));
+            let fs_ok = fs::init();
+            serial::write(format_args!("boot: after fs::init ok={}\n", fs_ok));
             serial::write(format_args!(
                 "userland: entry={:#x} stack={:#x}\n",
                 image.entry, image.stack_top
