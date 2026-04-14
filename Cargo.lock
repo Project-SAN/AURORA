@@ -59,7 +59,6 @@ name = "aurora-kernel"
 version = "0.1.0"
 dependencies = [
  "fatfs",
- "fscommon",
  "hadris-fat",
  "smoltcp",
  "uefi",
@@ -502,15 +501,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fscommon"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "315ce685aca5ddcc5a3e7e436ef47d4a5d0064462849b6f0f628c28140103531"
-dependencies = [
- "log",
 ]
 
 [[package]]

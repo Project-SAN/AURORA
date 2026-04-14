@@ -27,13 +27,13 @@ fn create_ramdisk(path: &Path) -> io::Result<()> {
     file.set_len(IMAGE_SIZE)?;
     file.seek(SeekFrom::Start(0))?;
 
-    let mut stream = fscommon::BufStream::new(file);
     fatfs::format_volume(
-        &mut stream,
+        &mut file,
         fatfs::FormatVolumeOptions::new().fat_type(fatfs::FatType::Fat32),
     )?;
+    file.seek(SeekFrom::Start(0))?;
 
-    let fs = fatfs::FileSystem::new(stream, fatfs::FsOptions::new())?;
+    let fs = fatfs::FileSystem::new(file, fatfs::FsOptions::new())?;
     let root = fs.root_dir();
 
     root.create_dir("HELLO")?;

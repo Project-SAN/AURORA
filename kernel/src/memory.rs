@@ -49,6 +49,7 @@ impl MemoryState {
 static MEMORY: MemoryState = MemoryState::new();
 static WATCH_PHYS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_arch = "x86_64")]
 pub fn set_watch_phys(phys: u64) {
     WATCH_PHYS.store(phys, Ordering::Relaxed);
 }
