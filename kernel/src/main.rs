@@ -21,7 +21,10 @@ mod fs;
 mod heap;
 #[cfg(target_arch = "x86_64")]
 mod hpet;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod interrupts;
 #[cfg(any(
     target_arch = "x86_64",
@@ -283,6 +286,11 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
         arch::syscall::current_el(),
         arch::syscall::vector_base()
     ));
+    if interrupts::init() {
+        serial::write(format_args!("AArch64 GIC/timer enabled\n"));
+    } else {
+        serial::write(format_args!("AArch64 GIC/timer init failed\n"));
+    }
 
     if let Some(buf) = memory::alloc_dma_pages(2) {
         serial::write(format_args!(
@@ -346,6 +354,7 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
                     net_stack = Some(net::NetStack::new(mac, &mut net_device, net::now()));
                     if let Some(stack) = net_stack.as_mut() {
                         let _ = stack.poll(&mut net_device, net::now());
+                        interrupts::register_virtio_mmio_irq(net_bases[0], true);
                         syscall::install_yield(stack as *mut _, &mut net_device as *mut _);
                         serial::write(format_args!("boot: after virtio-net init ok=1\n"));
                     }
@@ -618,7 +627,7 @@ fn halt_once() {
     }
     #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
     unsafe {
-        core::arch::asm!("wfe", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
     }
     #[cfg(not(any(
         target_arch = "x86_64",

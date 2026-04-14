@@ -19,8 +19,6 @@ pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 
 pub const SYS_WRITE: u64 = 1;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub const SYS_YIELD: u64 = 3;
-#[cfg(target_arch = "x86_64")]
 pub const SYS_SLEEP: u64 = 4;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_SOCKET: u64 = 9;
@@ -51,17 +49,10 @@ pub fn write(fd: u64, buf: &[u8]) -> u64 {
     unsafe { syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64) }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub fn sleep(ms: u64) {
     unsafe {
         let _ = syscall1(SYS_SLEEP, ms);
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub fn yield_now() {
-    unsafe {
-        let _ = syscall0(SYS_YIELD);
     }
 }
 

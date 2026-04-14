@@ -1,5 +1,8 @@
 use crate::arch::syscall::SyscallFrame;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use crate::interrupts;
 #[cfg(any(
     target_arch = "x86_64",
@@ -17,7 +20,10 @@ use crate::fs;
 use crate::virtio as netdev;
 #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
 use crate::virtio_mmio as netdev;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::arch::asm;
 #[cfg(any(
     target_arch = "x86_64",
@@ -48,7 +54,10 @@ const SYS_EXIT: u64 = 2;
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 const SYS_YIELD: u64 = 3;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_SLEEP: u64 = 4;
 #[cfg(any(
     target_arch = "x86_64",
@@ -100,7 +109,10 @@ const SYS_FS_OPENDIR: u64 = 37;
 #[cfg(target_arch = "x86_64")]
 const SYS_FS_READDIR: u64 = 38;
 const SYS_FS_SYNC: u64 = 39;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const TICK_MS: u64 = 10;
 
 struct YieldContext {
@@ -134,7 +146,10 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
             all(target_arch = "aarch64", target_os = "uefi")
         ))]
         SYS_YIELD => sys_yield(),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_SLEEP => sys_sleep(frame.arg0()),
         #[cfg(any(
             target_arch = "x86_64",
@@ -233,12 +248,14 @@ fn sys_time_epoch() -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn current_ticks() -> u64 {
     interrupts::ticks()
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+)))]
 fn current_ticks() -> u64 {
     0
 }
@@ -340,13 +357,13 @@ fn sys_yield() -> u64 {
     result
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_sleep(ms: u64) -> u64 {
     if ms == 0 {
         return 0;
     }
     let wait_ticks = (ms + (TICK_MS - 1)) / TICK_MS;
     let target = interrupts::ticks().saturating_add(wait_ticks);
+    #[cfg(target_arch = "x86_64")]
     let had_if = (read_rflags() & (1 << 9)) != 0;
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -358,9 +375,17 @@ fn sys_sleep(ms: u64) -> u64 {
         unsafe {
             asm!("hlt", options(nomem, nostack));
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+        unsafe {
+            asm!("wfi", options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        )))]
         core::hint::spin_loop();
     }
+    #[cfg(target_arch = "x86_64")]
     if !had_if {
         #[cfg(target_arch = "x86_64")]
         unsafe {

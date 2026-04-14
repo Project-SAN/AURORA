@@ -130,7 +130,7 @@ fn run_aarch64_userland() -> ! {
             let mut server = unsafe { server.assume_init() };
             loop {
                 server.poll();
-                sys::yield_now();
+                sys::sleep(1);
                 arch_relax();
             }
         }
@@ -139,7 +139,7 @@ fn run_aarch64_userland() -> ! {
         }
     }
     loop {
-        sys::yield_now();
+        sys::sleep(1);
         arch_relax();
     }
 }

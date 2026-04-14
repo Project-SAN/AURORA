@@ -162,6 +162,14 @@ static NET: NetState = NetState {
     inner: UnsafeCell::new(None),
 };
 
+pub const fn base() -> u64 {
+    VIRTIO_MMIO_BASE
+}
+
+pub const fn stride() -> u64 {
+    VIRTIO_MMIO_STRIDE
+}
+
 pub fn scan_blk_devices(out: &mut [u64]) -> usize {
     scan_devices(VIRTIO_MMIO_DEVICE_ID_BLOCK, "blk", out)
 }

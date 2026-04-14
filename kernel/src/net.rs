@@ -1,7 +1,5 @@
 use alloc::vec;
 use alloc::vec::Vec;
-#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
@@ -9,7 +7,6 @@ use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
-#[cfg(target_arch = "x86_64")]
 use crate::interrupts;
 use crate::serial;
 #[cfg(target_arch = "x86_64")]
@@ -34,22 +31,13 @@ const EPHEMERAL_END: u16 = 65534;
 // systems or simple workloads, consider lowering this value to reduce overhead.
 const MAX_SOCKETS: usize = 64;
 
-#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
-static SYNTHETIC_TICKS: AtomicU64 = AtomicU64::new(0);
-
 pub fn now() -> Instant {
     let ms = current_ticks().saturating_mul(10);
     Instant::from_millis(ms as i64)
 }
 
-#[cfg(target_arch = "x86_64")]
 fn current_ticks() -> u64 {
     interrupts::ticks()
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
-fn current_ticks() -> u64 {
-    SYNTHETIC_TICKS.fetch_add(1, Ordering::Relaxed)
 }
 
 pub struct VirtioDevice {

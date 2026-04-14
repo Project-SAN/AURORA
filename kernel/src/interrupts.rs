@@ -1,9 +1,12 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(target_arch = "x86_64")]
 use crate::acpi::AcpiInfo;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 pub const NET_RX_VECTOR: u8 = 0x40;
+#[cfg(target_arch = "x86_64")]
 pub const NET_TX_VECTOR: u8 = 0x41;
 static NET_RX_IRQ: AtomicU64 = AtomicU64::new(0);
 static NET_TX_IRQ: AtomicU64 = AtomicU64::new(0);
@@ -376,20 +379,313 @@ mod imp {
 #[cfg(target_arch = "x86_64")]
 pub use imp::{enable_net_irqs, init, net_pending, ticks};
 
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+mod imp {
+    use super::*;
+    use core::arch::asm;
+    use core::ptr::{read_volatile, write_volatile};
+
+    const GICD_BASE: u64 = 0x0800_0000;
+    const GICR_BASE: u64 = 0x080A_0000;
+    const GICR_SGI_BASE_OFFSET: u64 = 0x0001_0000;
+
+    const GICD_CTLR: u64 = 0x0000;
+    const GICD_IGROUPR: u64 = 0x0080;
+    const GICD_ISENABLER: u64 = 0x0100;
+    const GICD_IPRIORITYR: u64 = 0x0400;
+    const GICD_ICFGR: u64 = 0x0c00;
+
+    const GICR_WAKER: u64 = 0x0014;
+    const GICR_IGROUPR0: u64 = GICR_SGI_BASE_OFFSET + 0x0080;
+    const GICR_ISENABLER0: u64 = GICR_SGI_BASE_OFFSET + 0x0100;
+    const GICR_IPRIORITYR0: u64 = GICR_SGI_BASE_OFFSET + 0x0400;
+    const GICR_ICFGR1: u64 = GICR_SGI_BASE_OFFSET + 0x0c04;
+
+    const GICD_CTLR_ENABLE_GRP1NS: u32 = 1 << 1;
+    const GICD_CTLR_ARE_NS: u32 = 1 << 5;
+    const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
+    const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
+
+    const TIMER_INTID: u32 = 30;
+    const VIRTIO_MMIO_SPI_BASE: u32 = 16;
+    const GIC_SPI_INTID_BASE: u32 = 32;
+    const SPURIOUS_INTID: u32 = 1023;
+    const TICK_MS: u64 = 10;
+    const DEFAULT_PRIORITY: u8 = 0x80;
+
+    static NET_INTID: AtomicU64 = AtomicU64::new(u64::MAX);
+    static TICK_CYCLES: AtomicU64 = AtomicU64::new(0);
+    static TIMER_IRQ_LOG: AtomicU64 = AtomicU64::new(0);
+    static NET_IRQ_LOG: AtomicU64 = AtomicU64::new(0);
+
+    pub fn init() -> bool {
+        let cntfrq = counter_frequency();
+        let tick_cycles = (cntfrq / (1000 / TICK_MS)).max(1);
+        if cntfrq == 0 {
+            crate::serial::write(format_args!("AArch64 timer frequency unavailable\n"));
+            return false;
+        }
+
+        TICKS.store(0, Ordering::Relaxed);
+        TICK_CYCLES.store(tick_cycles, Ordering::Relaxed);
+        NET_RX_IRQ.store(0, Ordering::Relaxed);
+        NET_TX_IRQ.store(0, Ordering::Relaxed);
+
+        wake_redistributor();
+        enable_system_register_interface();
+        configure_distributor();
+        configure_timer_ppi();
+        rearm_timer();
+        enable_timer();
+        enable_cpu_interface();
+        unmask_irqs();
+
+        crate::serial::write(format_args!(
+            "AArch64 timer: cntfrq={} tick_cycles={} intid={}\n",
+            cntfrq, tick_cycles, TIMER_INTID
+        ));
+        true
+    }
+
+    pub fn ticks() -> u64 {
+        TICKS.load(Ordering::Relaxed)
+    }
+
+    pub fn register_virtio_mmio_irq(base: u64, is_net: bool) {
+        let intid = mmio_intid(base);
+        configure_spi(intid, true);
+        if is_net {
+            NET_INTID.store(intid as u64, Ordering::Release);
+            crate::serial::write(format_args!(
+                "AArch64 net IRQ enabled: base={:#x} intid={}\n",
+                base, intid
+            ));
+        }
+    }
+
+    pub fn handle_irq() {
+        let intid = read_iar1();
+        if intid == SPURIOUS_INTID {
+            return;
+        }
+
+        match intid {
+            TIMER_INTID => {
+                if TIMER_IRQ_LOG.fetch_add(1, Ordering::Relaxed) == 0 {
+                    crate::serial::write(format_args!("AArch64 timer IRQ active\n"));
+                }
+                TICKS.fetch_add(1, Ordering::Relaxed);
+                rearm_timer();
+            }
+            id if NET_INTID.load(Ordering::Acquire) == id as u64 => {
+                if NET_IRQ_LOG.fetch_add(1, Ordering::Relaxed) == 0 {
+                    crate::serial::write(format_args!("AArch64 net IRQ active intid={}\n", id));
+                }
+                NET_RX_IRQ.fetch_add(1, Ordering::Relaxed);
+                NET_TX_IRQ.fetch_add(1, Ordering::Relaxed);
+            }
+            other => {
+                crate::serial::write(format_args!("AArch64 IRQ intid={}\n", other));
+            }
+        }
+
+        write_eoir1(intid);
+    }
+
+    fn mmio_intid(base: u64) -> u32 {
+        let slot = ((base - crate::virtio_mmio::base()) / crate::virtio_mmio::stride()) as u32;
+        GIC_SPI_INTID_BASE + VIRTIO_MMIO_SPI_BASE + slot
+    }
+
+    fn counter_frequency() -> u64 {
+        let cntfrq: u64;
+        unsafe {
+            asm!(
+                "mrs {cntfrq}, CNTFRQ_EL0",
+                cntfrq = out(reg) cntfrq,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        cntfrq
+    }
+
+    fn enable_system_register_interface() {
+        unsafe {
+            let mut sre: u64;
+            asm!("mrs {sre}, ICC_SRE_EL1", sre = out(reg) sre, options(nomem, nostack));
+            sre |= 1;
+            asm!("msr ICC_SRE_EL1, {sre}", sre = in(reg) sre, options(nomem, nostack));
+            asm!("isb", options(nomem, nostack));
+        }
+    }
+
+    fn enable_cpu_interface() {
+        unsafe {
+            asm!("msr ICC_PMR_EL1, {}", in(reg) 0xffu64, options(nomem, nostack));
+            asm!("msr ICC_BPR1_EL1, {}", in(reg) 0u64, options(nomem, nostack));
+            asm!("msr ICC_IGRPEN1_EL1, {}", in(reg) 1u64, options(nomem, nostack));
+            asm!("isb", options(nomem, nostack));
+        }
+    }
+
+    fn unmask_irqs() {
+        unsafe {
+            asm!("msr DAIFClr, #2", options(nomem, nostack, preserves_flags));
+        }
+    }
+
+    fn configure_distributor() {
+        write32(
+            GICD_BASE + GICD_CTLR,
+            GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP1NS,
+        );
+    }
+
+    fn wake_redistributor() {
+        let waker = read32(GICR_BASE + GICR_WAKER) & !GICR_WAKER_PROCESSOR_SLEEP;
+        write32(GICR_BASE + GICR_WAKER, waker);
+        for _ in 0..1_000_000 {
+            if (read32(GICR_BASE + GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP) == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    fn configure_timer_ppi() {
+        set_group1_ppi(TIMER_INTID);
+        set_priority_ppi(TIMER_INTID, DEFAULT_PRIORITY);
+        set_level_ppi(TIMER_INTID);
+        enable_ppi(TIMER_INTID);
+    }
+
+    fn configure_spi(intid: u32, edge_triggered: bool) {
+        set_group1_spi(intid);
+        set_priority_spi(intid, DEFAULT_PRIORITY);
+        if edge_triggered {
+            set_edge_spi(intid);
+        }
+        enable_spi(intid);
+    }
+
+    fn rearm_timer() {
+        let cycles = TICK_CYCLES.load(Ordering::Relaxed).max(1);
+        unsafe {
+            asm!("msr CNTP_TVAL_EL0, {}", in(reg) cycles, options(nomem, nostack));
+            asm!("isb", options(nomem, nostack));
+        }
+    }
+
+    fn enable_timer() {
+        unsafe {
+            asm!("msr CNTP_CTL_EL0, {}", in(reg) 1u64, options(nomem, nostack));
+            asm!("isb", options(nomem, nostack));
+        }
+    }
+
+    fn set_group1_ppi(intid: u32) {
+        let val = read32(GICR_BASE + GICR_IGROUPR0) | (1u32 << intid);
+        write32(GICR_BASE + GICR_IGROUPR0, val);
+    }
+
+    fn set_priority_ppi(intid: u32, priority: u8) {
+        write8(GICR_BASE + GICR_IPRIORITYR0 + intid as u64, priority);
+    }
+
+    fn set_level_ppi(intid: u32) {
+        let offset = GICR_BASE + GICR_ICFGR1 + ((intid as u64 - 16) / 16) * 4;
+        let shift = ((intid % 16) * 2 + 1) as u32;
+        let val = read32(offset) & !(1u32 << shift);
+        write32(offset, val);
+    }
+
+    fn enable_ppi(intid: u32) {
+        write32(GICR_BASE + GICR_ISENABLER0, 1u32 << intid);
+    }
+
+    fn set_group1_spi(intid: u32) {
+        let offset = GICD_BASE + GICD_IGROUPR + ((intid / 32) as u64) * 4;
+        let val = read32(offset) | (1u32 << (intid % 32));
+        write32(offset, val);
+    }
+
+    fn set_priority_spi(intid: u32, priority: u8) {
+        write8(GICD_BASE + GICD_IPRIORITYR + intid as u64, priority);
+    }
+
+    fn set_edge_spi(intid: u32) {
+        let offset = GICD_BASE + GICD_ICFGR + ((intid / 16) as u64) * 4;
+        let shift = ((intid % 16) * 2 + 1) as u32;
+        let val = read32(offset) | (1u32 << shift);
+        write32(offset, val);
+    }
+
+    fn enable_spi(intid: u32) {
+        let offset = GICD_BASE + GICD_ISENABLER + ((intid / 32) as u64) * 4;
+        write32(offset, 1u32 << (intid % 32));
+    }
+
+    fn read_iar1() -> u32 {
+        let intid: u64;
+        unsafe {
+            asm!("mrs {intid}, ICC_IAR1_EL1", intid = out(reg) intid, options(nomem, nostack));
+        }
+        intid as u32
+    }
+
+    fn write_eoir1(intid: u32) {
+        unsafe {
+            asm!("msr ICC_EOIR1_EL1, {}", in(reg) intid as u64, options(nomem, nostack));
+            asm!("isb", options(nomem, nostack));
+        }
+    }
+
+    fn read32(addr: u64) -> u32 {
+        unsafe { read_volatile(addr as *const u32) }
+    }
+
+    fn write32(addr: u64, value: u32) {
+        unsafe {
+            write_volatile(addr as *mut u32, value);
+        }
+    }
+
+    fn write8(addr: u64, value: u8) {
+        unsafe {
+            write_volatile(addr as *mut u8, value);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+pub use imp::{handle_irq, init, register_virtio_mmio_irq, ticks};
+
 #[cfg(not(target_arch = "x86_64"))]
-pub fn init(_info: &AcpiInfo) -> bool {
+#[cfg(not(all(target_arch = "aarch64", target_os = "uefi")))]
+pub fn init() -> bool {
     false
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(all(target_arch = "aarch64", target_os = "uefi")))]
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(all(target_arch = "aarch64", target_os = "uefi")))]
 pub fn enable_net_irqs() {}
 
 #[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(all(target_arch = "aarch64", target_os = "uefi")))]
 pub fn net_pending() -> (bool, bool) {
     (false, false)
 }
+
+#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(all(target_arch = "aarch64", target_os = "uefi")))]
+pub fn register_virtio_mmio_irq(_base: u64, _is_net: bool) {}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(all(target_arch = "aarch64", target_os = "uefi")))]
+pub fn handle_irq() {}
