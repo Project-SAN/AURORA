@@ -1,5 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 pub mod gdt;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+pub mod mmu;
 pub mod syscall;
 
 #[cfg(target_arch = "x86_64")]

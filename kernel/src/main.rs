@@ -320,6 +320,10 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
 
     if RUN_USERLAND {
         if let Some(image) = prepared_user {
+            if !arch::mmu::activate_user_map(&memory_map) {
+                serial::write(format_args!("AArch64 user map activation failed\n"));
+                halt_loop();
+            }
             serial::write(format_args!(
                 "userland: entry={:#x} stack={:#x}\n",
                 image.entry, image.stack_top
@@ -528,12 +532,15 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
 #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
 unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
     serial::write(format_args!(
-        "enter_user: pc={:#x} sp={:#x} (EL1)\n",
+        "enter_user: pc={:#x} sp={:#x} -> EL0\n",
         entry, stack_top
     ));
     core::arch::asm!(
-        "mov sp, {stack_top}",
-        "br {entry}",
+        "msr SP_EL0, {stack_top}",
+        "msr ELR_EL1, {entry}",
+        "msr SPSR_EL1, xzr",
+        "isb",
+        "eret",
         stack_top = in(reg) stack_top,
         entry = in(reg) entry,
         options(noreturn)
