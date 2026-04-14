@@ -5,7 +5,7 @@
 use core::arch::asm;
 
 mod allocator;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod echo;
 mod fs;
 #[cfg(target_arch = "x86_64")]
@@ -16,7 +16,7 @@ mod router_app;
 mod router_io;
 #[cfg(all(feature = "router", target_arch = "x86_64"))]
 mod router_storage;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod socket;
 mod sys;
 #[cfg(all(feature = "router", target_arch = "x86_64"))]
@@ -49,7 +49,7 @@ const HTTP_PORT: u16 = 8080;
 const HTTP_PATH: &str = "/";
 #[cfg(target_arch = "x86_64")]
 const HTTP_HOST: &str = "10.0.2.2";
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const ECHO_PORT: u16 = 1234;
 const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 #[cfg(target_arch = "x86_64")]
@@ -123,8 +123,23 @@ fn run_x86_userland() -> ! {
 #[cfg(target_arch = "aarch64")]
 fn run_aarch64_userland() -> ! {
     fs_persist_test();
-    let _ = sys::write(1, b"userland: aarch64 loop\n");
+    let mut server = core::mem::MaybeUninit::<echo::EchoServer>::uninit();
+    match unsafe { echo::EchoServer::init_in_place(&mut server, ECHO_PORT) } {
+        Ok(()) => {
+            let _ = sys::write(1, b"userland: echo server listening on 1234\n");
+            let mut server = unsafe { server.assume_init() };
+            loop {
+                server.poll();
+                sys::yield_now();
+                arch_relax();
+            }
+        }
+        Err(_) => {
+            let _ = sys::write(1, b"userland: echo init failed\n");
+        }
+    }
     loop {
+        sys::yield_now();
         arch_relax();
     }
 }

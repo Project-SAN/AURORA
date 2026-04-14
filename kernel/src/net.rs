@@ -1,5 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
@@ -7,9 +9,13 @@ use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
+#[cfg(target_arch = "x86_64")]
 use crate::interrupts;
 use crate::serial;
-use crate::virtio;
+#[cfg(target_arch = "x86_64")]
+use crate::virtio as transport;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+use crate::virtio_mmio as transport;
 
 const IP_ADDR: [u8; 4] = [10, 0, 2, 15];
 const GW_ADDR: [u8; 4] = [10, 0, 2, 2];
@@ -28,9 +34,22 @@ const EPHEMERAL_END: u16 = 65534;
 // systems or simple workloads, consider lowering this value to reduce overhead.
 const MAX_SOCKETS: usize = 64;
 
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+static SYNTHETIC_TICKS: AtomicU64 = AtomicU64::new(0);
+
 pub fn now() -> Instant {
-    let ms = interrupts::ticks().saturating_mul(10);
+    let ms = current_ticks().saturating_mul(10);
     Instant::from_millis(ms as i64)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_ticks() -> u64 {
+    interrupts::ticks()
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn current_ticks() -> u64 {
+    SYNTHETIC_TICKS.fetch_add(1, Ordering::Relaxed)
 }
 
 pub struct VirtioDevice {
@@ -466,7 +485,7 @@ impl TxToken for VirtioTxToken {
         }
         frame.resize(len, 0);
         let result = f(&mut frame);
-        if !virtio::send_frame(&frame) {
+        if !transport::send_frame(&frame) {
             serial::write(format_args!("smoltcp: tx drop\n"));
         }
         if !self.pool.is_null() {
@@ -500,7 +519,7 @@ impl Device for VirtioDevice {
             frame.reserve(FRAME_BUF_SIZE - frame.capacity());
         }
         frame.resize(FRAME_BUF_SIZE, 0);
-        let len = match virtio::recv_frame_into(&mut frame) {
+        let len = match transport::recv_frame_into(&mut frame) {
             Some(len) => len,
             None => {
                 frame.clear();

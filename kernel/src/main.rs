@@ -28,7 +28,10 @@ mod interrupts;
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 mod memory;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod net;
 #[cfg(target_arch = "x86_64")]
 mod paging;
@@ -332,10 +335,33 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
             serial::write(format_args!("boot: before fs::init\n"));
             let fs_ok = fs::init();
             serial::write(format_args!("boot: after fs::init ok={}\n", fs_ok));
+            let mut net_device = net::VirtioDevice::new();
+            let mut net_stack = None;
+            let mut net_bases = [0u64; 4];
+            let net_count = virtio_mmio::scan_net_devices(&mut net_bases);
+            if net_count == 0 {
+                serial::write(format_args!("virtio-mmio: net not found\n"));
+            } else if virtio_mmio::init_net(net_bases[0]) {
+                if let Some(mac) = virtio_mmio::mac_address() {
+                    net_stack = Some(net::NetStack::new(mac, &mut net_device, net::now()));
+                    if let Some(stack) = net_stack.as_mut() {
+                        let _ = stack.poll(&mut net_device, net::now());
+                        syscall::install_yield(stack as *mut _, &mut net_device as *mut _);
+                        serial::write(format_args!("boot: after virtio-net init ok=1\n"));
+                    }
+                } else {
+                    serial::write(format_args!("virtio-mmio: net mac unavailable\n"));
+                }
+            } else {
+                serial::write(format_args!("virtio-mmio: net init failed\n"));
+            }
             serial::write(format_args!(
                 "userland: entry={:#x} stack={:#x}\n",
                 image.entry, image.stack_top
             ));
+            if net_stack.is_none() {
+                serial::write(format_args!("boot: continuing without network context\n"));
+            }
             unsafe { enter_user(image.entry, image.stack_top) };
         } else {
             serial::write(format_args!("userland: prepare failed\n"));

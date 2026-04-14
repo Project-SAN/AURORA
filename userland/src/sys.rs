@@ -18,19 +18,21 @@ pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 pub use self::imp::{syscall0, syscall1, syscall2, syscall3};
 
 pub const SYS_WRITE: u64 = 1;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub const SYS_YIELD: u64 = 3;
 #[cfg(target_arch = "x86_64")]
 pub const SYS_SLEEP: u64 = 4;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_SOCKET: u64 = 9;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_LISTEN: u64 = 10;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_ACCEPT: u64 = 11;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_RECV: u64 = 12;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_SEND: u64 = 13;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub const SYS_NET_CLOSE: u64 = 14;
 #[cfg(target_arch = "x86_64")]
 pub const SYS_NET_CONNECT: u64 = 15;
@@ -53,6 +55,13 @@ pub fn write(fd: u64, buf: &[u8]) -> u64 {
 pub fn sleep(ms: u64) {
     unsafe {
         let _ = syscall1(SYS_SLEEP, ms);
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub fn yield_now() {
+    unsafe {
+        let _ = syscall0(SYS_YIELD);
     }
 }
 

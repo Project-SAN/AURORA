@@ -1,6 +1,11 @@
 use crate::arch::syscall::SyscallFrame;
 #[cfg(target_arch = "x86_64")]
 use crate::interrupts;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
+use crate::net;
 use crate::serial;
 use crate::time;
 #[cfg(any(
@@ -9,41 +14,76 @@ use crate::time;
 ))]
 use crate::fs;
 #[cfg(target_arch = "x86_64")]
-use crate::{net, virtio};
+use crate::virtio as netdev;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+use crate::virtio_mmio as netdev;
 #[cfg(target_arch = "x86_64")]
 use core::arch::asm;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::cell::UnsafeCell;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::mem::MaybeUninit;
 #[cfg(any(
     target_arch = "x86_64",
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 use core::str;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const SYS_WRITE: u64 = 1;
 #[cfg(target_arch = "x86_64")]
 const SYS_EXIT: u64 = 2;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_YIELD: u64 = 3;
 #[cfg(target_arch = "x86_64")]
 const SYS_SLEEP: u64 = 4;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_SOCKET: u64 = 9;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_LISTEN: u64 = 10;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_ACCEPT: u64 = 11;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_RECV: u64 = 12;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_SEND: u64 = 13;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_CLOSE: u64 = 14;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_CONNECT: u64 = 15;
 const SYS_TIME_EPOCH: u64 = 16;
 const SYS_FS_OPEN: u64 = 32;
@@ -63,24 +103,18 @@ const SYS_FS_SYNC: u64 = 39;
 #[cfg(target_arch = "x86_64")]
 const TICK_MS: u64 = 10;
 
-#[cfg(target_arch = "x86_64")]
 struct YieldContext {
     stack: *mut net::NetStack,
     device: *mut net::VirtioDevice,
 }
 
-#[cfg(target_arch = "x86_64")]
 struct YieldContextCell(UnsafeCell<MaybeUninit<YieldContext>>);
 
-#[cfg(target_arch = "x86_64")]
 unsafe impl Sync for YieldContextCell {}
 
-#[cfg(target_arch = "x86_64")]
 static YIELD_CTX: YieldContextCell = YieldContextCell(UnsafeCell::new(MaybeUninit::uninit()));
-#[cfg(target_arch = "x86_64")]
 static YIELD_READY: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_arch = "x86_64")]
 pub fn install_yield(stack: *mut net::NetStack, device: *mut net::VirtioDevice) {
     unsafe {
         (*YIELD_CTX.0.get()).write(YieldContext { stack, device });
@@ -95,23 +129,47 @@ pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
         SYS_TIME_EPOCH => sys_time_epoch(),
         #[cfg(target_arch = "x86_64")]
         SYS_EXIT => sys_exit(frame.arg0()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_YIELD => sys_yield(),
         #[cfg(target_arch = "x86_64")]
         SYS_SLEEP => sys_sleep(frame.arg0()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_SOCKET => sys_net_socket(),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_LISTEN => sys_net_listen(frame.arg0(), frame.arg1()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_ACCEPT => sys_net_accept(frame.arg0()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_RECV => sys_net_recv(frame.arg0(), frame.arg1(), frame.arg2()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_SEND => sys_net_send(frame.arg0(), frame.arg1(), frame.arg2()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_CLOSE => sys_net_close(frame.arg0()),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_NET_CONNECT => sys_net_connect(frame.arg0(), frame.arg1(), frame.arg2()),
         #[cfg(any(
             target_arch = "x86_64",
@@ -273,13 +331,12 @@ fn sys_fs_sync() -> u64 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_yield() -> u64 {
     let result = with_net_ctx(0, |stack, device| {
         let _ = stack.poll(device, net::now());
         0
     });
-    virtio::reclaim_tx();
+    netdev::reclaim_tx();
     result
 }
 
@@ -313,7 +370,6 @@ fn sys_sleep(ms: u64) -> u64 {
     0
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_socket() -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -321,7 +377,6 @@ fn sys_net_socket() -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_listen(handle: u64, port: u64) -> u64 {
     if port == 0 || port > u16::MAX as u64 {
         return u64::MAX;
@@ -341,7 +396,6 @@ fn sys_net_listen(handle: u64, port: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_accept(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -359,7 +413,6 @@ fn sys_net_accept(handle: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_recv(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -376,7 +429,6 @@ fn sys_net_recv(handle: u64, buf: u64, len: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_send(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len == 0 {
         return 0;
@@ -405,7 +457,6 @@ fn sys_net_send(handle: u64, buf: u64, len: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_close(handle: u64) -> u64 {
     with_net_ctx(u64::MAX, |stack, device| {
         let _ = stack.poll(device, net::now());
@@ -423,7 +474,6 @@ fn sys_net_close(handle: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn sys_net_connect(handle: u64, ip: u64, port: u64) -> u64 {
     if port == 0 || port > u16::MAX as u64 || ip == 0 {
         return u64::MAX;
@@ -442,7 +492,6 @@ fn sys_net_connect(handle: u64, ip: u64, port: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 fn with_net_ctx<F, R>(default: R, f: F) -> R
 where
     F: FnOnce(&mut net::NetStack, &mut net::VirtioDevice) -> R,

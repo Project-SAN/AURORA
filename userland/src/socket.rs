@@ -5,6 +5,7 @@ pub enum Error {
     SysError,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectState {
     InProgress,
@@ -22,6 +23,7 @@ pub struct TcpListener {
 }
 
 impl TcpSocket {
+    #[cfg(target_arch = "x86_64")]
     pub fn new() -> Result<Self, Error> {
         let ret = unsafe { sys::syscall0(sys::SYS_NET_SOCKET) };
         if ret == u64::MAX {
@@ -72,6 +74,7 @@ impl TcpSocket {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub fn connect(&self, ip: [u8; 4], port: u16) -> Result<ConnectState, Error> {
         let ip = u32::from_be_bytes(ip);
         let ret =
