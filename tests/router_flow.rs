@@ -111,7 +111,7 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
     let routes = vec![
         aurora::setup::directory::RouteAnnouncement {
             policy_id,
-            interface: Some("router-entry".to_string()),
+            interface: "router-entry".to_string(),
             segment: routing::segment_from_elems(&[RouteElem::NextHop {
                 addr: IpAddr::V4([127, 0, 0, 1]),
                 port: 7001,
@@ -119,7 +119,7 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
         },
         aurora::setup::directory::RouteAnnouncement {
             policy_id,
-            interface: Some("router-middle".to_string()),
+            interface: "router-middle".to_string(),
             segment: routing::segment_from_elems(&[RouteElem::NextHop {
                 addr: IpAddr::V4([127, 0, 0, 1]),
                 port: 7002,
@@ -127,7 +127,7 @@ fn install_role_routes(router: &mut Router, policy_id: [u8; 32], node_id: &str) 
         },
         aurora::setup::directory::RouteAnnouncement {
             policy_id,
-            interface: Some("router-exit".to_string()),
+            interface: "router-exit".to_string(),
             segment: routing::segment_from_elems(&[RouteElem::ExitTcp {
                 addr: IpAddr::V4([127, 0, 0, 1]),
                 port: 7003,
