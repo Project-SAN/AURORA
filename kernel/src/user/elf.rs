@@ -131,7 +131,11 @@ pub fn prepare_elf_image(bs: &BootServices, bytes: &[u8]) -> Option<u64> {
         bs.allocate_pages(AllocateType::Address(seg_start), mem_ty, pages)
             .ok()?;
         unsafe {
-            core::ptr::write_bytes(seg_start as *mut u8, 0, (pages as u64 * memory::PAGE_SIZE) as usize);
+            core::ptr::write_bytes(
+                seg_start as *mut u8,
+                0,
+                (pages as u64 * memory::PAGE_SIZE) as usize,
+            );
         }
 
         if ph.p_filesz > 0 {
@@ -180,7 +184,10 @@ fn parse_elf(bytes: &[u8], expected_machine: u16) -> Option<Elf64Ehdr> {
     Some(ehdr)
 }
 
-fn program_headers<'a>(bytes: &'a [u8], ehdr: &Elf64Ehdr) -> Option<impl Iterator<Item = Elf64Phdr> + 'a> {
+fn program_headers<'a>(
+    bytes: &'a [u8],
+    ehdr: &Elf64Ehdr,
+) -> Option<impl Iterator<Item = Elf64Phdr> + 'a> {
     let phoff = ehdr.e_phoff as usize;
     let phentsize = ehdr.e_phentsize as usize;
     let phnum = ehdr.e_phnum as usize;

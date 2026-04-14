@@ -3,6 +3,11 @@ use crate::arch::syscall::SyscallFrame;
     target_arch = "x86_64",
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
+use crate::fs;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use crate::interrupts;
 #[cfg(any(
     target_arch = "x86_64",
@@ -11,11 +16,6 @@ use crate::interrupts;
 use crate::net;
 use crate::serial;
 use crate::time;
-#[cfg(any(
-    target_arch = "x86_64",
-    all(target_arch = "aarch64", target_os = "uefi")
-))]
-use crate::fs;
 #[cfg(target_arch = "x86_64")]
 use crate::virtio as netdev;
 #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]

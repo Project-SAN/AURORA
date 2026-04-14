@@ -4,7 +4,10 @@
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 extern crate alloc;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod acpi;
 #[cfg(target_arch = "x86_64")]
 mod apic;
@@ -13,6 +16,8 @@ mod apic;
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 mod arch;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+mod device_tree;
 #[cfg(any(
     target_arch = "x86_64",
     all(target_arch = "aarch64", target_os = "uefi")
@@ -75,6 +80,9 @@ use uefi::table::boot::{MemoryMap, MemoryType};
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+const DEVICE_TREE_GUID: uefi::Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 
 #[entry]
 fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
@@ -156,7 +164,10 @@ fn log_memory_region(map: &MemoryMap, label: &str, addr: u64) {
 #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
 fn log_code_regions(map: &MemoryMap) {
     for desc in map.entries() {
-        if matches!(desc.ty, MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_CODE) {
+        if matches!(
+            desc.ty,
+            MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_CODE
+        ) {
             let start = desc.phys_start;
             let end = desc.phys_start + desc.page_count * memory::PAGE_SIZE;
             serial::write(format_args!(
@@ -257,6 +268,38 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
     };
 
     let rsdp_addr = find_rsdp(&system_table);
+    let dtb_addr = find_dtb(&system_table);
+    let dt_info = if dtb_addr != 0 {
+        device_tree::parse(dtb_addr)
+    } else {
+        None
+    };
+    if let Some(info) = dt_info.as_ref() {
+        virtio_mmio::install_discovered_devices(&info.virtio_mmio);
+        serial::write(format_args!(
+            "DT: interrupt_model={} virtio-mmio={}\n",
+            info.interrupt_model.is_some(),
+            info.virtio_mmio.len()
+        ));
+    } else {
+        virtio_mmio::install_discovered_devices(&[]);
+    }
+
+    let interrupt_config = if rsdp_addr != 0 {
+        acpi::arm_interrupt_model(rsdp_addr)
+            .map(|config| ("ACPI", config))
+            .or_else(|| {
+                dt_info
+                    .as_ref()?
+                    .interrupt_model
+                    .map(|config| ("DT", config))
+            })
+    } else {
+        dt_info
+            .as_ref()
+            .and_then(|info| info.interrupt_model.map(|config| ("DT", config)))
+    };
+
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
     let entries = memory_map.entries().count();
     serial::write(format_args!(
@@ -270,7 +313,11 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
             image.entry & !(memory::PAGE_SIZE - 1),
         );
     }
-    log_memory_region(&memory_map, "user-stack", user::USER_STACK_TOP - memory::PAGE_SIZE);
+    log_memory_region(
+        &memory_map,
+        "user-stack",
+        user::USER_STACK_TOP - memory::PAGE_SIZE,
+    );
     log_code_regions(&memory_map);
 
     let stats = memory::init(&memory_map);
@@ -286,10 +333,20 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
         arch::syscall::current_el(),
         arch::syscall::vector_base()
     ));
-    if interrupts::init() {
-        serial::write(format_args!("AArch64 GIC/timer enabled\n"));
+    if let Some((source, config)) = interrupt_config {
+        if interrupts::init(&config) {
+            serial::write(format_args!(
+                "AArch64 GIC/timer enabled via {} discovery\n",
+                source
+            ));
+        } else {
+            serial::write(format_args!(
+                "AArch64 GIC/timer init failed via {} discovery\n",
+                source
+            ));
+        }
     } else {
-        serial::write(format_args!("AArch64 GIC/timer init failed\n"));
+        serial::write(format_args!("AArch64 GIC/timer discovery failed\n"));
     }
 
     if let Some(buf) = memory::alloc_dma_pages(2) {
@@ -354,7 +411,11 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
                     net_stack = Some(net::NetStack::new(mac, &mut net_device, net::now()));
                     if let Some(stack) = net_stack.as_mut() {
                         let _ = stack.poll(&mut net_device, net::now());
-                        interrupts::register_virtio_mmio_irq(net_bases[0], true);
+                        if let Some(irq) = virtio_mmio::discovered_interrupt(net_bases[0]) {
+                            interrupts::register_irq_intid(irq.intid, irq.edge_triggered, true);
+                        } else {
+                            interrupts::register_virtio_mmio_irq(net_bases[0], true);
+                        }
                         syscall::install_yield(stack as *mut _, &mut net_device as *mut _);
                         serial::write(format_args!("boot: after virtio-net init ok=1\n"));
                     }
@@ -654,6 +715,16 @@ fn schedule_next_poll(now_ticks: u64, delay_ms: Option<u64>) -> Option<u64> {
 fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
     for entry in system_table.config_table() {
         if entry.guid == ACPI2_GUID || entry.guid == ACPI_GUID {
+            return entry.address as u64;
+        }
+    }
+    0
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn find_dtb(system_table: &SystemTable<Boot>) -> u64 {
+    for entry in system_table.config_table() {
+        if entry.guid == DEVICE_TREE_GUID {
             return entry.address as u64;
         }
     }

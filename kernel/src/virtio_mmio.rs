@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::cmp;
 use core::ptr::{read_volatile, write_bytes, write_volatile};
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{fence, AtomicUsize, Ordering};
 
 use crate::memory;
 use crate::serial;
@@ -162,12 +162,79 @@ static NET: NetState = NetState {
     inner: UnsafeCell::new(None),
 };
 
+#[derive(Clone, Copy, Debug)]
+pub struct DiscoveredInterrupt {
+    pub intid: u32,
+    pub edge_triggered: bool,
+}
+
+impl DiscoveredInterrupt {
+    pub const fn empty() -> Self {
+        Self {
+            intid: 0,
+            edge_triggered: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DiscoveredMmioDevice {
+    pub base: u64,
+    pub size: u64,
+    pub interrupt: Option<DiscoveredInterrupt>,
+}
+
+impl DiscoveredMmioDevice {
+    const fn empty() -> Self {
+        Self {
+            base: 0,
+            size: 0,
+            interrupt: None,
+        }
+    }
+}
+
+struct DiscoveredDeviceState {
+    inner: UnsafeCell<[DiscoveredMmioDevice; VIRTIO_MMIO_SLOTS]>,
+}
+
+unsafe impl Sync for DiscoveredDeviceState {}
+
+static DISCOVERED_DEVICES: DiscoveredDeviceState = DiscoveredDeviceState {
+    inner: UnsafeCell::new([DiscoveredMmioDevice::empty(); VIRTIO_MMIO_SLOTS]),
+};
+static DISCOVERED_DEVICE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 pub const fn base() -> u64 {
     VIRTIO_MMIO_BASE
 }
 
 pub const fn stride() -> u64 {
     VIRTIO_MMIO_STRIDE
+}
+
+pub fn install_discovered_devices(devices: &[DiscoveredMmioDevice]) {
+    unsafe {
+        let slots = &mut *DISCOVERED_DEVICES.inner.get();
+        for slot in slots.iter_mut() {
+            *slot = DiscoveredMmioDevice::empty();
+        }
+        for (index, device) in devices.iter().take(VIRTIO_MMIO_SLOTS).enumerate() {
+            slots[index] = *device;
+        }
+    }
+    DISCOVERED_DEVICE_COUNT.store(devices.len().min(VIRTIO_MMIO_SLOTS), Ordering::Release);
+}
+
+pub fn discovered_interrupt(base: u64) -> Option<DiscoveredInterrupt> {
+    let count = DISCOVERED_DEVICE_COUNT.load(Ordering::Acquire);
+    let devices = unsafe { &*DISCOVERED_DEVICES.inner.get() };
+    for device in devices[..count].iter() {
+        if device.base == base {
+            return device.interrupt;
+        }
+    }
+    None
 }
 
 pub fn scan_blk_devices(out: &mut [u64]) -> usize {
@@ -179,6 +246,11 @@ pub fn scan_net_devices(out: &mut [u64]) -> usize {
 }
 
 fn scan_devices(device_id: u32, label: &str, out: &mut [u64]) -> usize {
+    let discovered = scan_discovered_devices(device_id, label, out);
+    if discovered != 0 {
+        return discovered;
+    }
+
     let mut found = 0usize;
     for slot in 0..VIRTIO_MMIO_SLOTS {
         let base = VIRTIO_MMIO_BASE + (slot as u64) * VIRTIO_MMIO_STRIDE;
@@ -195,6 +267,41 @@ fn scan_devices(device_id: u32, label: &str, out: &mut [u64]) -> usize {
         serial::write(format_args!(
             "virtio-mmio: {} slot={} base={:#x} vendor={:#x}\n",
             label, slot, base, vendor
+        ));
+        if found < out.len() {
+            out[found] = base;
+        }
+        found += 1;
+    }
+    found.min(out.len())
+}
+
+fn scan_discovered_devices(device_id: u32, label: &str, out: &mut [u64]) -> usize {
+    let count = DISCOVERED_DEVICE_COUNT.load(Ordering::Acquire);
+    if count == 0 {
+        return 0;
+    }
+
+    let devices = unsafe { &*DISCOVERED_DEVICES.inner.get() };
+    let mut found = 0usize;
+    for device in devices[..count].iter() {
+        let base = device.base;
+        if base == 0 {
+            continue;
+        }
+        let magic = read_reg(base, REG_MAGIC_VALUE);
+        let version = read_reg(base, REG_VERSION);
+        let id = read_reg(base, REG_DEVICE_ID);
+        if magic != VIRTIO_MMIO_MAGIC_VALUE {
+            continue;
+        }
+        if version != VIRTIO_MMIO_VERSION_MODERN || id != device_id {
+            continue;
+        }
+        let vendor = read_reg(base, REG_VENDOR_ID);
+        serial::write(format_args!(
+            "virtio-mmio: {} dt base={:#x} size={:#x} vendor={:#x}\n",
+            label, base, device.size, vendor
         ));
         if found < out.len() {
             out[found] = base;
@@ -247,7 +354,11 @@ pub fn init_blk(base: u64) -> bool {
     let status_phys = req_phys + core::mem::size_of::<VirtioBlkReq>() as u64;
     let status_virt = memory::phys_to_virt(status_phys) as *mut u8;
     unsafe {
-        write_bytes(memory::phys_to_virt(req_phys), 0, memory::PAGE_SIZE as usize);
+        write_bytes(
+            memory::phys_to_virt(req_phys),
+            0,
+            memory::PAGE_SIZE as usize,
+        );
     }
 
     write_reg(
@@ -659,7 +770,11 @@ fn prime_rx_buffers(rxq: &mut VirtQueue, count: usize) -> bool {
             None => return false,
         };
         unsafe {
-            write_bytes(memory::phys_to_virt(buf_phys), 0, memory::PAGE_SIZE as usize);
+            write_bytes(
+                memory::phys_to_virt(buf_phys),
+                0,
+                memory::PAGE_SIZE as usize,
+            );
         }
         let head = (i * 2) as u16;
         let desc0 = VirtqDesc {
@@ -814,7 +929,10 @@ fn reclaim_tx_queue(txq: &mut VirtQueue, tx_state: &mut TxState, base: u64) {
         if buf_index < tx_state.bufs.len() {
             tx_state.free.push(head);
         } else {
-            serial::write(format_args!("virtio-mmio: tx reclaim unknown head {}\n", head));
+            serial::write(format_args!(
+                "virtio-mmio: tx reclaim unknown head {}\n",
+                head
+            ));
         }
         txq.last_used = txq.last_used.wrapping_add(1);
         reclaimed = true;
@@ -855,7 +973,11 @@ fn used_ring(queue: &VirtQueue) -> *mut VirtqUsedElem {
 fn reset_device(base: u64) {
     write_reg(base, REG_STATUS, 0);
     write_reg(base, REG_STATUS, STATUS_ACKNOWLEDGE as u32);
-    write_reg(base, REG_STATUS, (STATUS_ACKNOWLEDGE | STATUS_DRIVER) as u32);
+    write_reg(
+        base,
+        REG_STATUS,
+        (STATUS_ACKNOWLEDGE | STATUS_DRIVER) as u32,
+    );
 }
 
 fn accept_features(base: u64) -> bool {
