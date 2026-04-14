@@ -194,8 +194,7 @@ fn write_decimal(mut value: u64) {
     let _ = sys::write(1, &buf[..i]);
 }
 
-#[cfg_attr(any(target_os = "none", target_os = "uefi"), panic_handler)]
-#[cfg(any(target_os = "none", target_os = "uefi"))]
+#[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
         unsafe {

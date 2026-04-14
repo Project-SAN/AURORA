@@ -345,6 +345,7 @@ mod tests {
             flags: 0,
             verifiers: vec![aurora::policy::VerifierEntry {
                 kind: aurora::core::policy::ProofKind::Policy as u8,
+                min_rounds: 0,
                 verifier_blob: vec![0xAA, 0xBB],
             }],
         };
@@ -397,6 +398,7 @@ mod tests {
             flags: 0,
             verifiers: vec![aurora::policy::VerifierEntry {
                 kind: aurora::core::policy::ProofKind::Policy as u8,
+                min_rounds: 0,
                 verifier_blob: vec![0xAA, 0xBB, 0xCC],
             }],
         };

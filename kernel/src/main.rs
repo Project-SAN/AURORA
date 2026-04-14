@@ -2,27 +2,198 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(abi_x86_interrupt)]
-#![allow(dead_code)]
-
 extern crate alloc;
 
 mod acpi;
+#[cfg(target_arch = "x86_64")]
 mod apic;
+#[cfg(target_arch = "x86_64")]
 mod arch;
+#[cfg(not(target_arch = "x86_64"))]
+mod arch {
+    pub mod gdt {
+        pub const USER_CODE: u16 = 0x20;
+        pub const USER_DATA: u16 = 0x18;
+
+        pub fn read_tr() -> u16 {
+            0
+        }
+
+        pub fn tss_rsp0() -> u64 {
+            0
+        }
+    }
+
+    pub mod syscall {
+        pub fn read_efer() -> u64 {
+            0
+        }
+    }
+
+    pub fn init(_kernel_stack_top: u64) {}
+}
+#[cfg(target_arch = "x86_64")]
 mod fs;
+#[cfg(not(target_arch = "x86_64"))]
+mod fs {
+    pub fn init() -> bool {
+        false
+    }
+}
 mod heap;
+#[cfg(target_arch = "x86_64")]
 mod hpet;
+#[cfg(target_arch = "x86_64")]
 mod interrupts;
+#[cfg(not(target_arch = "x86_64"))]
+mod interrupts {
+    use crate::acpi::AcpiInfo;
+
+    pub fn init(_info: &AcpiInfo) -> bool {
+        false
+    }
+
+    pub fn ticks() -> u64 {
+        0
+    }
+
+    pub fn enable_net_irqs() {}
+
+    pub fn net_pending() -> (bool, bool) {
+        (false, false)
+    }
+}
 mod memory;
+#[cfg(target_arch = "x86_64")]
 mod net;
+#[cfg(not(target_arch = "x86_64"))]
+mod net {
+    use smoltcp::time::Instant;
+
+    pub fn now() -> Instant {
+        Instant::from_millis(0)
+    }
+
+    pub struct VirtioDevice;
+
+    impl VirtioDevice {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    pub struct NetStack;
+
+    impl NetStack {
+        pub fn new(_mac: [u8; 6], _device: &mut VirtioDevice, _now: Instant) -> Self {
+            Self
+        }
+
+        pub fn poll(&mut self, _device: &mut VirtioDevice, _now: Instant) -> Option<u64> {
+            None
+        }
+    }
+}
+#[cfg(target_arch = "x86_64")]
 mod paging;
+#[cfg(not(target_arch = "x86_64"))]
+mod paging {
+    pub const KERNEL_BASE: u64 = 0xffff_8000_0000_0000;
+
+    pub fn to_higher_half(phys: u64) -> u64 {
+        KERNEL_BASE + phys
+    }
+
+    pub fn init_identity_4g() -> Option<u64> {
+        None
+    }
+
+    pub unsafe fn switch_to(_pml4_phys: u64) {}
+
+    pub fn map_user_page(_virt: u64, _phys: u64, _writable: bool) -> bool {
+        false
+    }
+
+    pub fn virt_to_phys(_virt: u64) -> u64 {
+        0
+    }
+}
+#[cfg(target_arch = "x86_64")]
 mod pci;
+#[cfg(not(target_arch = "x86_64"))]
+mod pci {
+    #[derive(Clone, Copy, Debug)]
+    pub struct VirtioPciDevice {
+        pub bus: u16,
+        pub device: u16,
+        pub function: u16,
+        pub io_base: Option<u16>,
+        pub mmio_base: Option<u64>,
+    }
+
+    pub fn scan() -> usize {
+        0
+    }
+
+    pub fn find_virtio_net() -> Option<VirtioPciDevice> {
+        None
+    }
+
+    pub fn enable_bus_master(_dev: &VirtioPciDevice) {}
+}
 mod port;
 mod serial;
+#[cfg(target_arch = "x86_64")]
 mod syscall;
+#[cfg(not(target_arch = "x86_64"))]
+mod syscall {
+    use crate::net;
+
+    pub fn install_yield(_stack: *mut net::NetStack, _device: *mut net::VirtioDevice) {}
+}
+#[cfg(target_arch = "x86_64")]
 mod time;
+#[cfg(not(target_arch = "x86_64"))]
+mod time {
+    use uefi::table::runtime::Time;
+
+    pub fn init_from_uefi(_time: Time, _ticks_now: u64) -> bool {
+        false
+    }
+}
 mod user;
+#[cfg(target_arch = "x86_64")]
 mod virtio;
+#[cfg(not(target_arch = "x86_64"))]
+mod virtio {
+    use crate::pci::VirtioPciDevice;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct NetStatsSnapshot {
+        pub rx_packets: u64,
+        pub rx_bytes: u64,
+        pub rx_drops: u64,
+        pub rx_overflow: u64,
+        pub tx_packets: u64,
+        pub tx_bytes: u64,
+        pub tx_drops: u64,
+        pub tx_overflow: u64,
+    }
+
+    pub fn init_net(_dev: &VirtioPciDevice) -> bool {
+        false
+    }
+
+    pub fn mac_address() -> Option<[u8; 6]> {
+        None
+    }
+
+    pub fn reclaim_tx() {}
+
+    pub fn stats_snapshot() -> NetStatsSnapshot {
+        NetStatsSnapshot::default()
+    }
+}
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;

@@ -51,7 +51,6 @@ pub fn unmask(irq: u8) {
     }
 }
 
-#[allow(dead_code)]
 pub fn mask(irq: u8) {
     unsafe {
         if irq < 8 {
