@@ -44,7 +44,10 @@ mod syscall;
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
 mod time;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod user;
 #[cfg(target_arch = "x86_64")]
 mod virtio;
@@ -55,7 +58,7 @@ use uefi::prelude::*;
     target_arch = "x86_64",
     all(target_arch = "aarch64", target_os = "uefi")
 ))]
-use uefi::table::boot::MemoryType;
+use uefi::table::boot::{MemoryMap, MemoryType};
 #[cfg(any(
     target_arch = "x86_64",
     all(target_arch = "aarch64", target_os = "uefi")
@@ -119,6 +122,36 @@ fn log_uefi_time(system_table: &SystemTable<Boot>) {
         }
         Err(_) => {
             serial::write(format_args!("UEFI time unavailable\n"));
+        }
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn log_memory_region(map: &MemoryMap, label: &str, addr: u64) {
+    for desc in map.entries() {
+        let start = desc.phys_start;
+        let end = desc.phys_start + desc.page_count * memory::PAGE_SIZE;
+        if addr >= start && addr < end {
+            serial::write(format_args!(
+                "mem {}: addr={:#x} ty={:?} range=[{:#x}..{:#x})\n",
+                label, addr, desc.ty, start, end
+            ));
+            return;
+        }
+    }
+    serial::write(format_args!("mem {}: addr={:#x} not found\n", label, addr));
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn log_code_regions(map: &MemoryMap) {
+    for desc in map.entries() {
+        if matches!(desc.ty, MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_CODE) {
+            let start = desc.phys_start;
+            let end = desc.phys_start + desc.page_count * memory::PAGE_SIZE;
+            serial::write(format_args!(
+                "code region: ty={:?} range=[{:#x}..{:#x})\n",
+                desc.ty, start, end
+            ));
         }
     }
 }
@@ -200,8 +233,17 @@ fn boot_x86_64(system_table: SystemTable<Boot>) -> Status {
 
 #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
 fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
+    const RUN_USERLAND: bool = cfg!(feature = "userland");
+
     serial::write(format_args!("AArch64 boot path active\n"));
     log_uefi_time(&system_table);
+
+    let prepared_user = if RUN_USERLAND {
+        serial::write(format_args!("boot: preparing userland\n"));
+        user::prepare_user_image(system_table.boot_services(), user::USER_ELF)
+    } else {
+        None
+    };
 
     let rsdp_addr = find_rsdp(&system_table);
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
@@ -210,6 +252,15 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
         "Exited boot services. Memory map entries: {}\n",
         entries
     ));
+    if let Some(image) = prepared_user.as_ref() {
+        log_memory_region(
+            &memory_map,
+            "user-entry",
+            image.entry & !(memory::PAGE_SIZE - 1),
+        );
+    }
+    log_memory_region(&memory_map, "user-stack", user::USER_STACK_TOP - memory::PAGE_SIZE);
+    log_code_regions(&memory_map);
 
     let stats = memory::init(&memory_map);
     serial::write(format_args!(
@@ -265,6 +316,18 @@ fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
         serial::write(format_args!("ACPI RSDP not found\n"));
     } else {
         serial::write(format_args!("ACPI RSDP at {:#x}\n", rsdp_addr));
+    }
+
+    if RUN_USERLAND {
+        if let Some(image) = prepared_user {
+            serial::write(format_args!(
+                "userland: entry={:#x} stack={:#x}\n",
+                image.entry, image.stack_top
+            ));
+            unsafe { enter_user(image.entry, image.stack_top) };
+        } else {
+            serial::write(format_args!("userland: prepare failed\n"));
+        }
     }
 
     serial::write(format_args!("AArch64 M1 reached; halting\n"));
@@ -458,6 +521,21 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
         rflags = in(reg) rflags,
         rsp_user = in(reg) user_rsp,
         ss = in(reg) user_ss,
+        options(noreturn)
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
+    serial::write(format_args!(
+        "enter_user: pc={:#x} sp={:#x} (EL1)\n",
+        entry, stack_top
+    ));
+    core::arch::asm!(
+        "mov sp, {stack_top}",
+        "br {entry}",
+        stack_top = in(reg) stack_top,
+        entry = in(reg) entry,
         options(noreturn)
     );
 }
