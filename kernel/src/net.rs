@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::phy::{Checksum, Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
@@ -225,24 +225,7 @@ impl NetStack {
         let handle = self.entries[idx].handle;
         let socket = self.sockets.get_mut::<tcp::Socket>(handle);
         match socket.recv_slice(buf) {
-            Ok(size) => {
-                if size == 0 && buf.len() <= 4 {
-                    serial::write(format_args!(
-                        "net: recv zero id={} handle={:?} entry_state={:?} tcp_state={:?} active={} open={} may_recv={} may_send={} recv_q={} send_q={}\n",
-                        id,
-                        handle,
-                        self.entries[idx].state,
-                        socket.state(),
-                        socket.is_active(),
-                        socket.is_open(),
-                        socket.may_recv(),
-                        socket.may_send(),
-                        socket.recv_queue(),
-                        socket.send_queue()
-                    ));
-                }
-                size
-            }
+            Ok(size) => size,
             Err(_) => {
                 if buf.len() <= 4 {
                     serial::write(format_args!(
@@ -539,6 +522,12 @@ impl Device for VirtioDevice {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ethernet;
         caps.max_transmission_unit = 1514;
+        // QEMU/slirp hostfwd can deliver virtio-net RX frames whose transport
+        // checksum state is not useful to smoltcp. Still compute TX checksums
+        // in software because the driver does not advertise host offloads.
+        caps.checksum.ipv4 = Checksum::Tx;
+        caps.checksum.udp = Checksum::Tx;
+        caps.checksum.tcp = Checksum::Tx;
         caps
     }
 }

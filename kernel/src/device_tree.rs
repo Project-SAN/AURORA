@@ -113,11 +113,15 @@ pub fn parse(dtb_addr: u64) -> Option<DeviceTreeInfo> {
         return None;
     }
 
-    let totalsize = read_be32(unsafe { slice::from_raw_parts(dtb_addr as *const u8, 8) }, 4)? as usize;
+    let totalsize = read_be32(
+        unsafe { slice::from_raw_parts(dtb_addr as *const u8, 8) },
+        4,
+    )? as usize;
     let blob = unsafe { slice::from_raw_parts(dtb_addr as *const u8, totalsize) };
     let header = FdtHeader::parse(blob)?;
     let structure = blob.get(header.off_dt_struct..header.off_dt_struct + header.size_dt_struct)?;
-    let strings = blob.get(header.off_dt_strings..header.off_dt_strings + header.size_dt_strings)?;
+    let strings =
+        blob.get(header.off_dt_strings..header.off_dt_strings + header.size_dt_strings)?;
     let controllers = collect_interrupt_controllers(structure, strings)?;
 
     let mut stack = Vec::new();
@@ -176,7 +180,8 @@ pub fn parse(dtb_addr: u64) -> Option<DeviceTreeInfo> {
                     );
                 }
 
-                if gic.is_none() && (node.compatible & COMPAT_GIC_V3) != 0 && node.region_count >= 2 {
+                if gic.is_none() && (node.compatible & COMPAT_GIC_V3) != 0 && node.region_count >= 2
+                {
                     gic = Some(Aarch64InterruptConfig {
                         gic_model: Aarch64GicModel::V3,
                         gicd_base: node.regions[0].base,
@@ -201,7 +206,10 @@ pub fn parse(dtb_addr: u64) -> Option<DeviceTreeInfo> {
                     });
                 }
 
-                if timer.is_none() && (node.compatible & COMPAT_TIMER) != 0 && node.interrupt_count != 0 {
+                if timer.is_none()
+                    && (node.compatible & COMPAT_TIMER) != 0
+                    && node.interrupt_count != 0
+                {
                     let timer_index = if node.interrupt_count > 1 { 1 } else { 0 };
                     timer = Some(node.interrupts[timer_index]);
                     timer_frequency_hz = node.clock_frequency_hz;
@@ -523,7 +531,9 @@ fn parse_interrupt_specifiers(
 }
 
 fn decode_interrupt(controller: ControllerInfo, spec: &[u8]) -> Option<DiscoveredInterrupt> {
-    if (controller.compatible & (COMPAT_GIC_V2 | COMPAT_GIC_V3)) != 0 && controller.interrupt_cells >= 3 {
+    if (controller.compatible & (COMPAT_GIC_V2 | COMPAT_GIC_V3)) != 0
+        && controller.interrupt_cells >= 3
+    {
         let int_type = read_be32(spec, 0)?;
         let number = read_be32(spec, 4)?;
         let flags = read_be32(spec, 8)?;
@@ -627,7 +637,10 @@ fn parse_interrupts_heuristic(data: &[u8], out: &mut [DiscoveredInterrupt; 4]) -
 }
 
 fn find_controller(controllers: &[ControllerInfo], phandle: u32) -> Option<ControllerInfo> {
-    controllers.iter().copied().find(|controller| controller.phandle == phandle)
+    controllers
+        .iter()
+        .copied()
+        .find(|controller| controller.phandle == phandle)
 }
 
 fn flags_edge_triggered(flags: u32) -> bool {

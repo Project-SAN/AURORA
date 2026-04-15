@@ -50,14 +50,19 @@ pub fn run_router() -> ! {
     log_line("router: instance ready");
     let secrets = load_state(&storage, &mut router);
     log_line("router: state loaded");
+    let state_has_runtime = router.policy_runtime().is_some() || !router.routes().is_empty();
     if config.skip_policy {
         // Drop any policy runtime restored from persisted state when operating in
         // route-only mode.
         router = Router::with_node_id(config.router_id.clone());
         log_line("router: policy runtime disabled");
     }
-    load_directory_if_configured(&mut router, &storage, &secrets, &config);
-    log_line("router: directory loaded");
+    if state_has_runtime && !config.skip_policy {
+        log_line("router: directory skipped (state present)");
+    } else {
+        load_directory_if_configured(&mut router, &storage, &secrets, &config);
+        log_line("router: directory loaded");
+    }
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
         Ok(listener) => listener,
         Err(_) => loop {
@@ -192,7 +197,7 @@ pub fn run_router() -> ! {
                 }
             }
             Ok(None) => {
-                sys::sleep(1);
+                sys::yield_now();
             }
             Err(_) => {
                 sys::sleep(10);
@@ -294,7 +299,7 @@ fn read_all_any(paths: &[&str]) -> core::result::Result<Vec<u8>, types::Error> {
 fn read_all(path: &str) -> core::result::Result<Vec<u8>, types::Error> {
     let handle = fs::open(path, fs::O_READ).ok_or(types::Error::Crypto)?;
     let mut out = Vec::new();
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 8192];
     loop {
         match fs::read(handle, &mut buf) {
             Some(0) => break,
@@ -610,10 +615,8 @@ fn show_routes(socket: &crate::socket::TcpSocket, router: &Router) {
         fmt_hex(&route.policy_id, &mut line);
         line.push_str(" segment_len=");
         let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{}", route.segment.0.len()));
-        if let Some(iface) = route.interface.as_ref() {
-            line.push_str(" interface=");
-            line.push_str(iface);
-        }
+        line.push_str(" interface=");
+        line.push_str(&route.interface);
         let _ = send_line(socket, &line);
     }
 }
@@ -679,7 +682,7 @@ fn send_bytes(
                 if retries >= MAX_SEND_RETRIES {
                     return Err(types::Error::Crypto);
                 }
-                sys::sleep(1);
+                sys::yield_now();
             }
             Ok(written) => {
                 offset += written;
@@ -690,7 +693,7 @@ fn send_bytes(
                 if retries >= MAX_SEND_RETRIES {
                     return Err(types::Error::Crypto);
                 }
-                sys::sleep(1);
+                sys::yield_now();
             }
         }
     }
@@ -706,7 +709,7 @@ fn read_line(
     loop {
         let n = socket.recv(&mut buf).map_err(|_| types::Error::Crypto)?;
         if n == 0 {
-            sys::sleep(1);
+            sys::yield_now();
             continue;
         }
         for &b in &buf[..n] {

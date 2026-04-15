@@ -1055,18 +1055,57 @@ impl RouteOnlyTunnelSession {
         aurora::source::build(&mut chdr, &ahdr, &keys, &mut iv, &mut encrypted_tail)
             .map_err(|err| format!("failed to build payload: {err:?}"))?;
         let frame = encode_frame(&chdr, &ahdr.bytes, &encrypted_tail)?;
-        send_frame_to(&self.entry_addr, &frame)?;
+        let mut entry_stream = send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][route-only] frame sent bytes={}", frame.len());
 
         let mut keys_b_reversed = keys_b;
         keys_b_reversed.reverse();
-        wait_for_backward_response(
-            &self.listener,
+        match wait_for_backward_response_stream(
+            &mut entry_stream,
             timeout_secs,
             &keys_b_reversed,
             "[proxy][route-only]",
-        )
+        ) {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                eprintln!("[proxy][route-only] same-stream response failed: {err}");
+                wait_for_backward_response(
+                    &self.listener,
+                    timeout_secs,
+                    &keys_b_reversed,
+                    "[proxy][route-only]",
+                )
+            }
+        }
     }
+}
+
+fn wait_for_backward_response_stream(
+    stream: &mut TcpStream,
+    timeout_secs: u64,
+    backward_keys_reversed: &[Si],
+    log_prefix: &str,
+) -> Result<Vec<u8>, String> {
+    if timeout_secs == 0 {
+        eprintln!("{log_prefix} same-stream response wait skipped");
+        return Ok(Vec::new());
+    }
+    stream
+        .set_nonblocking(false)
+        .map_err(|e| format!("set blocking entry stream: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(timeout_secs.max(1))))
+        .map_err(|e| format!("set read timeout entry stream: {e}"))?;
+    let frame = read_backward_frame(stream)?;
+    let mut payload = frame.payload;
+    let mut iv_resp = frame.specific;
+    aurora::source::decrypt_backward_payload(backward_keys_reversed, &mut iv_resp, &mut payload)
+        .map_err(|err| format!("decrypt same-stream backward: {err:?}"))?;
+    eprintln!(
+        "{log_prefix} same-stream response decrypted bytes={}",
+        payload.len()
+    );
+    Ok(payload)
 }
 
 struct BackwardFrame {
@@ -1717,6 +1756,9 @@ fn make_part(
 }
 
 fn maybe_send_setup(cfg: &SenderConfig) -> Result<(), String> {
+    if cfg.route_only == "1" {
+        return Ok(());
+    }
     if env::var("HORNET_PROXY_SKIP_SETUP").ok().as_deref() == Some("1") {
         return Ok(());
     }

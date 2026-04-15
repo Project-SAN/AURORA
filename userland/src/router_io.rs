@@ -76,7 +76,7 @@ impl PacketReader for TcpSocket {
                     debug_log_usize("router-io: read_exact stalled_at", offset);
                     return Err(Error::Crypto);
                 }
-                sys::sleep(1);
+                sys::yield_now();
                 continue;
             }
             debug_log_usize("router-io: read_exact chunk", read);
@@ -114,7 +114,7 @@ impl Drop for UserlandForward {
         if let Some(socket) = self.reply_socket {
             if self.sent_reply {
                 for _ in 0..5_000 {
-                    sys::sleep(1);
+                    sys::yield_now();
                 }
             }
             let _ = socket.close();
@@ -401,7 +401,7 @@ fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16) -> core::result::Res
         if spins > 2000 {
             return Err(Error::Crypto);
         }
-        sys::sleep(1);
+        sys::yield_now();
         state = socket.connect(ip, port).map_err(|_| Error::Crypto)?;
     }
     Ok(())
@@ -409,7 +409,7 @@ fn connect_ipv4(socket: &TcpSocket, ip: [u8; 4], port: u16) -> core::result::Res
 
 fn pump_connected_socket(socket: &TcpSocket, ip: [u8; 4], port: u16, ticks: u32) {
     for _ in 0..ticks {
-        sys::sleep(1);
+        sys::yield_now();
         let _ = socket.connect(ip, port);
     }
 }
@@ -499,7 +499,7 @@ fn send_all(socket: &TcpSocket, buf: &[u8]) -> core::result::Result<(), Error> {
                 }
                 return Err(Error::Crypto);
             }
-            sys::sleep(1);
+            sys::yield_now();
             continue;
         }
         spins = 0;
@@ -532,7 +532,7 @@ fn recv_to_idle(socket: &TcpSocket) -> core::result::Result<Vec<u8>, Error> {
                 if idle_spins > limit {
                     break;
                 }
-                sys::sleep(1);
+                sys::yield_now();
             }
             Ok(n) => {
                 idle_spins = 0;
@@ -565,7 +565,7 @@ fn recv_available(socket: &TcpSocket) -> core::result::Result<Vec<u8>, Error> {
                 if idle_spins > limit {
                     break;
                 }
-                sys::sleep(1);
+                sys::yield_now();
             }
             Ok(n) => {
                 idle_spins = 0;

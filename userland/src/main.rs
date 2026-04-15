@@ -10,16 +10,28 @@ mod echo;
 mod fs;
 #[cfg(target_arch = "x86_64")]
 mod http;
-#[cfg(all(feature = "router", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod router_app;
-#[cfg(all(feature = "router", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod router_io;
-#[cfg(all(feature = "router", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod router_storage;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod socket;
 mod sys;
-#[cfg(all(feature = "router", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod time_provider;
 
 #[no_mangle]
@@ -56,7 +68,7 @@ const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
 const RUN_HTTP_CLIENT: bool = true;
 #[cfg(target_arch = "x86_64")]
 const RUN_ECHO_SERVER: bool = false;
-#[cfg(all(feature = "router", target_arch = "x86_64"))]
+#[cfg(feature = "router")]
 const RUN_ROUTER: bool = true;
 
 #[cfg(target_arch = "x86_64")]
@@ -122,6 +134,11 @@ fn run_x86_userland() -> ! {
 
 #[cfg(target_arch = "aarch64")]
 fn run_aarch64_userland() -> ! {
+    #[cfg(feature = "router")]
+    if RUN_ROUTER {
+        let _ = sys::write(1, b"userland: entering run_router\n");
+        router_app::run_router();
+    }
     fs_persist_test();
     let mut server = core::mem::MaybeUninit::<echo::EchoServer>::uninit();
     match unsafe { echo::EchoServer::init_in_place(&mut server, ECHO_PORT) } {

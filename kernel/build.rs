@@ -20,17 +20,22 @@ fn main() {
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR missing");
     let img_path = Path::new(&out_dir).join("ramdisk.img");
-    create_ramdisk(&img_path).expect("ramdisk image generation failed");
+    let target = env::var("TARGET").unwrap_or_default();
+    let image_size = if target == "aarch64-unknown-uefi" {
+        32 * 1024 * 1024
+    } else {
+        64 * 1024 * 1024
+    };
+    create_ramdisk(&img_path, image_size).expect("ramdisk image generation failed");
 }
 
-fn create_ramdisk(path: &Path) -> io::Result<()> {
-    const IMAGE_SIZE: u64 = 64 * 1024 * 1024;
+fn create_ramdisk(path: &Path, image_size: u64) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(path)?;
-    file.set_len(IMAGE_SIZE)?;
+    file.set_len(image_size)?;
     file.seek(SeekFrom::Start(0))?;
 
     fatfs::format_volume(

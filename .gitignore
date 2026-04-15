@@ -10,3 +10,10 @@ scripts/*
 !scripts/localnet_up.sh
 !scripts/localnet_down.sh
 !scripts/localnet_send.sh
+!scripts/qemu-aarch64-entry.sh
+!scripts/qemu-aarch64-localnet-entry.sh
+!scripts/qemu-aarch64-middle.sh
+!scripts/qemu-aarch64-exit.sh
+!scripts/qemu-aarch64-localnet-up.sh
+!scripts/qemu-aarch64-localnet-down.sh
+!scripts/qemu-localnet-up.sh
