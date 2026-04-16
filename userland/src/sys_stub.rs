@@ -6,7 +6,6 @@ pub unsafe fn syscall1(_num: u64, _a1: u64) -> u64 {
     u64::MAX
 }
 
-#[allow(dead_code)]
 pub unsafe fn syscall2(_num: u64, _a1: u64, _a2: u64) -> u64 {
     u64::MAX
 }

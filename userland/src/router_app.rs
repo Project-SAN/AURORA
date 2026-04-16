@@ -17,7 +17,7 @@ use aurora::utils::decode_hex;
 
 use crate::fs;
 use crate::router_io::{UserlandExitTransport, UserlandForward, UserlandPacketListener};
-use crate::router_storage::UserlandRouterStorage;
+use crate::router_storage::{StoredStateMode, UserlandRouterStorage};
 use crate::sys;
 
 use crate::time_provider::SysTimeProvider;
@@ -44,20 +44,26 @@ pub fn run_router() -> ! {
     log_line("router: run_router start");
     let mut config = load_config();
     log_line("router: config loaded");
-    let storage = UserlandRouterStorage::new(config.storage_path.clone());
+    log_mode("router: policy_mode", config.policy_mode);
+    let storage = UserlandRouterStorage::new(config.storage_path.clone(), config.policy_mode);
     log_line("router: storage ready");
     let mut router = Router::with_node_id(config.router_id.clone());
     log_line("router: instance ready");
     let secrets = load_state(&storage, &mut router);
     log_line("router: state loaded");
+    let state_has_runtime = router.policy_runtime().is_some() || !router.routes().is_empty();
     if config.skip_policy {
         // Drop any policy runtime restored from persisted state when operating in
         // route-only mode.
         router = Router::with_node_id(config.router_id.clone());
         log_line("router: policy runtime disabled");
     }
-    load_directory_if_configured(&mut router, &storage, &secrets, &config);
-    log_line("router: directory loaded");
+    if state_has_runtime && !config.skip_policy {
+        log_line("router: directory skipped (state present)");
+    } else {
+        load_directory_if_configured(&mut router, &storage, &secrets, &config);
+        log_line("router: directory loaded");
+    }
     let mut listener = match UserlandPacketListener::listen(config.listen_port, secrets.sv) {
         Ok(listener) => listener,
         Err(_) => loop {
@@ -192,7 +198,7 @@ pub fn run_router() -> ! {
                 }
             }
             Ok(None) => {
-                sys::sleep(1);
+                sys::yield_now();
             }
             Err(_) => {
                 sys::sleep(10);
@@ -210,6 +216,7 @@ struct RouterConfig {
     directory_public_key: Option<String>,
     router_id: Option<String>,
     skip_policy: bool,
+    policy_mode: StoredStateMode,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -221,6 +228,33 @@ struct RouterConfigFile {
     directory_public_key: Option<String>,
     router_id: Option<String>,
     skip_policy: Option<bool>,
+    policy_mode: Option<String>,
+}
+
+fn default_policy_mode() -> StoredStateMode {
+    #[cfg(target_arch = "aarch64")]
+    {
+        StoredStateMode::RouteOnly
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        StoredStateMode::FullPolicy
+    }
+}
+
+fn parse_policy_mode(value: &str) -> Option<StoredStateMode> {
+    match value {
+        "route-only" | "route_only" | "routeonly" | "route" => Some(StoredStateMode::RouteOnly),
+        "full-policy" | "full_policy" | "fullpolicy" | "full" => Some(StoredStateMode::FullPolicy),
+        _ => None,
+    }
+}
+
+fn policy_mode_str(mode: StoredStateMode) -> &'static str {
+    match mode {
+        StoredStateMode::RouteOnly => "route-only",
+        StoredStateMode::FullPolicy => "full-policy",
+    }
 }
 
 fn load_config() -> RouterConfig {
@@ -232,6 +266,7 @@ fn load_config() -> RouterConfig {
         directory_public_key: None,
         router_id: None,
         skip_policy: false,
+        policy_mode: default_policy_mode(),
     };
     let data = match read_all_any(&[
         ROUTER_CONFIG_PATH_SHORT,
@@ -261,6 +296,11 @@ fn load_config() -> RouterConfig {
                         directory_public_key: cfg.directory_public_key,
                         router_id: cfg.router_id,
                         skip_policy: cfg.skip_policy.unwrap_or(false),
+                        policy_mode: cfg
+                            .policy_mode
+                            .as_deref()
+                            .and_then(parse_policy_mode)
+                            .unwrap_or_else(default_policy_mode),
                     };
                 }
             }
@@ -277,6 +317,11 @@ fn load_config() -> RouterConfig {
         directory_public_key: parsed.directory_public_key,
         router_id: parsed.router_id,
         skip_policy: parsed.skip_policy.unwrap_or(false),
+        policy_mode: parsed
+            .policy_mode
+            .as_deref()
+            .and_then(parse_policy_mode)
+            .unwrap_or_else(default_policy_mode),
     }
 }
 
@@ -294,7 +339,7 @@ fn read_all_any(paths: &[&str]) -> core::result::Result<Vec<u8>, types::Error> {
 fn read_all(path: &str) -> core::result::Result<Vec<u8>, types::Error> {
     let handle = fs::open(path, fs::O_READ).ok_or(types::Error::Crypto)?;
     let mut out = Vec::new();
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 8192];
     loop {
         match fs::read(handle, &mut buf) {
             Some(0) => break,
@@ -342,6 +387,7 @@ fn save_config(config: &RouterConfig) -> core::result::Result<(), types::Error> 
         directory_public_key: config.directory_public_key.clone(),
         router_id: config.router_id.clone(),
         skip_policy: Some(config.skip_policy),
+        policy_mode: Some(policy_mode_str(config.policy_mode).into()),
     };
     let data = serde_json::to_vec_pretty(&file).map_err(|_| types::Error::Crypto)?;
     write_all(ROUTER_CONFIG_PATH_SHORT, &data)
@@ -435,7 +481,7 @@ fn handle_cli_command(
             let _ = send_line(socket, "configure terminal");
             let _ = send_line(
                 socket,
-                "set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | router_id <id>",
+                "set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | router_id <id> | policy_mode route-only|full-policy",
             );
             let _ = send_line(socket, "commit | rollback | write memory | exit");
         }
@@ -509,10 +555,18 @@ fn handle_cli_command(
                         let _ = send_line(socket, "usage: set skip_policy true|false");
                     }
                 }
+                (Some("policy_mode"), Some(value)) => {
+                    if let Some(mode) = parse_policy_mode(value) {
+                        config.policy_mode = mode;
+                        let _ = send_line(socket, "ok (takes effect on restart)");
+                    } else {
+                        let _ = send_line(socket, "usage: set policy_mode route-only|full-policy");
+                    }
+                }
                 _ => {
                     let _ = send_line(
                         socket,
-                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | router_id <id> | skip_policy true|false",
+                        "usage: set listen_port <port> | storage_path <path> | cli_port <port> | directory_path <path> | directory_public_key <hex> | router_id <id> | skip_policy true|false | policy_mode route-only|full-policy",
                     );
                 }
             }
@@ -580,6 +634,7 @@ fn show_running_config(socket: &crate::socket::TcpSocket, config: &RouterConfig)
         "skip_policy",
         if config.skip_policy { "true" } else { "false" },
     );
+    let _ = send_kv_str(socket, "policy_mode", policy_mode_str(config.policy_mode));
 }
 
 fn show_startup_config(socket: &crate::socket::TcpSocket) {
@@ -610,10 +665,8 @@ fn show_routes(socket: &crate::socket::TcpSocket, router: &Router) {
         fmt_hex(&route.policy_id, &mut line);
         line.push_str(" segment_len=");
         let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{}", route.segment.0.len()));
-        if let Some(iface) = route.interface.as_ref() {
-            line.push_str(" interface=");
-            line.push_str(iface);
-        }
+        line.push_str(" interface=");
+        line.push_str(&route.interface);
         let _ = send_line(socket, &line);
     }
 }
@@ -679,7 +732,7 @@ fn send_bytes(
                 if retries >= MAX_SEND_RETRIES {
                     return Err(types::Error::Crypto);
                 }
-                sys::sleep(1);
+                sys::yield_now();
             }
             Ok(written) => {
                 offset += written;
@@ -690,7 +743,7 @@ fn send_bytes(
                 if retries >= MAX_SEND_RETRIES {
                     return Err(types::Error::Crypto);
                 }
-                sys::sleep(1);
+                sys::yield_now();
             }
         }
     }
@@ -706,7 +759,7 @@ fn read_line(
     loop {
         let n = socket.recv(&mut buf).map_err(|_| types::Error::Crypto)?;
         if n == 0 {
-            sys::sleep(1);
+            sys::yield_now();
             continue;
         }
         for &b in &buf[..n] {
@@ -840,6 +893,15 @@ fn load_directory_if_configured(
 fn log_line(msg: &str) {
     let _ = sys::write(1, msg.as_bytes());
     let _ = sys::write(1, b"\n");
+}
+
+fn log_mode(prefix: &str, mode: StoredStateMode) {
+    let mut msg = String::new();
+    let _ = core::fmt::Write::write_fmt(
+        &mut msg,
+        format_args!("{}={}", prefix, policy_mode_str(mode)),
+    );
+    log_line(&msg);
 }
 
 fn handle_setup_packet(

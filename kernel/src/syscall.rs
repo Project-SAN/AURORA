@@ -1,34 +1,118 @@
 use crate::arch::syscall::SyscallFrame;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
+use crate::fs;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use crate::interrupts;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
+use crate::net;
 use crate::serial;
-use crate::{fs, net, time, virtio};
+use crate::time;
 #[cfg(target_arch = "x86_64")]
+use crate::virtio as netdev;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+use crate::virtio_mmio as netdev;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::arch::asm;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::cell::UnsafeCell;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::mem::MaybeUninit;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::str;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const SYS_WRITE: u64 = 1;
+#[cfg(target_arch = "x86_64")]
 const SYS_EXIT: u64 = 2;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_YIELD: u64 = 3;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_SLEEP: u64 = 4;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_SOCKET: u64 = 9;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_LISTEN: u64 = 10;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_ACCEPT: u64 = 11;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_RECV: u64 = 12;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_SEND: u64 = 13;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_CLOSE: u64 = 14;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_NET_CONNECT: u64 = 15;
 const SYS_TIME_EPOCH: u64 = 16;
 const SYS_FS_OPEN: u64 = 32;
 const SYS_FS_READ: u64 = 33;
 const SYS_FS_WRITE: u64 = 34;
 const SYS_FS_CLOSE: u64 = 35;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const SYS_FS_MKDIR: u64 = 36;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_OPENDIR: u64 = 37;
+#[cfg(target_arch = "x86_64")]
 const SYS_FS_READDIR: u64 = 38;
 const SYS_FS_SYNC: u64 = 39;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 const TICK_MS: u64 = 10;
 
 struct YieldContext {
@@ -51,30 +135,94 @@ pub fn install_yield(stack: *mut net::NetStack, device: *mut net::VirtioDevice) 
 }
 
 pub extern "C" fn dispatch(frame: &mut SyscallFrame) {
-    let num = frame.rax;
-    frame.rax = match num {
-        SYS_WRITE => sys_write(frame.rdi, frame.rsi, frame.rdx),
-        SYS_EXIT => sys_exit(frame.rdi),
-        SYS_YIELD => sys_yield(),
-        SYS_SLEEP => sys_sleep(frame.rdi),
-        SYS_NET_SOCKET => sys_net_socket(),
-        SYS_NET_LISTEN => sys_net_listen(frame.rdi, frame.rsi),
-        SYS_NET_ACCEPT => sys_net_accept(frame.rdi),
-        SYS_NET_RECV => sys_net_recv(frame.rdi, frame.rsi, frame.rdx),
-        SYS_NET_SEND => sys_net_send(frame.rdi, frame.rsi, frame.rdx),
-        SYS_NET_CLOSE => sys_net_close(frame.rdi),
-        SYS_NET_CONNECT => sys_net_connect(frame.rdi, frame.rsi, frame.rdx),
+    let num = frame.number();
+    let ret = match num {
+        SYS_WRITE => sys_write(frame.arg0(), frame.arg1(), frame.arg2()),
         SYS_TIME_EPOCH => sys_time_epoch(),
-        SYS_FS_OPEN => sys_fs_open(frame.rdi, frame.rsi, frame.rdx as u32),
-        SYS_FS_READ => sys_fs_read(frame.rdi, frame.rsi, frame.rdx),
-        SYS_FS_WRITE => sys_fs_write(frame.rdi, frame.rsi, frame.rdx),
-        SYS_FS_CLOSE => sys_fs_close(frame.rdi),
-        SYS_FS_MKDIR => sys_fs_mkdir(frame.rdi, frame.rsi),
-        SYS_FS_OPENDIR => sys_fs_opendir(frame.rdi, frame.rsi),
-        SYS_FS_READDIR => sys_fs_readdir(frame.rdi, frame.rsi, frame.rdx),
+        #[cfg(target_arch = "x86_64")]
+        SYS_EXIT => sys_exit(frame.arg0()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_YIELD => sys_yield(),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_SLEEP => sys_sleep(frame.arg0()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_SOCKET => sys_net_socket(),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_LISTEN => sys_net_listen(frame.arg0(), frame.arg1()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_ACCEPT => sys_net_accept(frame.arg0()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_RECV => sys_net_recv(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_SEND => sys_net_send(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_CLOSE => sys_net_close(frame.arg0()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_NET_CONNECT => sys_net_connect(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_FS_OPEN => sys_fs_open(frame.arg0(), frame.arg1(), frame.arg2() as u32),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_FS_READ => sys_fs_read(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_FS_WRITE => sys_fs_write(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_FS_CLOSE => sys_fs_close(frame.arg0()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
+        SYS_FS_MKDIR => sys_fs_mkdir(frame.arg0(), frame.arg1()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_OPENDIR => sys_fs_opendir(frame.arg0(), frame.arg1()),
+        #[cfg(target_arch = "x86_64")]
+        SYS_FS_READDIR => sys_fs_readdir(frame.arg0(), frame.arg1(), frame.arg2()),
+        #[cfg(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        ))]
         SYS_FS_SYNC => sys_fs_sync(),
         _ => u64::MAX,
     };
+    frame.set_ret(ret);
 }
 
 fn sys_write(_fd: u64, buf: u64, len: u64) -> u64 {
@@ -88,15 +236,28 @@ fn sys_write(_fd: u64, buf: u64, len: u64) -> u64 {
     len
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_exit(_code: u64) -> u64 {
     0
 }
 
 fn sys_time_epoch() -> u64 {
-    match time::epoch_seconds_now(interrupts::ticks()) {
+    match time::epoch_seconds_now(current_ticks()) {
         Some(val) => val,
         None => u64::MAX,
     }
+}
+
+fn current_ticks() -> u64 {
+    interrupts::ticks()
+}
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+)))]
+fn current_ticks() -> u64 {
+    0
 }
 
 fn sys_fs_open(path: u64, len: u64, flags: u32) -> u64 {
@@ -154,6 +315,7 @@ fn sys_fs_mkdir(path: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_opendir(path: u64, len: u64) -> u64 {
     let path = match get_user_str(path, len) {
         Some(p) => p,
@@ -165,6 +327,7 @@ fn sys_fs_opendir(path: u64, len: u64) -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn sys_fs_readdir(handle: u64, buf: u64, len: u64) -> u64 {
     if buf == 0 || len < core::mem::size_of::<fs::Dirent>() as u64 {
         return u64::MAX;
@@ -190,7 +353,7 @@ fn sys_yield() -> u64 {
         let _ = stack.poll(device, net::now());
         0
     });
-    virtio::reclaim_tx();
+    netdev::reclaim_tx();
     result
 }
 
@@ -200,6 +363,7 @@ fn sys_sleep(ms: u64) -> u64 {
     }
     let wait_ticks = (ms + (TICK_MS - 1)) / TICK_MS;
     let target = interrupts::ticks().saturating_add(wait_ticks);
+    #[cfg(target_arch = "x86_64")]
     let had_if = (read_rflags() & (1 << 9)) != 0;
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -211,9 +375,17 @@ fn sys_sleep(ms: u64) -> u64 {
         unsafe {
             asm!("hlt", options(nomem, nostack));
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+        unsafe {
+            asm!("wfi", options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            all(target_arch = "aarch64", target_os = "uefi")
+        )))]
         core::hint::spin_loop();
     }
+    #[cfg(target_arch = "x86_64")]
     if !had_if {
         #[cfg(target_arch = "x86_64")]
         unsafe {
@@ -365,11 +537,6 @@ fn read_rflags() -> u64 {
         asm!("pushfq; pop {}", out(reg) rflags, options(nomem, preserves_flags));
     }
     rflags
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn read_rflags() -> u64 {
-    0
 }
 
 fn get_user_str(ptr: u64, len: u64) -> Option<&'static str> {

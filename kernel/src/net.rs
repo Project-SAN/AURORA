@@ -2,14 +2,17 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::phy::{Checksum, Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
 use crate::interrupts;
 use crate::serial;
-use crate::virtio;
+#[cfg(target_arch = "x86_64")]
+use crate::virtio as transport;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+use crate::virtio_mmio as transport;
 
 const IP_ADDR: [u8; 4] = [10, 0, 2, 15];
 const GW_ADDR: [u8; 4] = [10, 0, 2, 2];
@@ -29,8 +32,12 @@ const EPHEMERAL_END: u16 = 65534;
 const MAX_SOCKETS: usize = 64;
 
 pub fn now() -> Instant {
-    let ms = interrupts::ticks().saturating_mul(10);
+    let ms = current_ticks().saturating_mul(10);
     Instant::from_millis(ms as i64)
+}
+
+fn current_ticks() -> u64 {
+    interrupts::ticks()
 }
 
 pub struct VirtioDevice {
@@ -218,24 +225,7 @@ impl NetStack {
         let handle = self.entries[idx].handle;
         let socket = self.sockets.get_mut::<tcp::Socket>(handle);
         match socket.recv_slice(buf) {
-            Ok(size) => {
-                if size == 0 && buf.len() <= 4 {
-                    serial::write(format_args!(
-                        "net: recv zero id={} handle={:?} entry_state={:?} tcp_state={:?} active={} open={} may_recv={} may_send={} recv_q={} send_q={}\n",
-                        id,
-                        handle,
-                        self.entries[idx].state,
-                        socket.state(),
-                        socket.is_active(),
-                        socket.is_open(),
-                        socket.may_recv(),
-                        socket.may_send(),
-                        socket.recv_queue(),
-                        socket.send_queue()
-                    ));
-                }
-                size
-            }
+            Ok(size) => size,
             Err(_) => {
                 if buf.len() <= 4 {
                     serial::write(format_args!(
@@ -466,7 +456,7 @@ impl TxToken for VirtioTxToken {
         }
         frame.resize(len, 0);
         let result = f(&mut frame);
-        if !virtio::send_frame(&frame) {
+        if !transport::send_frame(&frame) {
             serial::write(format_args!("smoltcp: tx drop\n"));
         }
         if !self.pool.is_null() {
@@ -500,7 +490,7 @@ impl Device for VirtioDevice {
             frame.reserve(FRAME_BUF_SIZE - frame.capacity());
         }
         frame.resize(FRAME_BUF_SIZE, 0);
-        let len = match virtio::recv_frame_into(&mut frame) {
+        let len = match transport::recv_frame_into(&mut frame) {
             Some(len) => len,
             None => {
                 frame.clear();
@@ -532,6 +522,12 @@ impl Device for VirtioDevice {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ethernet;
         caps.max_transmission_unit = 1514;
+        // QEMU/slirp hostfwd can deliver virtio-net RX frames whose transport
+        // checksum state is not useful to smoltcp. Still compute TX checksums
+        // in software because the driver does not advertise host offloads.
+        caps.checksum.ipv4 = Checksum::Tx;
+        caps.checksum.udp = Checksum::Tx;
+        caps.checksum.tcp = Checksum::Tx;
         caps
     }
 }

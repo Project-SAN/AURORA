@@ -1,6 +1,4 @@
 use crate::socket::{Error, TcpListener, TcpSocket};
-use crate::sys;
-use core::arch::asm;
 
 const MAX_CLIENTS: usize = 4;
 const BUF_SIZE: usize = 512;
@@ -15,16 +13,6 @@ struct ClientSlot {
 }
 
 impl ClientSlot {
-    const fn new() -> Self {
-        Self {
-            socket: TcpSocket { handle: 0 },
-            socket_valid: false,
-            buf: [0u8; BUF_SIZE],
-            pending_len: 0,
-            pending_off: 0,
-        }
-    }
-
     fn clear(&mut self) {
         self.socket_valid = false;
         self.pending_len = 0;
@@ -38,14 +26,6 @@ pub struct EchoServer {
 }
 
 impl EchoServer {
-    pub fn new(port: u16) -> Result<Self, Error> {
-        let listener = TcpListener::listen(port)?;
-        Ok(Self {
-            listener,
-            clients: [ClientSlot::new(); MAX_CLIENTS],
-        })
-    }
-
     pub unsafe fn init_in_place(
         slot: *mut core::mem::MaybeUninit<Self>,
         port: u16,
@@ -54,6 +34,16 @@ impl EchoServer {
         core::ptr::write_bytes(ptr as *mut u8, 0, core::mem::size_of::<Self>());
         let listener = TcpListener::listen(port)?;
         core::ptr::write(&mut (*ptr).listener, listener);
+        core::ptr::write(
+            &mut (*ptr).clients,
+            [ClientSlot {
+                socket: TcpSocket { handle: 0 },
+                socket_valid: false,
+                buf: [0u8; BUF_SIZE],
+                pending_len: 0,
+                pending_off: 0,
+            }; MAX_CLIENTS],
+        );
         Ok(())
     }
 
@@ -105,26 +95,6 @@ impl EchoServer {
                     slot.clear();
                 }
             }
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub fn run_echo_server(port: u16) -> ! {
-    let mut server = match EchoServer::new(port) {
-        Ok(server) => server,
-        Err(_) => loop {
-            sys::sleep(1000);
-            unsafe {
-                asm!("pause");
-            }
-        },
-    };
-    loop {
-        server.poll();
-        sys::sleep(1);
-        unsafe {
-            asm!("pause");
         }
     }
 }

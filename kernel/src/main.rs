@@ -1,44 +1,140 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
-#![feature(abi_x86_interrupt)]
-#![allow(dead_code)]
-
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 extern crate alloc;
 
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod acpi;
+#[cfg(target_arch = "x86_64")]
 mod apic;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod arch;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+mod device_tree;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod fs;
 mod heap;
+#[cfg(target_arch = "x86_64")]
 mod hpet;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod interrupts;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod memory;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod net;
+#[cfg(target_arch = "x86_64")]
 mod paging;
+#[cfg(target_arch = "x86_64")]
 mod pci;
+#[cfg(target_arch = "x86_64")]
 mod port;
 mod serial;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod syscall;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod time;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 mod user;
+#[cfg(target_arch = "x86_64")]
 mod virtio;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+mod virtio_mmio;
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
-use uefi::table::boot::MemoryType;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
+use uefi::table::boot::{MemoryMap, MemoryType};
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+const DEVICE_TREE_GUID: uefi::Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 
 #[entry]
 fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     serial::init();
     heap::init();
     serial::write(format_args!("Hello from AURORA UEFI kernel\n"));
+    serial::write(format_args!("arch={}\n", arch_name()));
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        boot_x86_64(system_table)
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+    {
+        boot_aarch64(system_table)
+    }
+
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_os = "uefi")
+    )))]
+    {
+        let _ = system_table;
+        serial::write(format_args!("unsupported architecture\n"));
+        Status::UNSUPPORTED
+    }
+}
+
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
+fn log_uefi_time(system_table: &SystemTable<Boot>) {
+    let ticks_now = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            interrupts::ticks()
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            0
+        }
+    };
 
     match system_table.runtime_services().get_time() {
         Ok(time) => {
-            if time::init_from_uefi(time, interrupts::ticks()) {
+            if time::init_from_uefi(time, ticks_now) {
                 serial::write(format_args!("UEFI time captured\n"));
+                if let Some(epoch) = time::epoch_seconds_now(ticks_now) {
+                    serial::write(format_args!("UEFI epoch={}\n", epoch));
+                }
             } else {
                 serial::write(format_args!("UEFI time invalid\n"));
             }
@@ -47,6 +143,59 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
             serial::write(format_args!("UEFI time unavailable\n"));
         }
     }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn log_memory_region(map: &MemoryMap, label: &str, addr: u64) {
+    for desc in map.entries() {
+        let start = desc.phys_start;
+        let end = desc.phys_start + desc.page_count * memory::PAGE_SIZE;
+        if addr >= start && addr < end {
+            serial::write(format_args!(
+                "mem {}: addr={:#x} ty={:?} range=[{:#x}..{:#x})\n",
+                label, addr, desc.ty, start, end
+            ));
+            return;
+        }
+    }
+    serial::write(format_args!("mem {}: addr={:#x} not found\n", label, addr));
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn log_code_regions(map: &MemoryMap) {
+    for desc in map.entries() {
+        if matches!(
+            desc.ty,
+            MemoryType::LOADER_CODE | MemoryType::BOOT_SERVICES_CODE
+        ) {
+            let start = desc.phys_start;
+            let end = desc.phys_start + desc.page_count * memory::PAGE_SIZE;
+            serial::write(format_args!(
+                "code region: ty={:?} range=[{:#x}..{:#x})\n",
+                desc.ty, start, end
+            ));
+        }
+    }
+}
+
+const fn arch_name() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64"
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        "unknown"
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn boot_x86_64(system_table: SystemTable<Boot>) -> Status {
+    log_uefi_time(&system_table);
 
     let rsdp_addr = find_rsdp(&system_table);
     let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
@@ -91,11 +240,7 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         Some(addr) => addr,
         None => {
             serial::write(format_args!("Stack alloc failed; staying in low half\n"));
-            loop {
-                unsafe {
-                    core::arch::asm!("hlt");
-                }
-            }
+            halt_loop()
         }
     };
 
@@ -108,6 +253,196 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     unsafe { enter_higher_half(rsdp_addr, stack_phys, stack_pages) }
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn boot_aarch64(system_table: SystemTable<Boot>) -> Status {
+    const RUN_USERLAND: bool = cfg!(feature = "userland");
+
+    serial::write(format_args!("AArch64 boot path active\n"));
+    log_uefi_time(&system_table);
+
+    let prepared_user = if RUN_USERLAND {
+        serial::write(format_args!("boot: preparing userland\n"));
+        user::prepare_user_image(system_table.boot_services(), user::USER_ELF)
+    } else {
+        None
+    };
+
+    let rsdp_addr = find_rsdp(&system_table);
+    let dtb_addr = find_dtb(&system_table);
+    let dt_info = if dtb_addr != 0 {
+        device_tree::parse(dtb_addr)
+    } else {
+        None
+    };
+    if let Some(info) = dt_info.as_ref() {
+        virtio_mmio::install_discovered_devices(&info.virtio_mmio);
+        serial::write(format_args!(
+            "DT: interrupt_model={} virtio-mmio={}\n",
+            info.interrupt_model.is_some(),
+            info.virtio_mmio.len()
+        ));
+    } else {
+        virtio_mmio::install_discovered_devices(&[]);
+    }
+
+    let interrupt_config = if rsdp_addr != 0 {
+        acpi::arm_interrupt_model(rsdp_addr)
+            .map(|config| ("ACPI", config))
+            .or_else(|| {
+                dt_info
+                    .as_ref()?
+                    .interrupt_model
+                    .map(|config| ("DT", config))
+            })
+    } else {
+        dt_info
+            .as_ref()
+            .and_then(|info| info.interrupt_model.map(|config| ("DT", config)))
+    };
+
+    let (_rt, memory_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
+    let entries = memory_map.entries().count();
+    serial::write(format_args!(
+        "Exited boot services. Memory map entries: {}\n",
+        entries
+    ));
+    if let Some(image) = prepared_user.as_ref() {
+        log_memory_region(
+            &memory_map,
+            "user-entry",
+            image.entry & !(memory::PAGE_SIZE - 1),
+        );
+    }
+    log_memory_region(
+        &memory_map,
+        "user-stack",
+        user::USER_STACK_TOP - memory::PAGE_SIZE,
+    );
+    log_code_regions(&memory_map);
+
+    let stats = memory::init(&memory_map);
+    serial::write(format_args!(
+        "Memory: usable={} KiB regions={}\n",
+        stats.total_usable / 1024,
+        stats.region_count
+    ));
+
+    arch::init(0);
+    serial::write(format_args!(
+        "AArch64 exception state: el={} vbar={:#x}\n",
+        arch::syscall::current_el(),
+        arch::syscall::vector_base()
+    ));
+    if let Some((source, config)) = interrupt_config {
+        if interrupts::init(&config) {
+            serial::write(format_args!(
+                "AArch64 GIC/timer enabled via {} discovery\n",
+                source
+            ));
+        } else {
+            serial::write(format_args!(
+                "AArch64 GIC/timer init failed via {} discovery\n",
+                source
+            ));
+        }
+    } else {
+        serial::write(format_args!("AArch64 GIC/timer discovery failed\n"));
+    }
+
+    if let Some(buf) = memory::alloc_dma_pages(2) {
+        serial::write(format_args!(
+            "DMA test: phys={:#x} size={} bytes\n",
+            buf.phys, buf.size
+        ));
+    } else {
+        serial::write(format_args!("DMA test: allocation failed\n"));
+    }
+
+    if let Some(norm) = memory::alloc_normal_pages(4) {
+        serial::write(format_args!("Normal alloc: phys={:#x} pages=4\n", norm));
+        memory::free_contiguous(norm, 4);
+        serial::write(format_args!("Normal free: ok\n"));
+    } else {
+        serial::write(format_args!("Normal alloc: failed\n"));
+    }
+
+    if let Some(scratch_phys) = memory::alloc_contiguous(1) {
+        let scratch = memory::phys_to_virt(scratch_phys);
+        unsafe { core::ptr::write_bytes(scratch, 0xA5, memory::PAGE_SIZE as usize) };
+        serial::write(format_args!(
+            "Scratch page: phys={:#x} virt={:p}\n",
+            scratch_phys, scratch
+        ));
+        memory::free_contiguous(scratch_phys, 1);
+        serial::write(format_args!("Scratch page free: ok\n"));
+    } else {
+        serial::write(format_args!("Scratch page alloc: failed\n"));
+    }
+
+    if arch::syscall::self_test() {
+        serial::write(format_args!("AArch64 SVC self-test: ok\n"));
+    } else {
+        serial::write(format_args!("AArch64 SVC self-test: failed\n"));
+    }
+
+    if rsdp_addr == 0 {
+        serial::write(format_args!("ACPI RSDP not found\n"));
+    } else {
+        serial::write(format_args!("ACPI RSDP at {:#x}\n", rsdp_addr));
+    }
+
+    if RUN_USERLAND {
+        if let Some(image) = prepared_user {
+            if !arch::mmu::activate_user_map(&memory_map) {
+                serial::write(format_args!("AArch64 user map activation failed\n"));
+                halt_loop();
+            }
+            serial::write(format_args!("boot: before fs::init\n"));
+            let fs_ok = fs::init();
+            serial::write(format_args!("boot: after fs::init ok={}\n", fs_ok));
+            let mut net_device = net::VirtioDevice::new();
+            let mut net_stack = None;
+            let mut net_bases = [0u64; 4];
+            let net_count = virtio_mmio::scan_net_devices(&mut net_bases);
+            if net_count == 0 {
+                serial::write(format_args!("virtio-mmio: net not found\n"));
+            } else if virtio_mmio::init_net(net_bases[0]) {
+                if let Some(mac) = virtio_mmio::mac_address() {
+                    net_stack = Some(net::NetStack::new(mac, &mut net_device, net::now()));
+                    if let Some(stack) = net_stack.as_mut() {
+                        let _ = stack.poll(&mut net_device, net::now());
+                        if let Some(irq) = virtio_mmio::discovered_interrupt(net_bases[0]) {
+                            interrupts::register_irq_intid(irq.intid, irq.edge_triggered, true);
+                        } else {
+                            interrupts::register_virtio_mmio_irq(net_bases[0], true);
+                        }
+                        syscall::install_yield(stack as *mut _, &mut net_device as *mut _);
+                        serial::write(format_args!("boot: after virtio-net init ok=1\n"));
+                    }
+                } else {
+                    serial::write(format_args!("virtio-mmio: net mac unavailable\n"));
+                }
+            } else {
+                serial::write(format_args!("virtio-mmio: net init failed\n"));
+            }
+            serial::write(format_args!(
+                "userland: entry={:#x} stack={:#x}\n",
+                image.entry, image.stack_top
+            ));
+            if net_stack.is_none() {
+                serial::write(format_args!("boot: continuing without network context\n"));
+            }
+            unsafe { enter_user(image.entry, image.stack_top) };
+        } else {
+            serial::write(format_args!("userland: prepare failed\n"));
+        }
+    }
+
+    serial::write(format_args!("AArch64 M1 reached; halting\n"));
+    halt_loop()
+}
+
+#[cfg(target_arch = "x86_64")]
 extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     serial::write(format_args!("Entered higher-half\n"));
 
@@ -118,11 +453,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
         Some(addr) => addr,
         None => {
             serial::write(format_args!("Syscall stack alloc failed\n"));
-            loop {
-                unsafe {
-                    core::arch::asm!("hlt");
-                }
-            }
+            halt_loop()
         }
     };
     let syscall_stack_top = paging::to_higher_half(
@@ -228,9 +559,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
 
     let mut last_tick = 0;
     loop {
-        unsafe {
-            core::arch::asm!("hlt");
-        }
+        halt_once();
         let now = interrupts::ticks();
         if let Some(stack) = net_stack.as_mut() {
             let (rx_irq, tx_irq) = interrupts::net_pending();
@@ -268,6 +597,7 @@ extern "C" fn higher_half_main(rsdp_addr: u64) -> ! {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
     let user_cs = (arch::gdt::USER_CODE | 3) as u64;
     let user_ss = (arch::gdt::USER_DATA | 3) as u64;
@@ -303,6 +633,25 @@ unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
     );
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+unsafe fn enter_user(entry: u64, stack_top: u64) -> ! {
+    serial::write(format_args!(
+        "enter_user: pc={:#x} sp={:#x} -> EL0\n",
+        entry, stack_top
+    ));
+    core::arch::asm!(
+        "msr SP_EL0, {stack_top}",
+        "msr ELR_EL1, {entry}",
+        "msr SPSR_EL1, xzr",
+        "isb",
+        "eret",
+        stack_top = in(reg) stack_top,
+        entry = in(reg) entry,
+        options(noreturn)
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
 fn read_rflags() -> u64 {
     let rflags: u64;
     unsafe {
@@ -311,6 +660,7 @@ fn read_rflags() -> u64 {
     rflags
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize) -> ! {
     let stack_top = paging::to_higher_half(stack_phys + (stack_pages as u64) * memory::PAGE_SIZE);
     let target = paging::to_higher_half(higher_half_main as *const () as u64);
@@ -325,6 +675,29 @@ unsafe fn enter_higher_half(rsdp_addr: u64, stack_phys: u64, stack_pages: usize)
     );
 }
 
+fn halt_loop() -> ! {
+    loop {
+        halt_once();
+    }
+}
+
+fn halt_once() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("hlt");
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_os = "uefi")
+    )))]
+    core::hint::spin_loop();
+}
+
+#[cfg(target_arch = "x86_64")]
 fn schedule_next_poll(now_ticks: u64, delay_ms: Option<u64>) -> Option<u64> {
     delay_ms.map(|ms| {
         let mut ticks = (ms + 9) / 10;
@@ -335,6 +708,10 @@ fn schedule_next_poll(now_ticks: u64, delay_ms: Option<u64>) -> Option<u64> {
     })
 }
 
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "aarch64", target_os = "uefi")
+))]
 fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
     for entry in system_table.config_table() {
         if entry.guid == ACPI2_GUID || entry.guid == ACPI_GUID {
@@ -344,28 +721,24 @@ fn find_rsdp(system_table: &SystemTable<Boot>) -> u64 {
     0
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+fn find_dtb(system_table: &SystemTable<Boot>) -> u64 {
+    for entry in system_table.config_table() {
+        if entry.guid == DEVICE_TREE_GUID {
+            return entry.address as u64;
+        }
+    }
+    0
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     serial::write(format_args!("PANIC: {}\n", info));
-    loop {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            core::arch::asm!("hlt");
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        core::hint::spin_loop();
-    }
+    halt_loop()
 }
 
 #[alloc_error_handler]
 fn alloc_error(layout: core::alloc::Layout) -> ! {
     serial::write(format_args!("OOM: {:?}\n", layout));
-    loop {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            core::arch::asm!("hlt");
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        core::hint::spin_loop();
-    }
+    halt_loop()
 }

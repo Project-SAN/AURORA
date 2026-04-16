@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+#[cfg(target_arch = "x86_64")]
 use core::mem::size_of;
 use core::str;
 
@@ -9,25 +10,30 @@ use hadris_fat::structures::directory::{Directory, FileAttributes, FileEntry};
 use hadris_fat::structures::fat::{self, Fat32};
 use hadris_fat::structures::fs_info::FsInfo;
 use hadris_fat::structures::raw::boot_sector::RawBootSector;
+#[cfg(target_arch = "x86_64")]
 use hadris_fat::structures::raw::directory::RawDirectoryEntry;
 use hadris_fat::structures::time::{FatTime, FatTimeHighP};
 use hadris_fat::structures::FatStr;
 
-use crate::interrupts;
-use crate::pci;
 use crate::serial;
 use crate::time;
-use crate::virtio;
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+use crate::virtio_mmio as virtio;
+#[cfg(target_arch = "x86_64")]
+use crate::{interrupts, pci, virtio};
 
 const BLOCK_SIZE: usize = 512;
+#[cfg(target_arch = "x86_64")]
 const DIR_ENTRY_SIZE: usize = size_of::<RawDirectoryEntry>();
 const MAX_HANDLES: usize = 64;
 
+#[cfg(target_arch = "x86_64")]
 pub const O_READ: u32 = 1;
 pub const O_WRITE: u32 = 2;
 pub const O_CREATE: u32 = 4;
 pub const O_TRUNC: u32 = 8;
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Dirent {
@@ -41,6 +47,7 @@ pub struct Dirent {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HandleKind {
     File,
+    #[cfg(target_arch = "x86_64")]
     Dir,
 }
 
@@ -53,7 +60,9 @@ struct Handle {
     entry_cluster: u32,
     entry_index: usize,
     flags: u32,
+    #[cfg(target_arch = "x86_64")]
     dir_cluster: u32,
+    #[cfg(target_arch = "x86_64")]
     dir_index: usize,
 }
 
@@ -102,6 +111,7 @@ pub fn open(path: &str, flags: u32) -> Option<u64> {
     with_fs(None, |fs| fs.open_file(path, flags))
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn opendir(path: &str) -> Option<u64> {
     with_fs(None, |fs| fs.open_dir(path))
 }
@@ -122,6 +132,7 @@ pub fn mkdir(path: &str) -> bool {
     with_fs(false, |fs| fs.mkdir(path))
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn readdir(handle: u64, out: &mut Dirent) -> Option<bool> {
     with_fs(None, |fs| fs.read_dir(handle, out))
 }
@@ -153,35 +164,83 @@ fn mount_ramdisk() -> Option<FsState> {
 
 fn mount_virtio_blk() -> Option<FsState> {
     serial::write(format_args!("fs: mount_virtio_blk start\n"));
-    let dev = pci::find_virtio_blk()?;
-    serial::write(format_args!(
-        "fs: virtio-blk dev {:02x}:{:02x}.{}\n",
-        dev.bus, dev.device, dev.function
-    ));
-    pci::enable_bus_master(&dev);
-    serial::write(format_args!("fs: virtio-blk bus master enabled\n"));
-    if !virtio::init_blk(&dev) {
-        serial::write(format_args!("fs: virtio::init_blk failed\n"));
-        return None;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let dev = pci::find_virtio_blk()?;
+        serial::write(format_args!(
+            "fs: virtio-blk dev {:02x}:{:02x}.{}\n",
+            dev.bus, dev.device, dev.function
+        ));
+        pci::enable_bus_master(&dev);
+        serial::write(format_args!("fs: virtio-blk bus master enabled\n"));
+        if !virtio::init_blk(&dev) {
+            serial::write(format_args!("fs: virtio::init_blk failed\n"));
+            return None;
+        }
+        serial::write(format_args!("fs: virtio::init_blk ok\n"));
+        let sectors = virtio::blk_capacity_sectors()?;
+        serial::write(format_args!("fs: blk sectors={}\n", sectors));
+        if sectors == 0 {
+            serial::write(format_args!("fs: blk sectors=0\n"));
+            return None;
+        }
+        let total = sectors as usize * BLOCK_SIZE;
+        serial::write(format_args!("fs: blk total bytes={}\n", total));
+        let mut storage = Vec::with_capacity(total);
+        storage.resize(total, 0);
+        serial::write(format_args!("fs: blk read start\n"));
+        if !virtio::blk_read(0, &mut storage) {
+            serial::write(format_args!("fs: blk read failed\n"));
+            return None;
+        }
+        serial::write(format_args!("fs: blk read ok\n"));
+        mount_from_storage(storage, FsDevice::VirtioBlk { sectors })
     }
-    serial::write(format_args!("fs: virtio::init_blk ok\n"));
-    let sectors = virtio::blk_capacity_sectors()?;
-    serial::write(format_args!("fs: blk sectors={}\n", sectors));
-    if sectors == 0 {
-        serial::write(format_args!("fs: blk sectors=0\n"));
-        return None;
+
+    #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+    {
+        let mut bases = [0u64; 8];
+        let count = virtio::scan_blk_devices(&mut bases);
+        if count == 0 {
+            serial::write(format_args!("fs: no virtio-mmio blk devices\n"));
+            return None;
+        }
+        let mut fallback = None;
+        for &base in bases[..count].iter() {
+            serial::write(format_args!("fs: try virtio-mmio blk base={:#x}\n", base));
+            if !virtio::init_blk(base) {
+                continue;
+            }
+            let sectors = match virtio::blk_capacity_sectors() {
+                Some(sectors) if sectors != 0 => sectors,
+                _ => continue,
+            };
+            let total = sectors as usize * BLOCK_SIZE;
+            let mut storage = Vec::with_capacity(total);
+            storage.resize(total, 0);
+            if !virtio::blk_read(0, &mut storage) {
+                serial::write(format_args!("fs: blk read failed base={:#x}\n", base));
+                continue;
+            }
+            if let Some(fs) = mount_from_storage(storage, FsDevice::VirtioBlk { sectors }) {
+                if fs.resolve_dir("/HELLO").is_some() {
+                    serial::write(format_args!(
+                        "fs: selected virtio-mmio blk base={:#x} with /HELLO\n",
+                        base
+                    ));
+                    return Some(fs);
+                }
+                if fallback.is_none() {
+                    serial::write(format_args!(
+                        "fs: selected fallback virtio-mmio blk base={:#x}\n",
+                        base
+                    ));
+                    fallback = Some(fs);
+                }
+            }
+        }
+        fallback
     }
-    let total = sectors as usize * BLOCK_SIZE;
-    serial::write(format_args!("fs: blk total bytes={}\n", total));
-    let mut storage = Vec::with_capacity(total);
-    storage.resize(total, 0);
-    serial::write(format_args!("fs: blk read start\n"));
-    if !virtio::blk_read(0, &mut storage) {
-        serial::write(format_args!("fs: blk read failed\n"));
-        return None;
-    }
-    serial::write(format_args!("fs: blk read ok\n"));
-    mount_from_storage(storage, FsDevice::VirtioBlk { sectors })
 }
 
 fn mount_from_storage(mut storage: Vec<u8>, device: FsDevice) -> Option<FsState> {
@@ -591,7 +650,9 @@ impl FsState {
                 entry_cluster: cluster,
                 entry_index: index,
                 flags,
+                #[cfg(target_arch = "x86_64")]
                 dir_cluster: 0,
+                #[cfg(target_arch = "x86_64")]
                 dir_index: 0,
             });
         }
@@ -618,11 +679,14 @@ impl FsState {
             entry_cluster: cluster,
             entry_index: index,
             flags,
+            #[cfg(target_arch = "x86_64")]
             dir_cluster: 0,
+            #[cfg(target_arch = "x86_64")]
             dir_index: 0,
         })
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn open_dir(&mut self, path: &str) -> Option<u64> {
         let cluster = self.resolve_dir(path)?;
         self.alloc_handle(Handle {
@@ -774,6 +838,7 @@ impl FsState {
         true
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn read_dir(&mut self, handle: u64, out: &mut Dirent) -> Option<bool> {
         let handle_idx = usize::try_from(handle).ok()?;
         let mut h = self.handles.get(handle_idx)?.clone()?;
@@ -1130,6 +1195,7 @@ fn fat_ext_to_str(ext: &FatStr<3>) -> &str {
     str::from_utf8(&ext.as_slice()[..len]).unwrap_or("")
 }
 
+#[cfg(target_arch = "x86_64")]
 fn fill_dirent(
     out: &mut Dirent,
     entry: &FileEntry,
@@ -1160,13 +1226,23 @@ fn fill_dirent(
 }
 
 fn fat_time_now() -> (FatTimeHighP, FatTime) {
-    let epoch = time::epoch_seconds_now(interrupts::ticks()).unwrap_or(0);
+    let epoch = time::epoch_seconds_now(current_ticks()).unwrap_or(0);
     let (year, month, day, hour, minute, second) = epoch_to_ymdhms(epoch);
     let year = year.clamp(1980, 2107);
     let date = (((year - 1980) as u16) << 9) | ((month as u16) << 5) | (day as u16);
     let time_val = ((hour as u16) << 11) | ((minute as u16) << 5) | ((second as u16) / 2);
     let fat = FatTime::new(time_val, date);
     (FatTimeHighP::new(0, time_val, date), fat)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_ticks() -> u64 {
+    interrupts::ticks()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn current_ticks() -> u64 {
+    0
 }
 
 fn epoch_to_ymdhms(epoch: u64) -> (u16, u8, u8, u8, u8, u8) {

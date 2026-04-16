@@ -388,10 +388,7 @@ impl Router {
             grouped.entry(route.policy_id).or_default().push(route);
         }
         for (policy_id, list) in grouped {
-            if let Some(index) = list
-                .iter()
-                .position(|route| route.interface == node_id)
-            {
+            if let Some(index) = list.iter().position(|route| route.interface == node_id) {
                 let role = if index == 0 {
                     PolicyRole::Entry
                 } else if index + 1 == list.len() {

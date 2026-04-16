@@ -6,7 +6,6 @@ extern crate std;
 
 pub mod adapters;
 pub mod application;
-pub mod config;
 pub mod control;
 pub mod core;
 pub mod crypto;

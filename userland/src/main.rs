@@ -3,54 +3,82 @@
 #![feature(alloc_error_handler)]
 
 use core::arch::asm;
-use core::cell::UnsafeCell;
-use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 mod allocator;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod echo;
 mod fs;
+#[cfg(target_arch = "x86_64")]
 mod http;
-#[cfg(feature = "router")]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod router_app;
-#[cfg(feature = "router")]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod router_io;
-#[cfg(feature = "router")]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod router_storage;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod socket;
 mod sys;
-#[cfg(feature = "router")]
+#[cfg(all(
+    feature = "router",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod time_provider;
-
-const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
-const HTTP_PORT: u16 = 8080;
-const HTTP_PATH: &str = "/";
-const HTTP_HOST: &str = "10.0.2.2";
-const ECHO_PORT: u16 = 1234;
-const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
-const RUN_HTTP_CLIENT: bool = true;
-const RUN_ECHO_SERVER: bool = false;
-#[cfg(feature = "router")]
-const RUN_ROUTER: bool = true;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     allocator::init();
-    let msg = b"Hello from userland\n";
-    sys::write(1, msg);
+    let _ = sys::write(1, b"Hello from userland\n");
+    if let Some(epoch) = sys::time_epoch() {
+        let _ = sys::write(1, b"userland epoch=");
+        write_decimal(epoch);
+        let _ = sys::write(1, b"\n");
+    }
+    run_userland()
+}
+
+#[cfg(target_arch = "x86_64")]
+use core::cell::UnsafeCell;
+#[cfg(target_arch = "x86_64")]
+use core::mem::MaybeUninit;
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_arch = "x86_64")]
+const HTTP_IP: [u8; 4] = [10, 0, 2, 2];
+#[cfg(target_arch = "x86_64")]
+const HTTP_PORT: u16 = 8080;
+#[cfg(target_arch = "x86_64")]
+const HTTP_PATH: &str = "/";
+#[cfg(target_arch = "x86_64")]
+const HTTP_HOST: &str = "10.0.2.2";
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const ECHO_PORT: u16 = 1234;
+const FS_TEST_PATH: &str = "/HELLO/WRITE.TXT";
+#[cfg(target_arch = "x86_64")]
+const RUN_HTTP_CLIENT: bool = true;
+#[cfg(target_arch = "x86_64")]
+const RUN_ECHO_SERVER: bool = false;
+#[cfg(feature = "router")]
+const RUN_ROUTER: bool = true;
+
+#[cfg(target_arch = "x86_64")]
+fn run_x86_userland() -> ! {
     #[cfg(feature = "router")]
     if RUN_ROUTER {
         let _ = sys::write(1, b"userland: entering run_router\n");
         router_app::run_router();
     }
     fs_persist_test();
-    if let Some(epoch) = sys::time_epoch() {
-        let _ = sys::write(1, b"epoch=");
-        write_decimal(epoch);
-        let _ = sys::write(1, b"\n");
-    } else {
-        let _ = sys::write(1, b"epoch=unavailable\n");
-    }
 
     if RUN_ECHO_SERVER {
         let ok = unsafe { echo::EchoServer::init_in_place(ECHO_SERVER.get(), ECHO_PORT).is_ok() };
@@ -100,14 +128,59 @@ pub extern "C" fn _start() -> ! {
             }
         }
         sys::sleep(1);
-        unsafe {
-            asm!("pause");
+        arch_relax();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_aarch64_userland() -> ! {
+    #[cfg(feature = "router")]
+    if RUN_ROUTER {
+        let _ = sys::write(1, b"userland: entering run_router\n");
+        router_app::run_router();
+    }
+    fs_persist_test();
+    let mut server = core::mem::MaybeUninit::<echo::EchoServer>::uninit();
+    match unsafe { echo::EchoServer::init_in_place(&mut server, ECHO_PORT) } {
+        Ok(()) => {
+            let _ = sys::write(1, b"userland: echo server listening on 1234\n");
+            let mut server = unsafe { server.assume_init() };
+            loop {
+                server.poll();
+                sys::sleep(1);
+                arch_relax();
+            }
         }
+        Err(_) => {
+            let _ = sys::write(1, b"userland: echo init failed\n");
+        }
+    }
+    loop {
+        sys::sleep(1);
+        arch_relax();
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_userland() -> ! {
+    run_x86_userland()
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_userland() -> ! {
+    run_aarch64_userland()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn run_userland() -> ! {
+    loop {
+        arch_relax();
     }
 }
 
 fn fs_persist_test() {
     let _ = sys::write(1, b"fs: persist test\n");
+    let _ = fs::mkdir("/HELLO");
 
     if let Some(fd) = fs::open(FS_TEST_PATH, fs::O_READ) {
         let mut buf = [0u8; 128];
@@ -157,10 +230,13 @@ fn fs_persist_test() {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 struct StaticCell<T>(UnsafeCell<MaybeUninit<T>>);
 
+#[cfg(target_arch = "x86_64")]
 unsafe impl<T> Sync for StaticCell<T> {}
 
+#[cfg(target_arch = "x86_64")]
 impl<T> StaticCell<T> {
     const fn new() -> Self {
         Self(UnsafeCell::new(MaybeUninit::uninit()))
@@ -171,9 +247,13 @@ impl<T> StaticCell<T> {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 static ECHO_SERVER: StaticCell<echo::EchoServer> = StaticCell::new();
+#[cfg(target_arch = "x86_64")]
 static HTTP_CLIENT: StaticCell<http::HttpClient> = StaticCell::new();
+#[cfg(target_arch = "x86_64")]
 static ECHO_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
 static HTTP_READY: AtomicBool = AtomicBool::new(false);
 
 fn write_decimal(mut value: u64) {
@@ -194,12 +274,21 @@ fn write_decimal(mut value: u64) {
     let _ = sys::write(1, &buf[..i]);
 }
 
-#[cfg_attr(any(target_os = "none", target_os = "uefi"), panic_handler)]
-#[cfg(any(target_os = "none", target_os = "uefi"))]
+fn arch_relax() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        asm!("pause");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("yield", options(nomem, nostack, preserves_flags));
+    }
+}
+
+#[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
-        unsafe {
-            asm!("pause");
-        }
+        arch_relax();
     }
 }

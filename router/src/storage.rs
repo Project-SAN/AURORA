@@ -22,7 +22,7 @@ impl RouterStorage for FileRouterStorage {
     }
 
     fn save(&self, state: &StoredState) -> core::result::Result<(), Error> {
-        let data = serde_json::to_vec_pretty(state).map_err(|_| Error::Crypto)?;
+        let data = serde_json::to_vec(state).map_err(|_| Error::Crypto)?;
         fs::write(&self.path, data).map_err(|_| Error::Crypto)
     }
 }

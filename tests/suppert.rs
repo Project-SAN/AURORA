@@ -3,22 +3,9 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use aurora::core::policy::PolicyRole;
-use aurora::core::policy::{PolicyCapsule, PolicyMetadata, PolicyRegistry};
+use aurora::core::policy::{PolicyCapsule, PolicyRegistry};
 use aurora::node::pipeline::ForwardPipeline;
 use aurora::policy::CapsuleValidator;
-use aurora::setup::pipeline::SetupPipeline;
-
-#[allow(dead_code)]
-pub struct NoopSetup;
-
-impl SetupPipeline for NoopSetup {
-    fn install(
-        &mut self,
-        _metadata: PolicyMetadata,
-    ) -> core::result::Result<(), aurora::types::Error> {
-        Ok(())
-    }
-}
 
 #[derive(Clone)]
 pub struct RecordingForward {

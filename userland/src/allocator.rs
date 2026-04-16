@@ -28,8 +28,13 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 #[alloc_error_handler]
 fn oom(_layout: Layout) -> ! {
     loop {
+        #[cfg(target_arch = "x86_64")]
         unsafe {
             core::arch::asm!("hlt");
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("wfe", options(nomem, nostack, preserves_flags));
         }
     }
 }

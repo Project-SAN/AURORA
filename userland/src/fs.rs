@@ -58,6 +58,11 @@ pub fn close(handle: u64) -> bool {
     ret != u64::MAX
 }
 
+pub fn mkdir(path: &str) -> bool {
+    let ret = unsafe { sys::syscall2(sys::SYS_FS_MKDIR, path.as_ptr() as u64, path.len() as u64) };
+    ret != u64::MAX
+}
+
 pub fn sync() -> bool {
     let ret = unsafe { sys::syscall0(sys::SYS_FS_SYNC) };
     ret != u64::MAX

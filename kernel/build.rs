@@ -9,31 +9,42 @@ fn main() {
     println!("cargo:rerun-if-changed=../userland/src");
     println!("cargo:rerun-if-changed=../userland/target/x86_64-unknown-none/debug/aurora-userland");
     println!(
+        "cargo:rerun-if-changed=../userland/target/aarch64-unknown-none/debug/aurora-userland"
+    );
+    println!(
         "cargo:rerun-if-changed=../userland/target/x86_64-unknown-none/release/aurora-userland"
+    );
+    println!(
+        "cargo:rerun-if-changed=../userland/target/aarch64-unknown-none/release/aurora-userland"
     );
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR missing");
     let img_path = Path::new(&out_dir).join("ramdisk.img");
-    create_ramdisk(&img_path).expect("ramdisk image generation failed");
+    let target = env::var("TARGET").unwrap_or_default();
+    let image_size = if target == "aarch64-unknown-uefi" {
+        32 * 1024 * 1024
+    } else {
+        64 * 1024 * 1024
+    };
+    create_ramdisk(&img_path, image_size).expect("ramdisk image generation failed");
 }
 
-fn create_ramdisk(path: &Path) -> io::Result<()> {
-    const IMAGE_SIZE: u64 = 64 * 1024 * 1024;
+fn create_ramdisk(path: &Path, image_size: u64) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(path)?;
-    file.set_len(IMAGE_SIZE)?;
+    file.set_len(image_size)?;
     file.seek(SeekFrom::Start(0))?;
 
-    let mut stream = fscommon::BufStream::new(file);
     fatfs::format_volume(
-        &mut stream,
+        &mut file,
         fatfs::FormatVolumeOptions::new().fat_type(fatfs::FatType::Fat32),
     )?;
+    file.seek(SeekFrom::Start(0))?;
 
-    let fs = fatfs::FileSystem::new(stream, fatfs::FsOptions::new())?;
+    let fs = fatfs::FileSystem::new(file, fatfs::FsOptions::new())?;
     let root = fs.root_dir();
 
     root.create_dir("HELLO")?;
