@@ -12,6 +12,7 @@ PROXY_BIN="${PROXY_BIN:-$ROOT/target/debug/aurora_proxy}"
 ENTRY_SCRIPT="${ENTRY_SCRIPT:-$ROOT/scripts/qemu-aarch64-localnet-entry.sh}"
 MIDDLE_SCRIPT="${MIDDLE_SCRIPT:-$ROOT/scripts/qemu-aarch64-middle.sh}"
 EXIT_SCRIPT="${EXIT_SCRIPT:-$ROOT/scripts/qemu-aarch64-exit.sh}"
+AARCH64_GUEST_POLICY_MODE="${AARCH64_GUEST_POLICY_MODE:-route-only}"
 
 mkdir -p "$LOG_DIR" "$QEMU_DIR" "$REQ_DIR"
 
@@ -83,28 +84,86 @@ wait_for_port() {
   return 1
 }
 
+normalize_guest_policy_mode() {
+  case "$1" in
+    route-only|route_only|routeonly|route)
+      echo "route-only"
+      ;;
+    full-policy|full_policy|fullpolicy|full)
+      echo "full-policy"
+      ;;
+    *)
+      echo "unsupported AARCH64_GUEST_POLICY_MODE: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
 copy_into_image() {
   local image="$1"
   local router="$2"
   local cfg="$ROOT/config/qemu/${router}.router_config.json"
   local dir="$ROOT/config/qemu/${router}.directory.json"
   local state="$ROOT/target/qemu/${router}-state.json"
+  local guest_cfg="$QEMU_DIR/${router}-guest-config.json"
   local guest_state="$QEMU_DIR/${router}-guest-state.json"
-  python3 - "$state" "$guest_state" <<'PY'
+  python3 - \
+    "$cfg" \
+    "$state" \
+    "$guest_cfg" \
+    "$guest_state" \
+    "$AARCH64_GUEST_POLICY_MODE" \
+    "$ROOT/target/qemu/router-entry-state.json" \
+    "$ROOT/target/qemu/router-middle-state.json" \
+    "$ROOT/target/qemu/router-exit-state.json" <<'PY'
 import json
 import sys
 
-with open(sys.argv[1], "r", encoding="utf-8") as f:
+(
+    cfg_path,
+    state_path,
+    guest_cfg_path,
+    guest_state_path,
+    mode,
+    entry_state_path,
+    middle_state_path,
+    exit_state_path,
+) = sys.argv[1:9]
+
+with open(cfg_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+cfg["policy_mode"] = mode
+with open(guest_cfg_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, separators=(",", ":"))
+
+with open(state_path, "r", encoding="utf-8") as f:
     state = json.load(f)
-state["policies"] = []
-with open(sys.argv[2], "w", encoding="utf-8") as f:
+if mode == "route-only":
+    state["policies"] = []
+else:
+    merged_routes = []
+    seen = set()
+    for extra_state_path in (entry_state_path, middle_state_path, exit_state_path):
+        with open(extra_state_path, "r", encoding="utf-8") as f:
+            extra_state = json.load(f)
+        for route in extra_state.get("routes", []):
+            key = (tuple(route.get("policy_id", [])), route.get("interface", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_routes.append(route)
+    if merged_routes:
+        state["routes"] = merged_routes
+with open(guest_state_path, "w", encoding="utf-8") as f:
     json.dump(state, f, separators=(",", ":"))
 PY
+  mdel -i "$image" ::ROUTER_C.JSO >/dev/null 2>&1 || true
   mdel -i "$image" ::router_config.json >/dev/null 2>&1 || true
   mdel -i "$image" ::directory.json >/dev/null 2>&1 || true
   mdel -i "$image" ::router_state.json >/dev/null 2>&1 || true
   mdel -i "$image" ::ROUTER_S.JSO >/dev/null 2>&1 || true
-  mcopy -i "$image" "$cfg" ::router_config.json
+  mcopy -i "$image" "$guest_cfg" ::router_config.json
+  mcopy -i "$image" "$guest_cfg" ::ROUTER_C.JSO
   mcopy -i "$image" "$dir" ::directory.json
   mcopy -i "$image" "$guest_state" ::router_state.json
   mcopy -i "$image" "$guest_state" ::ROUTER_S.JSO
@@ -133,10 +192,14 @@ start_http() {
 
 start_proxy() {
   kill_from_pidfile "$LOG_DIR/proxy.pid"
+  local proxy_route_only_default="1"
+  if [ "$AARCH64_GUEST_POLICY_MODE" = "full-policy" ]; then
+    proxy_route_only_default="0"
+  fi
   (
     export HORNET_PROXY_BIND=127.0.0.1:18080
     export HORNET_POLICY_INFO="$ROOT/config/qemu/policy-info.host.json"
-    export HORNET_PROXY_ROUTE_ONLY="${HORNET_PROXY_ROUTE_ONLY:-1}"
+    export HORNET_PROXY_ROUTE_ONLY="${HORNET_PROXY_ROUTE_ONLY:-$proxy_route_only_default}"
     export HORNET_PROXY_ZKBOO_ROUNDS=1
     export HORNET_PROXY_RESPONSE_TIMEOUT_SECS=120
     export HORNET_PROXY_ENTRY_ADDR=127.0.0.1:18111
@@ -173,6 +236,8 @@ kill_listener_on_port 18101
 kill_listener_on_port 18102
 kill_listener_on_port 18103
 
+AARCH64_GUEST_POLICY_MODE="$(normalize_guest_policy_mode "$AARCH64_GUEST_POLICY_MODE")"
+
 cargo_cmd build -p aurora-userland --features router --target aarch64-unknown-none
 cargo_cmd build -p aurora-kernel --features userland --target aarch64-unknown-uefi
 cargo_cmd build -p aurora-router -p aurora-proxy
@@ -206,7 +271,8 @@ wait_for_port 18080
 sleep 5
 
 echo "QEMU AArch64 3-node localnet is ready."
-echo "proxy: http://127.0.0.1:18080 (route-only guest state is preloaded)"
+echo "policy mode: $AARCH64_GUEST_POLICY_MODE"
+echo "proxy: http://127.0.0.1:18080"
 echo "send : scripts/qemu-localnet-send.sh"
 echo "down : scripts/qemu-aarch64-localnet-down.sh"
 

@@ -290,7 +290,15 @@ fn handle_connect_tunnel(
                     let response = if let Some(session) = policy_session.as_mut() {
                         let saved_rounds = session.rounds;
                         if open_now {
-                            session.rounds = connect_open_rounds;
+                            let effective_rounds =
+                                effective_policy_rounds(&session.policy_meta, connect_open_rounds);
+                            if effective_rounds != connect_open_rounds {
+                                eprintln!(
+                                    "[proxy] CONNECT OPEN requested rounds={} bumped to metadata min_rounds={}",
+                                    connect_open_rounds, effective_rounds
+                                );
+                            }
+                            session.rounds = effective_rounds;
                         }
                         let result = session.send(
                             if open_now {
@@ -505,6 +513,18 @@ struct PolicyTunnelSession {
     rng: ChaCha20Rng,
 }
 
+fn required_policy_rounds(meta: &PolicyMetadata) -> u16 {
+    meta.verifiers
+        .iter()
+        .map(|entry| entry.min_rounds)
+        .max()
+        .unwrap_or(0)
+}
+
+fn effective_policy_rounds(meta: &PolicyMetadata, requested: u16) -> u16 {
+    requested.max(required_policy_rounds(meta))
+}
+
 impl PolicyTunnelSession {
     fn new(cfg: &SenderConfig, target: &str) -> Result<Self, String> {
         let json = fs::read_to_string(&cfg.policy_info)
@@ -542,10 +562,17 @@ impl PolicyTunnelSession {
             .map_err(|e| format!("local_addr response listener: {e}"))?;
         let return_ip = resolve_return_ip(local)?;
         let return_port = local.port();
-        let rounds = cfg
+        let requested_rounds = cfg
             .rounds
             .parse::<u16>()
             .map_err(|_| format!("invalid HORNET_PROXY_ZKBOO_ROUNDS: {}", cfg.rounds))?;
+        let rounds = effective_policy_rounds(&policy_meta, requested_rounds);
+        if rounds != requested_rounds {
+            eprintln!(
+                "[proxy][policy] requested rounds={} bumped to metadata min_rounds={}",
+                requested_rounds, rounds
+            );
+        }
         let mut rng = ChaCha20Rng::seed_from_u64(derive_seed());
         let hops = routers.len();
         let exp = compute_expiry(600);
@@ -686,15 +713,26 @@ impl PolicyTunnelSession {
         payload.extend_from_slice(&capsule_buf);
         payload.extend_from_slice(&encrypted_tail);
         let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
-        send_frame_to(&self.entry_addr, &frame)?;
+        let mut entry_stream = send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
 
-        wait_for_backward_response(
-            &self.listener,
+        match wait_for_backward_response_stream(
+            &mut entry_stream,
             timeout_secs,
             &self.backward_keys_reversed,
             "[proxy][policy]",
-        )
+        ) {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                eprintln!("[proxy][policy] same-stream response failed: {err}");
+                wait_for_backward_response(
+                    &self.listener,
+                    timeout_secs,
+                    &self.backward_keys_reversed,
+                    "[proxy][policy]",
+                )
+            }
+        }
     }
 
     fn build_capsule(&mut self, request_payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -877,15 +915,26 @@ impl PolicyTunnelSession {
         payload.extend_from_slice(capsule_buf);
         payload.extend_from_slice(&encrypted_tail);
         let frame = encode_frame(&chdr, &ahdr.bytes, &payload)?;
-        send_frame_to(&self.entry_addr, &frame)?;
+        let mut entry_stream = send_frame_to(&self.entry_addr, &frame)?;
         eprintln!("[proxy][policy] frame sent bytes={}", frame.len());
 
-        wait_for_backward_response(
-            &self.listener,
+        match wait_for_backward_response_stream(
+            &mut entry_stream,
             timeout_secs,
             &self.backward_keys_reversed,
             "[proxy][policy]",
-        )
+        ) {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                eprintln!("[proxy][policy] same-stream response failed: {err}");
+                wait_for_backward_response(
+                    &self.listener,
+                    timeout_secs,
+                    &self.backward_keys_reversed,
+                    "[proxy][policy]",
+                )
+            }
+        }
     }
 }
 
@@ -1907,5 +1956,35 @@ mod tests {
         let len = parse_content_length(b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 12\r\n\r\n")
             .expect("len");
         assert_eq!(len, 12);
+    }
+
+    #[test]
+    fn effective_policy_rounds_honors_metadata_minimum() {
+        let meta = PolicyMetadata {
+            policy_id: [0x11; 32],
+            version: 1,
+            expiry: 0,
+            flags: 0,
+            verifiers: vec![
+                aurora::policy::VerifierEntry {
+                    kind: ProofKind::KeyBinding as u8,
+                    min_rounds: 4,
+                    verifier_blob: Vec::new(),
+                },
+                aurora::policy::VerifierEntry {
+                    kind: ProofKind::Consistency as u8,
+                    min_rounds: 8,
+                    verifier_blob: Vec::new(),
+                },
+                aurora::policy::VerifierEntry {
+                    kind: ProofKind::Policy as u8,
+                    min_rounds: 6,
+                    verifier_blob: Vec::new(),
+                },
+            ],
+        };
+        assert_eq!(required_policy_rounds(&meta), 8);
+        assert_eq!(effective_policy_rounds(&meta, 1), 8);
+        assert_eq!(effective_policy_rounds(&meta, 12), 12);
     }
 }

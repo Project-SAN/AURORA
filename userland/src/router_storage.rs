@@ -21,13 +21,23 @@ const ROUTER_STATE_FALLBACKS: &[&str] = &[
     "ROUTER~2.JSO",
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoredStateMode {
+    RouteOnly,
+    FullPolicy,
+}
+
 pub struct UserlandRouterStorage {
     path: String,
+    mode: StoredStateMode,
 }
 
 impl UserlandRouterStorage {
-    pub fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into() }
+    pub fn new(path: impl Into<String>, mode: StoredStateMode) -> Self {
+        Self {
+            path: path.into(),
+            mode,
+        }
     }
 }
 
@@ -36,18 +46,26 @@ impl RouterStorage for UserlandRouterStorage {
         let data = read_state_with_fallbacks(&self.path)?;
         #[cfg(target_arch = "aarch64")]
         {
-            read_route_only_state(&data)
+            match self.mode {
+                StoredStateMode::RouteOnly => read_route_only_state(&data),
+                StoredStateMode::FullPolicy => read_full_state(&data),
+            }
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            serde_json::from_slice(&data).map_err(|_| Error::Crypto)
+            let _ = self.mode;
+            read_full_state(&data)
         }
     }
 
     fn save(&self, state: &StoredState) -> core::result::Result<(), Error> {
-        let data = serde_json::to_vec_pretty(state).map_err(|_| Error::Crypto)?;
+        let data = serde_json::to_vec(state).map_err(|_| Error::Crypto)?;
         write_all(&self.path, &data)
     }
+}
+
+fn read_full_state(data: &[u8]) -> core::result::Result<StoredState, Error> {
+    serde_json::from_slice(data).map_err(|_| Error::Crypto)
 }
 
 #[cfg(target_arch = "aarch64")]

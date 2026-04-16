@@ -23,7 +23,10 @@ SECTIONS
   } :rodata
 
   . = 0x41000000;
-  HEAP_SIZE = 1M;
+  /* AArch64 full-policy guest mode needs substantially more heap than the
+   * early route-only bring-up. Keep this below the reserved stack window at
+   * 0x41c00000 while leaving room for .data/.bss growth. */
+  HEAP_SIZE = 10M;
 
   .data : ALIGN(64K)
   {
