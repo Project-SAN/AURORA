@@ -52,12 +52,17 @@ fn allow_bit(circuit: &Circuit, host: &str) -> u8 {
 
 #[test]
 fn qemu_policy_info_matches_expected_ports() {
-    let doc = read_json("config/qemu/policy-info.host.json");
+    let doc = read_json("config/qemu/policy-info.json");
     let routers = doc["routers"].as_array().expect("routers array");
     assert_eq!(routers.len(), 3);
-    assert_eq!(routers[0]["bind"], "127.0.0.1:18111");
-    assert_eq!(routers[1]["bind"], "127.0.0.1:18112");
-    assert_eq!(routers[2]["bind"], "127.0.0.1:18113");
+    assert_eq!(doc["proxy_return_host"], "10.0.2.2");
+    assert_eq!(doc["proxy_response_bind"], "0.0.0.0:0");
+    assert_eq!(routers[0]["bind"], "10.0.2.2:18111");
+    assert_eq!(routers[1]["bind"], "10.0.2.2:18112");
+    assert_eq!(routers[2]["bind"], "10.0.2.2:18113");
+    assert_eq!(routers[0]["proxy_bind"], "127.0.0.1:18111");
+    assert_eq!(routers[1]["proxy_bind"], "127.0.0.1:18112");
+    assert_eq!(routers[2]["proxy_bind"], "127.0.0.1:18113");
 }
 
 #[test]
@@ -79,6 +84,9 @@ fn localnet_policy_info_matches_expected_ports() {
     assert_eq!(routers[0]["bind"], "127.0.0.1:7101");
     assert_eq!(routers[1]["bind"], "127.0.0.1:7102");
     assert_eq!(routers[2]["bind"], "127.0.0.1:7103");
+    assert_eq!(routers[0]["proxy_bind"], "127.0.0.1:7101");
+    assert_eq!(routers[1]["proxy_bind"], "127.0.0.1:7102");
+    assert_eq!(routers[2]["proxy_bind"], "127.0.0.1:7103");
 }
 
 #[test]

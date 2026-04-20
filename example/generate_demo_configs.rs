@@ -66,9 +66,12 @@ fn run() -> Result<(), String> {
         &root.join("config/localnet/policy-info.json"),
         &policy_id_hex,
         &public_key_hex,
+        None,
+        None,
         &[
             RouterPolicyInfo::new(
                 "router-entry",
+                "127.0.0.1:7101",
                 "127.0.0.1:7101",
                 "config/localnet/router-entry.directory.json",
                 "target/localnet/router-entry-state.json",
@@ -77,12 +80,14 @@ fn run() -> Result<(), String> {
             RouterPolicyInfo::new(
                 "router-middle",
                 "127.0.0.1:7102",
+                "127.0.0.1:7102",
                 "config/localnet/router-middle.directory.json",
                 "target/localnet/router-middle-state.json",
                 "config/localnet/router-middle.env",
             ),
             RouterPolicyInfo::new(
                 "router-exit",
+                "127.0.0.1:7103",
                 "127.0.0.1:7103",
                 "config/localnet/router-exit.directory.json",
                 "target/localnet/router-exit-state.json",
@@ -94,37 +99,12 @@ fn run() -> Result<(), String> {
         &root.join("config/qemu/policy-info.json"),
         &policy_id_hex,
         &public_key_hex,
+        Some("10.0.2.2"),
+        Some("0.0.0.0:0"),
         &[
             RouterPolicyInfo::new(
                 "router-entry",
                 "10.0.2.2:18111",
-                "config/qemu/router-entry.directory.json",
-                "target/qemu/router-entry-state.json",
-                "",
-            ),
-            RouterPolicyInfo::new(
-                "router-middle",
-                "10.0.2.2:18112",
-                "config/qemu/router-middle.directory.json",
-                "target/qemu/router-middle-state.json",
-                "",
-            ),
-            RouterPolicyInfo::new(
-                "router-exit",
-                "10.0.2.2:18113",
-                "config/qemu/router-exit.directory.json",
-                "target/qemu/router-exit-state.json",
-                "",
-            ),
-        ],
-    )?;
-    write_policy_info(
-        &root.join("config/qemu/policy-info.host.json"),
-        &policy_id_hex,
-        &public_key_hex,
-        &[
-            RouterPolicyInfo::new(
-                "router-entry",
                 "127.0.0.1:18111",
                 "config/qemu/router-entry.directory.json",
                 "target/qemu/router-entry-state.json",
@@ -132,6 +112,7 @@ fn run() -> Result<(), String> {
             ),
             RouterPolicyInfo::new(
                 "router-middle",
+                "10.0.2.2:18112",
                 "127.0.0.1:18112",
                 "config/qemu/router-middle.directory.json",
                 "target/qemu/router-middle-state.json",
@@ -139,6 +120,7 @@ fn run() -> Result<(), String> {
             ),
             RouterPolicyInfo::new(
                 "router-exit",
+                "10.0.2.2:18113",
                 "127.0.0.1:18113",
                 "config/qemu/router-exit.directory.json",
                 "target/qemu/router-exit-state.json",
@@ -219,6 +201,10 @@ fn write_directory_group(
 struct PolicyInfo<'a> {
     policy_id: &'a str,
     directory_public_key: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_return_host: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_response_bind: Option<&'a str>,
     routers: &'a [RouterPolicyInfo<'a>],
 }
 
@@ -226,6 +212,7 @@ struct PolicyInfo<'a> {
 struct RouterPolicyInfo<'a> {
     name: &'a str,
     bind: &'a str,
+    proxy_bind: &'a str,
     directory_path: &'a str,
     storage_path: &'a str,
     env_file: &'a str,
@@ -235,6 +222,7 @@ impl<'a> RouterPolicyInfo<'a> {
     const fn new(
         name: &'a str,
         bind: &'a str,
+        proxy_bind: &'a str,
         directory_path: &'a str,
         storage_path: &'a str,
         env_file: &'a str,
@@ -242,6 +230,7 @@ impl<'a> RouterPolicyInfo<'a> {
         Self {
             name,
             bind,
+            proxy_bind,
             directory_path,
             storage_path,
             env_file,
@@ -253,11 +242,15 @@ fn write_policy_info(
     path: &Path,
     policy_id: &str,
     public_key: &str,
+    proxy_return_host: Option<&str>,
+    proxy_response_bind: Option<&str>,
     routers: &[RouterPolicyInfo<'_>],
 ) -> Result<(), String> {
     let body = serde_json::to_string_pretty(&PolicyInfo {
         policy_id,
         directory_public_key: public_key,
+        proxy_return_host,
+        proxy_response_bind,
         routers,
     })
     .map_err(|err| format!("serialize {}: {err}", path.display()))?;

@@ -23,7 +23,7 @@ scripts/qemu-localnet-up.sh
 - ホスト HTTP proxy (`127.0.0.1:18080`) を通常送信モードで起動
 - QEMU ノード 3 台起動 (`127.0.0.1:18111`, `:18112`, `:18113` を hostfwd)
 
-送信側が使う設定は [config/qemu/policy-info.host.json](/Users/hiro/workspace/project-san/AURORA/config/qemu/policy-info.host.json) です。QEMU ゲスト内では `10.0.2.2:*` を使いますが、ホスト CLI からは `127.0.0.1:*` に正規化した方を使います。`config/qemu/` は固定ファイルとして管理しています。
+送信側が使う設定は [config/qemu/policy-info.json](/Users/hiro/workspace/project-san/AURORA/config/qemu/policy-info.json) です。各 router には `bind` と `proxy_bind` があり、router 間経路には `10.0.2.2:*`、ホスト上の proxy 接続には `127.0.0.1:*` を使います。
 
 ## データ送信
 
@@ -51,7 +51,7 @@ curl -x http://127.0.0.1:18080 http://example.org/
 helper script で任意ターゲットを送る場合:
 
 ```bash
-scripts/qemu-localnet-send.sh config/qemu/policy-info.host.json example.org:80 /absolute/path/to/request.bin /absolute/path/to/response.bin
+scripts/qemu-localnet-send.sh config/qemu/policy-info.json example.org:80 /absolute/path/to/request.bin /absolute/path/to/response.bin
 ```
 
 固定長 payload を policy と合わせる必要があるので、独自 request を渡す場合は `LOCALNET_ZKBOO_PAYLOAD_LEN_BYTES` と整合する長さにしてください。デフォルトは 96 bytes です。

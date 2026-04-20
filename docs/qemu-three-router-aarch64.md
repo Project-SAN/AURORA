@@ -30,7 +30,7 @@ scripts/qemu-aarch64-localnet-up.sh
 
 ```bash
 scripts/qemu-localnet-send.sh \
-  config/qemu/policy-info.host.json \
+  config/qemu/policy-info.json \
   example.com:80 \
   target/qemu-aarch64-logs/http-request.bin \
   target/qemu-aarch64-logs/http-response.bin

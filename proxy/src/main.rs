@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -487,6 +487,10 @@ struct PolicyInfo {
     policy_id: String,
     #[serde(default)]
     directory_public_key: String,
+    #[serde(default)]
+    proxy_return_host: Option<String>,
+    #[serde(default)]
+    proxy_response_bind: Option<String>,
     routers: Vec<RouterInfo>,
 }
 
@@ -494,6 +498,7 @@ struct PolicyInfo {
 struct RouterInfo {
     name: String,
     bind: String,
+    proxy_bind: String,
     directory_path: String,
     storage_path: String,
 }
@@ -542,15 +547,15 @@ impl PolicyTunnelSession {
         let entry_addr = env::var("HORNET_PROXY_ENTRY_ADDR")
             .ok()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| normalize_entry_addr(&cfg.policy_info, &routers[0].1.bind));
+            .unwrap_or_else(|| routers[0].1.proxy_bind.clone());
         let bind_addr = if let Ok(bind) = env::var("HORNET_PROXY_RESPONSE_BIND") {
             if bind.trim().is_empty() {
-                default_response_bind(&cfg.policy_info)
+                default_response_bind(&info)
             } else {
                 bind
             }
         } else {
-            default_response_bind(&cfg.policy_info)
+            default_response_bind(&info)
         };
         let listener = TcpListener::bind(&bind_addr)
             .map_err(|e| format!("failed to bind response listener {bind_addr}: {e}"))?;
@@ -560,7 +565,7 @@ impl PolicyTunnelSession {
         let local = listener
             .local_addr()
             .map_err(|e| format!("local_addr response listener: {e}"))?;
-        let return_ip = resolve_return_ip(local)?;
+        let return_ip = resolve_return_ip(local, &info)?;
         let return_port = local.port();
         let requested_rounds = cfg
             .rounds
@@ -967,32 +972,25 @@ impl RouteOnlyTunnelSession {
         let entry_addr = env::var("HORNET_PROXY_ENTRY_ADDR")
             .ok()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| normalize_entry_addr(&cfg.policy_info, &routers[0].1.bind));
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| format!("failed to bind response listener: {e}"))?;
+            .unwrap_or_else(|| routers[0].1.proxy_bind.clone());
+        let bind_addr = if let Ok(bind) = env::var("HORNET_PROXY_RESPONSE_BIND") {
+            if bind.trim().is_empty() {
+                default_response_bind(&info)
+            } else {
+                bind
+            }
+        } else {
+            default_response_bind(&info)
+        };
+        let listener = TcpListener::bind(&bind_addr)
+            .map_err(|e| format!("failed to bind response listener {bind_addr}: {e}"))?;
         listener
             .set_nonblocking(true)
             .map_err(|e| format!("set nonblocking listener: {e}"))?;
         let local = listener
             .local_addr()
             .map_err(|e| format!("local_addr response listener: {e}"))?;
-        let return_ip = if let Ok(host) = env::var("HORNET_PROXY_RETURN_HOST") {
-            if !host.trim().is_empty() {
-                IpAddr::V4(parse_ipv4_octets(&host)?)
-            } else {
-                resolve_return_ip(local)?
-            }
-        } else if let Ok(host) = env::var("HORNET_RETURN_HOST") {
-            if !host.trim().is_empty() {
-                IpAddr::V4(parse_ipv4_octets(&host)?)
-            } else {
-                resolve_return_ip(local)?
-            }
-        } else if cfg.policy_info.contains("config/qemu/") {
-            IpAddr::V4([10, 0, 2, 2])
-        } else {
-            resolve_return_ip(local)?
-        };
+        let return_ip = resolve_return_ip(local, &info)?;
         let return_port = local.port();
         let rng = ChaCha20Rng::seed_from_u64(derive_seed());
         eprintln!(
@@ -1372,11 +1370,13 @@ fn select_live_segment(
     Ok(routing::segment_from_elems(&elems?))
 }
 
-fn normalize_router_hop_ip(router: &RouterInfo, ip_str: &str) -> Result<[u8; 4], String> {
-    if router.directory_path.contains("config/qemu/") && ip_str == "127.0.0.1" {
-        return Ok([10, 0, 2, 2]);
-    }
+fn normalize_router_hop_ip(_router: &RouterInfo, ip_str: &str) -> Result<[u8; 4], String> {
     parse_ipv4_octets(ip_str)
+}
+
+fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
+    let addr: std::net::Ipv4Addr = ip.parse().map_err(|_| "invalid ipv4".to_string())?;
+    Ok(addr.octets())
 }
 
 fn resolve_target_parts(hostname: &str, port: u16) -> Result<(IpAddr, u16), String> {
@@ -1397,34 +1397,48 @@ fn resolve_target_parts(hostname: &str, port: u16) -> Result<(IpAddr, u16), Stri
     }
 }
 
-fn normalize_entry_addr(policy_info_path: &str, bind: &str) -> String {
-    if !policy_info_path.contains("config/qemu/") {
-        return bind.to_string();
+fn resolve_ip_or_host(host: &str) -> Result<IpAddr, String> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return Err("empty host".to_string());
     }
-    let Some((ip, port)) = bind.rsplit_once(':') else {
-        return bind.to_string();
-    };
-    if ip == "10.0.2.2" {
-        format!("127.0.0.1:{port}")
-    } else {
-        bind.to_string()
+    if let Ok(v4) = trimmed.parse::<std::net::Ipv4Addr>() {
+        return Ok(IpAddr::V4(v4.octets()));
     }
+    if let Ok(v6) = trimmed.parse::<std::net::Ipv6Addr>() {
+        return Ok(IpAddr::V6(v6.octets()));
+    }
+    let mut addrs = (trimmed, 0)
+        .to_socket_addrs()
+        .map_err(|e| format!("failed to resolve return host {trimmed}: {e}"))?;
+    if let Some(std::net::SocketAddr::V4(v4)) = addrs.find(|addr| addr.is_ipv4()) {
+        return Ok(IpAddr::V4(v4.ip().octets()));
+    }
+    if let Some(std::net::SocketAddr::V6(v6)) = addrs.next() {
+        return Ok(IpAddr::V6(v6.ip().octets()));
+    }
+    Err(format!(
+        "failed to resolve return host {trimmed}: no addresses"
+    ))
 }
 
-fn parse_ipv4_octets(ip: &str) -> Result<[u8; 4], String> {
-    let addr: std::net::Ipv4Addr = ip.parse().map_err(|_| "invalid ipv4".to_string())?;
-    Ok(addr.octets())
-}
-
-fn resolve_return_ip(local_addr: std::net::SocketAddr) -> Result<IpAddr, String> {
+fn resolve_return_ip(
+    local_addr: std::net::SocketAddr,
+    info: &PolicyInfo,
+) -> Result<IpAddr, String> {
     if let Ok(host) = env::var("HORNET_PROXY_RETURN_HOST") {
         if !host.trim().is_empty() {
-            return Ok(IpAddr::V4(parse_ipv4_octets(&host)?));
+            return resolve_ip_or_host(&host);
         }
     }
     if let Ok(host) = env::var("HORNET_RETURN_HOST") {
         if !host.trim().is_empty() {
-            return Ok(IpAddr::V4(parse_ipv4_octets(&host)?));
+            return resolve_ip_or_host(&host);
+        }
+    }
+    if let Some(host) = info.proxy_return_host.as_deref() {
+        if !host.trim().is_empty() {
+            return resolve_ip_or_host(host);
         }
     }
     match local_addr {
@@ -1447,12 +1461,12 @@ fn canonical_target_leaf(host_port: &str) -> Result<Vec<u8>, String> {
     Ok(entry.leaf_bytes().as_slice().to_vec())
 }
 
-fn default_response_bind(policy_info_path: &str) -> String {
-    if policy_info_path.contains("config/qemu/") {
-        "0.0.0.0:0".to_string()
-    } else {
-        "127.0.0.1:0".to_string()
-    }
+fn default_response_bind(info: &PolicyInfo) -> String {
+    info.proxy_response_bind
+        .as_deref()
+        .filter(|bind| !bind.trim().is_empty())
+        .unwrap_or("127.0.0.1:0")
+        .to_string()
 }
 
 fn compute_expiry(delta_secs: u64) -> aurora::types::Exp {
@@ -1859,7 +1873,7 @@ fn send_setup(info_path: &str) -> Result<(), String> {
     let entry_addr = env::var("HORNET_ENTRY_ADDR")
         .ok()
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| normalize_entry_addr(info_path, &entry.bind));
+        .unwrap_or_else(|| entry.proxy_bind.clone());
     send_frame_to(&entry_addr, &frame)?;
     eprintln!(
         "[proxy] setup sent: {} hops={} target={}",

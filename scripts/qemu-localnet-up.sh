@@ -109,13 +109,10 @@ start_proxy() {
   kill_from_pidfile "$LOG_DIR/proxy.pid"
   nohup env \
     HORNET_PROXY_BIND=127.0.0.1:18080 \
-    HORNET_POLICY_INFO="$ROOT/config/qemu/policy-info.host.json" \
+    HORNET_POLICY_INFO="$ROOT/config/qemu/policy-info.json" \
     HORNET_PROXY_ROUTE_ONLY=0 \
     HORNET_PROXY_ZKBOO_ROUNDS=1 \
     HORNET_PROXY_RESPONSE_TIMEOUT_SECS=120 \
-    HORNET_PROXY_ENTRY_ADDR=127.0.0.1:18111 \
-    HORNET_PROXY_RETURN_HOST=10.0.2.2 \
-    HORNET_PROXY_RESPONSE_BIND=0.0.0.0:0 \
     cargo run -p aurora-proxy >"$LOG_DIR/proxy.log" 2>&1 &
   echo $! >"$LOG_DIR/proxy.pid"
 }

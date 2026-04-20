@@ -198,13 +198,10 @@ start_proxy() {
   fi
   (
     export HORNET_PROXY_BIND=127.0.0.1:18080
-    export HORNET_POLICY_INFO="$ROOT/config/qemu/policy-info.host.json"
+    export HORNET_POLICY_INFO="$ROOT/config/qemu/policy-info.json"
     export HORNET_PROXY_ROUTE_ONLY="${HORNET_PROXY_ROUTE_ONLY:-$proxy_route_only_default}"
     export HORNET_PROXY_ZKBOO_ROUNDS=1
     export HORNET_PROXY_RESPONSE_TIMEOUT_SECS=120
-    export HORNET_PROXY_ENTRY_ADDR=127.0.0.1:18111
-    export HORNET_PROXY_RETURN_HOST=10.0.2.2
-    export HORNET_PROXY_RESPONSE_BIND=0.0.0.0:0
     exec "$PROXY_BIN"
   ) >"$LOG_DIR/proxy.log" 2>&1 &
   echo $! >"$LOG_DIR/proxy.pid"
